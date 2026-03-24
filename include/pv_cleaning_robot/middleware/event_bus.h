@@ -1,0 +1,81 @@
+#pragma once
+#include <any>
+#include <functional>
+#include <mutex>
+#include <typeindex>
+#include <unordered_map>
+#include <vector>
+
+#include "pv_cleaning_robot/hal/pi_mutex.h"
+
+namespace robot::middleware {
+
+/// @brief 线程安全类型安全事件总线（模板 pub/sub）
+///
+/// 用法示例：
+///   EventBus bus;
+///   bus.subscribe<FaultEvent>([](const FaultEvent& e) { ... });
+///   bus.publish(FaultEvent{...});
+///
+/// 订阅者回调在 publish() 的调用线程中执行（同步）。
+/// 如需异步，由调用方在回调中自行投递到队列。
+class EventBus {
+public:
+    template <typename EventT>
+    using Handler = std::function<void(const EventT&)>;
+
+    /// 订阅事件类型 EventT，返回订阅 ID（用于取消订阅）
+    template <typename EventT>
+    int subscribe(Handler<EventT> handler)
+    {
+        std::lock_guard<robot::hal::PiMutex> lk(mtx_);
+        int id = next_id_++;
+        auto& vec = handlers_[std::type_index(typeid(EventT))];
+        vec.push_back({id, [h = std::move(handler)](const std::any& a) {
+            h(std::any_cast<const EventT&>(a));
+        }});
+        return id;
+    }
+
+    /// 取消订阅
+    void unsubscribe(int subscription_id)
+    {
+        std::lock_guard<robot::hal::PiMutex> lk(mtx_);
+        for (auto& [type, vec] : handlers_) {
+            vec.erase(std::remove_if(vec.begin(), vec.end(),
+                [subscription_id](const Entry& e) {
+                    return e.id == subscription_id;
+                }), vec.end());
+        }
+    }
+
+    /// 发布事件——在调用线程中同步回调所有订阅者
+    template <typename EventT>
+    void publish(const EventT& event)
+    {
+        std::vector<std::function<void(const std::any&)>> cbs;
+        {
+            std::lock_guard<robot::hal::PiMutex> lk(mtx_);
+            auto it = handlers_.find(std::type_index(typeid(EventT)));
+            if (it == handlers_.end()) return;
+            cbs.reserve(it->second.size()); // 避免发布时重复扩容
+            for (auto& e : it->second) cbs.push_back(e.cb);
+        }
+        std::any wrapped = event;
+        for (auto& cb : cbs) cb(wrapped);
+    }
+
+private:
+    struct Entry {
+        int id;
+        std::function<void(const std::any&)> cb;
+    };
+    // RT 安全互斥量：EventBus::publish() 由 SCHED_FIFO 99 的 SafetyMonitor 直接调用，
+    // 若普通线程持有此锁时被 RT 线程抢占，将出现优先级反转。
+    // PiMutex (PTHREAD_PRIO_INHERIT) 自动将持锁线程临时提升至等待者最高优先级。
+    robot::hal::PiMutex mtx_;
+    std::unordered_map<std::type_index, std::vector<Entry>> handlers_;
+    int next_id_{0};
+};
+
+} // namespace robot::middleware

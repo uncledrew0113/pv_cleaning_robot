@@ -1,0 +1,27 @@
+{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "rk3576-cross-linux",
+      "displayName": "RK3576 ARMv8 Cross-Compilation",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build",
+
+      "toolchainFile": "${sourceDir}/cmake/toolchain.cmake",
+      "environment": {
+
+        "PATH": "/home/tronlong/RK3576/sysroots/x86_64-linux/bin:$penv{PATH}",
+        "SDK_QMAKE_SYSROOT": "/home/tronlong/RK3576/sysroots/armv8a-linux"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "rk3576-build",
+      "configurePreset": "rk3576-cross-linux"
+    }
+  ]
+}

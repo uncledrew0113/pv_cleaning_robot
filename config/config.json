@@ -1,0 +1,53 @@
+{
+  "can": {
+    "interface": "can0"
+  },
+  "serial": {
+    "imu":   { "port": "/dev/ttyS1", "baudrate": 921600 },
+    "gps":   { "port": "/dev/ttyS2", "baudrate": 9600 },
+    "brush": { "port": "/dev/ttyS3", "baudrate": 9600 },
+    "bms":   { "port": "/dev/ttyS4", "baudrate": 9600 }
+  },
+  "gpio": {
+    "limit_front": { "chip": "gpiochip0", "line": 10 },
+    "limit_rear":  { "chip": "gpiochip0", "line": 11 }
+  },
+  "brush": { "slave_id": 1 },
+  "bms":   { "slave_id": 2 },
+  "storage": {
+    "cache_db": "/data/pv_robot/cache.db",
+    "log_dir":  "/data/pv_robot/logs"
+  },
+  "watchdog": {
+    "device": "/dev/watchdog"
+  },
+  "network": {
+    "transport_mode": "mqtt_only",
+    "mqtt": {
+      "host":         "tb.example.com",
+      "port":         1883,
+      "token":        "DEVICE_TOKEN_HERE",
+      "tls":          false,
+      "keep_alive_s": 60,
+      "qos":          1
+    },
+    "lorawan": {
+      "port":              "/dev/ttyS5",
+      "baudrate":          115200,
+      "report_interval_s": 300
+    }
+  },
+  "robot": {
+    "track_length_m":     1000.0,
+    "clean_speed_m_min":  10.0,
+    "wind_threshold_m_s": 12.0,
+    "low_battery_soc":    15,
+    "full_battery_soc":   95
+  },
+  "diagnostics": {
+    "mode":               "development",
+    "collect_interval_ms": 100,
+    "cloud_upload":       true,
+    "local_log":          true
+  }
+}

@@ -1,0 +1,11 @@
+prefix=/home/tronlong/RK3576/lib_3rdparty_build/install_3rdparty/libgpiod
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include
+
+Name: libgpiod
+Description: Library and tools for the Linux GPIO chardev
+URL: 
+Version: 1.6.3
+Libs: -L${libdir} -lgpiod
+Cflags: -I${includedir}

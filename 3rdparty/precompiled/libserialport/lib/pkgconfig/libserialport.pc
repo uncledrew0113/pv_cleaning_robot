@@ -1,0 +1,13 @@
+prefix=/home/tronlong/RK3576/lib_3rdparty_build/install_3rdparty/libserialport
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include
+
+Name: libserialport
+Description: Cross-platform serial port access library.
+URL: http://sigrok.org/wiki/Libserialport
+Requires.private: 
+Version: 0.1.2
+Libs: -L${libdir} -lserialport
+Libs.private: 
+Cflags: -I${includedir}

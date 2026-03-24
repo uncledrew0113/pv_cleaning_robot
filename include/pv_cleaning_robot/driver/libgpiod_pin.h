@@ -1,0 +1,71 @@
+/*
+ * @Author: UncleDrew
+ * @Date: 2026-03-14 13:19:23
+ * @LastEditors: UncleDrew
+ * @LastEditTime: 2026-03-24 10:51:14
+ * @FilePath: /pv_cleaning_robot/include/pv_cleaning_robot/driver/libgpiod_pin.h
+ * @Description:
+ *
+ * Copyright (c) 2026 by UncleDrew, All Rights Reserved.
+ */
+#pragma once
+#include <atomic>
+#include <chrono>
+#include <functional>
+#include <string>
+#include <thread>
+
+#include "pv_cleaning_robot/driver/pi_mutex.h"
+#include "pv_cleaning_robot/hal/i_gpio_pin.h"
+
+// 前置声明，避免暴露 libgpiod C 类型
+struct gpiod_chip;
+struct gpiod_line;
+
+namespace robot::driver {
+
+/// @brief libgpiod v1.6 GPIO 引脚实现（支持输入/输出两种模式）
+class LibGpiodPin final : public hal::IGpioPin {
+   public:
+    /// @param chip_name GPIO 控制器名，如 "gpiochip0"
+    /// @param line_num  GPIO 引脚编号
+    /// @param consumer  申请标识字符串（调试用）
+    LibGpiodPin(std::string chip_name, unsigned int line_num, std::string consumer = "pv_robot");
+    ~LibGpiodPin() override;
+
+    bool open(const hal::GpioConfig& config) override;
+    void close() override;
+    bool is_open() const override;
+
+    bool read_value() override;
+    bool write_value(bool high) override;
+
+    void set_edge_callback(hal::GpioEdge edge, std::function<void()> cb) override;
+    void start_monitoring() override;
+    void stop_monitoring() override;
+
+   private:
+    void monitor_loop();
+    bool request_line_as_input();  // 内部复用：申请普通输入模式（用于初始化和回滚）
+
+    std::string chip_name_;
+    unsigned int line_num_;
+    std::string consumer_;
+
+    gpiod_chip* chip_{nullptr};
+    gpiod_line* line_{nullptr};
+
+    hal::GpioConfig config_;
+    hal::GpioEdge edge_{hal::GpioEdge::BOTH};
+    std::function<void()> callback_;
+
+    std::thread monitor_thread_;
+    std::atomic<bool> running_{false};
+
+    // RT 优先级继承互斥量：防止主线程（低优先级）持锁时，
+    // GPIO 监控线程（高 RT 优先级）被阻塞而引发优先级反转。
+    PiMutex cb_mutex_;
+    // 软件消抖状态
+    std::chrono::steady_clock::time_point last_event_time_;
+};
+}  // namespace robot::driver

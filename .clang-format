@@ -1,0 +1,86 @@
+
+Language: Cpp
+BasedOnStyle: Google
+
+# 缩进
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ContinuationIndentWidth: 4
+
+# 每行长度
+ColumnLimit: 100
+
+# 大括号风格
+BreakBeforeBraces: Attach
+
+BraceWrapping:
+  AfterClass: false
+  AfterControlStatement: false
+  AfterEnum: false
+  AfterFunction: false
+  AfterNamespace: false
+  AfterStruct: false
+  AfterUnion: false
+  BeforeCatch: false
+  BeforeElse: false
+  IndentBraces: false
+
+# 指针和引用
+PointerAlignment: Left
+ReferenceAlignment: Left
+
+# 空格
+SpaceBeforeParens: ControlStatements
+SpaceBeforeAssignmentOperators: true
+SpacesInParentheses: false
+SpacesInAngles: false
+SpacesInSquareBrackets: false
+
+# include 排序
+SortIncludes: true
+IncludeBlocks: Regroup
+
+IncludeCategories:
+  - Regex: '^<.*>'
+    Priority: 1
+  - Regex: '^".*"'
+    Priority: 2
+
+# switch
+IndentCaseLabels: true
+
+# 函数参数
+AllowAllParametersOfDeclarationOnNextLine: false
+BinPackArguments: false
+BinPackParameters: false
+
+# 构造函数初始化列表
+ConstructorInitializerIndentWidth: 4
+BreakConstructorInitializers: BeforeComma
+
+# 注释
+AlignTrailingComments: true
+ReflowComments: true
+
+# namespace
+NamespaceIndentation: None
+
+# 短语句
+AllowShortFunctionsOnASingleLine: Empty
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+
+# 模板
+AlwaysBreakTemplateDeclarations: Yes
+
+# 对齐
+AlignConsecutiveAssignments: false
+AlignConsecutiveDeclarations: false
+AlignOperands: true
+
+# C++11
+Standard: Cpp11
+
+# 宏
+IndentPPDirectives: None

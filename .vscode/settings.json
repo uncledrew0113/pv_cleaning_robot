@@ -1,0 +1,28 @@
+{
+    "clang-format.executable": "/usr/bin/clang-format-14",
+    "clangd.path": "/usr/bin/clangd-14",
+    "clangd.arguments": [
+        "--background-index",
+        "--clang-tidy",
+        "--function-arg-placeholders=false",
+        "--header-insertion=never",
+        "-j=4",
+        "--all-scopes-completion",
+        "--completion-style=detailed",
+        "--pch-storage=memory",
+        "--enable-config",
+        "--fallback-style=GNU",
+        "--pretty",
+        "--query-driver=/usr/bin/gcc,/usr/bin/g++,/usr/bin/clang++"
+    ],
+    // 指定 CMake 工具链文件
+    "cmake.configureArgs": [
+        "-DCMAKE_TOOLCHAIN_FILE=${workspaceFolder}/cmake/toolchain.cmake"
+    ],
+    // 关键配置：让 CMake 在运行前先 source 厂家的环境脚本
+    // 确保这里的路径指向你虚拟机的实际环境脚本路径
+    "cmake.environmentSetupScript": "/home/tronlong/RK3576/environment",
+    
+    // 设置默认的构建目录 (可选)
+    "cmake.buildDirectory": "${workspaceFolder}/build"
+}
