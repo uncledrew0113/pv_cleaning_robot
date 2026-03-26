@@ -8,11 +8,6 @@
 
 namespace robot::driver {
 
-namespace {
-constexpr int kMaxRetry = 3;
-constexpr int kRetryDelayMs[kMaxRetry] = {0, 500, 1000};
-}  // namespace
-
 LibModbusMaster::LibModbusMaster(std::string port_name, hal::ModbusConfig config)
     : port_name_(std::move(port_name)), config_(config) {}
 

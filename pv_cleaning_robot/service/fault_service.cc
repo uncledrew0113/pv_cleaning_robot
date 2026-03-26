@@ -20,7 +20,7 @@ void FaultService::report(FaultEvent::Level level, uint32_t code,
             std::chrono::system_clock::now().time_since_epoch()).count());
 
     {
-        std::lock_guard<std::mutex> lk(mtx_);
+        std::lock_guard<hal::PiMutex> lk(mtx_);
         last_fault_ = evt;
         has_fault_  = true;
     }
@@ -30,14 +30,14 @@ void FaultService::report(FaultEvent::Level level, uint32_t code,
 
 bool FaultService::has_active_fault(FaultEvent::Level min_level) const
 {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<hal::PiMutex> lk(mtx_);
     if (!has_fault_) return false;
     return static_cast<int>(last_fault_.level) <= static_cast<int>(min_level);
 }
 
 const FaultService::FaultEvent& FaultService::last_fault() const
 {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<hal::PiMutex> lk(mtx_);
     return last_fault_;
 }
 

@@ -1,6 +1,8 @@
 #include "pv_cleaning_robot/middleware/thread_executor.h"
 #include <pthread.h>
 #include <sched.h>
+#include <cerrno>
+#include <cstring>
 #include <chrono>
 
 namespace robot::middleware {
@@ -30,6 +32,20 @@ bool ThreadExecutor::start()
         sched_param sp{};
         sp.sched_priority = config_.sched_priority;
         pthread_setschedparam(thread_.native_handle(), config_.sched_policy, &sp);
+    }
+
+    // 配置 CPU 亲和性（0 = 不绑定）
+    if (config_.cpu_affinity != 0) {
+        cpu_set_t cpuset;
+        CPU_ZERO(&cpuset);
+        for (int i = 0; i < 64; ++i) {
+            if (config_.cpu_affinity & (1 << i))
+                CPU_SET(i, &cpuset);
+        }
+        if (pthread_setaffinity_np(thread_.native_handle(), sizeof(cpuset), &cpuset) != 0) {
+            // 静默失败：亲和性不是硬性需求，调度策略更重要
+            (void)errno;
+        }
     }
 
     // 设置线程名（最多15字符）

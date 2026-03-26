@@ -2,6 +2,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -9,6 +10,7 @@
 #include "pv_cleaning_robot/device/device_error.h"
 #include "pv_cleaning_robot/device/walk_motor.h"
 #include "pv_cleaning_robot/hal/i_can_bus.h"
+#include "pv_cleaning_robot/hal/pi_mutex.h"
 #include "pv_cleaning_robot/protocol/walk_motor_can_codec.h"
 
 namespace robot::device {
@@ -25,10 +27,18 @@ namespace robot::device {
 ///   Wheel::LB （左下）  motor_id = id_base + 2
 ///   Wheel::RB （右下）  motor_id = id_base + 3
 ///
+/// 新增功能：
+///   - 通信超时下发：open() 时自动向电机写入 comm_timeout_ms 超时时间
+///   - 航向角 PID：set_heading_pid_params() 设置参数后，
+///     update(yaw_deg) 周期计算左右差速补偿，维持直线行驶
+///   - 边缘紧急覆盖：emergency_override() 立即发停车或反转帧，
+///     并抑制 update() 心跳重发，直到 clear_override() 解除
+///   - 温度轮询：update() 每 kTempQueryIntervalMs 发一次 0x107 查询帧
+///
 /// 使用步骤：
 ///   1. 构造时传入共享 CAN 总线实例和 id_base（默认 1）
 ///   2. open() → set_mode_all(SPEED) → set_speeds(...)
-///   3. 每 10 ms 调用 update() 维持心跳
+///   3. 每 10 ms 调用 update(yaw_deg) 维持心跳+PID
 class WalkMotorGroup {
    public:
     static constexpr int kWheelCount = 4;
@@ -54,6 +64,7 @@ class WalkMotorGroup {
     /// 各轮精简状态
     struct GroupStatus {
         std::array<WalkMotor::Status, kWheelCount> wheel{};
+        float temperature_deg{0.0f};  ///< 最近一次查询得到的电机温度（℃）
     };
 
     /// 完整诊断数据（含发帧统计）
@@ -61,25 +72,44 @@ class WalkMotorGroup {
         std::array<WalkMotor::Diagnostics, kWheelCount> wheel{};
         uint32_t ctrl_frame_count = 0;  ///< 已发出的组合控制帧总数
         uint32_t ctrl_err_count = 0;    ///< 控制帧发送失败次数
+        float temperature_deg{0.0f};    ///< 最近温度查询结果（℃）
+    };
+
+    /// 航向 PID 参数
+    struct HeadingPidParams {
+        float kp{0.5f};               ///< 比例系数
+        float ki{0.05f};              ///< 积分系数
+        float kd{0.1f};               ///< 微分系数
+        float max_output{30.0f};      ///< 最大差速输出（RPM），防止饱和
+        float integral_limit{20.0f};  ///< 积分限幅（RPM）
     };
 
     /// @param can      与4台电机共用的 CAN 总线实例
     /// @param id_base  组内首台电机的 motor_id（必须为 1 或 5）
-    explicit WalkMotorGroup(std::shared_ptr<hal::ICanBus> can, uint8_t id_base = 1u);
+    /// @param comm_timeout_ms  开机时写入电机的通信超时（ms），0=禁用；
+    ///                         建议设为 update() 周期的 3~5 倍，如
+    ///                         建议设为 update() 周期的 5~10 倍，如
+    ///                         update()=20ms 时设 200ms（10× 余量）
+    explicit WalkMotorGroup(std::shared_ptr<hal::ICanBus> can,
+                            uint8_t id_base = 1u,
+                            uint16_t comm_timeout_ms = 200u);
     ~WalkMotorGroup();
 
     // ── 生命周期 ──────────────────────────────────────────────────────────
-    /// 打开 CAN 总线，设置4路接收过滤器，启动单一后台接收线程
+    /// 打开 CAN 总线，设置4路接收过滤器，启动单一后台接收线程；
+    /// 若 comm_timeout_ms > 0，向每台电机写入通信超时
     DeviceError open();
     /// 停止接收线程，关闭 CAN 总线
     void close();
 
     // ── 模式控制 ──────────────────────────────────────────────────────────
-    /// 向全部4台电机发出tsinglemode帧（0x105 批量 1 帧）
+    /// 向全部4台电机发出单mode帧（0x105 批量 1 帧）
     DeviceError set_mode_all(protocol::WalkMotorMode mode);
     /// 每轮指定不同模式（0x105 批量 1 帧）
-    DeviceError set_modes(protocol::WalkMotorMode lt, protocol::WalkMotorMode rt,
-                          protocol::WalkMotorMode lb, protocol::WalkMotorMode rb);
+    DeviceError set_modes(protocol::WalkMotorMode lt,
+                          protocol::WalkMotorMode rt,
+                          protocol::WalkMotorMode lb,
+                          protocol::WalkMotorMode rb);
     /// 使能全部
     DeviceError enable_all();
     /// 失能全部
@@ -109,6 +139,23 @@ class WalkMotorGroup {
     DeviceError set_open_loops(int16_t lt, int16_t rt, int16_t lb, int16_t rb);
     /// 位置环给定：一帧同步设定4台电机（0 ~ 360°，絶对位置）
     DeviceError set_positions(float lt_deg, float rt_deg, float lb_deg, float rb_deg);
+
+    // ── 航向 PID 控制 ────────────────────────────────────────────────────
+    /// 设置航向 PID 参数（默认已有合理初值）
+    void set_heading_pid_params(const HeadingPidParams& p);
+    /// 使能/禁用航向 PID（set_speeds 设定目标速度后，update(yaw) 自动补偿差速）
+    void enable_heading_control(bool en);
+    /// 更新航向目标（首次调用时锁定当前航向为目标）
+    void set_target_heading(float yaw_deg);
+
+    // ── 边缘紧急覆盖（优先级最高，立即生效）────────────────────────────
+    /// 立即发送停止或反转帧，并暂停心跳重发直到 clear_override()
+    /// @param reverse_rpm  反转速度（>0 表示反转，0 表示原地停止）
+    DeviceError emergency_override(float reverse_rpm = 0.0f);
+    /// 解除紧急覆盖，恢复心跳重发和 PID
+    void clear_override();
+    bool is_override_active() const;
+
     // ── 状态读取（线程安全，无 I/O）────────────────────────────────────
     WalkMotor::Status get_wheel_status(Wheel w) const;
     WalkMotor::Diagnostics get_wheel_diagnostics(Wheel w) const;
@@ -116,33 +163,56 @@ class WalkMotorGroup {
     GroupDiagnostics get_group_diagnostics() const;
 
     // ── 周期心跳（建议由控制线程调用，10 ms）─────────────────────────
-    /// 重发当前设定值；轮询 online 超时状态
-    void update();
+    /// 重发当前设定值（含 PID 差速补偿）；轮询 online 超时状态；
+    /// 定期发温度查询帧；override 激活时跳过心跳重发
+    /// @param yaw_deg  当前航向角（来自 IMU），仅在 PID 使能时有效
+    void update(float yaw_deg = 0.0f);
 
    private:
     std::shared_ptr<hal::ICanBus> can_;
-    uint8_t id_base_;   ///< 1 或 5
-    uint32_t ctrl_id_;  ///< 0x32 或 0x33
+    uint8_t id_base_;           ///< 1 或 5
+    uint32_t ctrl_id_;          ///< 0x32 或 0x33
+    uint16_t comm_timeout_ms_;  ///< 开机写入电机的通信超时
     std::array<protocol::WalkMotorCanCodec, kWheelCount> codecs_;
 
     std::thread recv_thread_;
     std::atomic<bool> running_{false};
 
-    mutable std::mutex mtx_;
+    mutable hal::PiMutex mtx_;
     std::array<WalkMotor::Diagnostics, kWheelCount> diag_{};
     std::array<std::chrono::steady_clock::time_point, kWheelCount> last_fb_time_{};
 
     hal::CanFrame last_ctrl_frame_{};
     bool has_ctrl_frame_{false};
+    float base_lt_rpm_{0.0f};  ///< PID 前基础左侧速度
+    float base_rt_rpm_{0.0f};  ///< PID 前基础右侧速度
 
     // 带统计的发帧计数
     uint32_t ctrl_frame_count_{0};
     uint32_t ctrl_err_count_{0};
 
+    // ── 航向 PID 状态 ─────────────────────────────────────────────────
+    HeadingPidParams pid_params_;
+    bool heading_ctrl_en_{false};
+    float target_heading_{0.0f};
+    bool heading_initialized_{false};
+    float pid_integral_{0.0f};
+    float pid_prev_err_{0.0f};
+
+    // ── 边缘紧急覆盖 ──────────────────────────────────────────────────
+    std::atomic<bool> override_active_{false};
+
+    // ── 温度定期查询 ──────────────────────────────────────────────────
+    static constexpr int kTempQueryIntervalMs = 1000;  ///< 温度查询周期 1s
+    std::chrono::steady_clock::time_point last_temp_query_time_{};
+    float temperature_deg_{0.0f};  ///< 最近一次查询得到的温度（℃）
+
     static constexpr auto kOnlineTimeout = std::chrono::milliseconds(500);
 
     DeviceError send_ctrl(const hal::CanFrame& frame);
     void recv_loop();
+    /// 根据当前 yaw_deg 计算 PID 差速，返回左右修正量（左+=correction, 右-=correction）
+    float calc_pid_correction(float yaw_deg, float dt_s);
 };
 
 }  // namespace robot::device

@@ -1,18 +1,18 @@
 #pragma once
 #include <memory>
-#include <mutex>
-#include <shared_mutex>
 
 #include "pv_cleaning_robot/device/gps_device.h"
 #include "pv_cleaning_robot/device/imu_device.h"
-#include "pv_cleaning_robot/device/walk_motor.h"
+#include "pv_cleaning_robot/device/walk_motor_group.h"
+#include "pv_cleaning_robot/hal/pi_mutex.h"
 #include "pv_cleaning_robot/middleware/thread_executor.h"
 
 namespace robot::service {
 
 /// @brief 导航服务——里程计 + IMU 融合，坡度估计
 ///
-/// 基于编码器里程计 + IMU 姿态角进行航位推算（Dead Reckoning）。
+/// 基于编码器里程计（取 WalkMotorGroup 4轮平均转速）
+/// + IMU 姿态角进行航位推算（Dead Reckoning）。
 /// GPS 数据作为定期校正（非强依赖）。
 class NavService : public middleware::IRunnable {
    public:
@@ -24,9 +24,9 @@ class NavService : public middleware::IRunnable {
         bool valid{false};
     };
 
-    NavService(std::shared_ptr<device::WalkMotor> walk,
-               std::shared_ptr<device::ImuDevice> imu,
-               std::shared_ptr<device::GpsDevice> gps,
+    NavService(std::shared_ptr<device::WalkMotorGroup> walk,
+               std::shared_ptr<device::ImuDevice>      imu,
+               std::shared_ptr<device::GpsDevice>      gps,
                float wheel_circumference_m = 0.3f);
 
     /// 重置里程计（返回基准点后调用）
@@ -41,12 +41,12 @@ class NavService : public middleware::IRunnable {
     void update() override;  ///< 由 ThreadExecutor 10ms 调用
 
    private:
-    std::shared_ptr<device::WalkMotor> walk_;
-    std::shared_ptr<device::ImuDevice> imu_;
-    std::shared_ptr<device::GpsDevice> gps_;
+    std::shared_ptr<device::WalkMotorGroup> walk_;
+    std::shared_ptr<device::ImuDevice>      imu_;
+    std::shared_ptr<device::GpsDevice>      gps_;
     float wheel_circ_m_;
 
-    mutable std::shared_mutex mtx_;
+    mutable robot::hal::PiMutex mtx_;
     Pose pose_;
 };
 

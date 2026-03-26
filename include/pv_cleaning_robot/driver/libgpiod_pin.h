@@ -2,7 +2,7 @@
  * @Author: UncleDrew
  * @Date: 2026-03-14 13:19:23
  * @LastEditors: UncleDrew
- * @LastEditTime: 2026-03-24 10:51:14
+ * @LastEditTime: 2026-03-24 11:37:17
  * @FilePath: /pv_cleaning_robot/include/pv_cleaning_robot/driver/libgpiod_pin.h
  * @Description:
  *
@@ -12,6 +12,7 @@
 #include <atomic>
 #include <chrono>
 #include <functional>
+#include <shared_mutex>
 #include <string>
 #include <thread>
 
@@ -47,6 +48,7 @@ class LibGpiodPin final : public hal::IGpioPin {
    private:
     void monitor_loop();
     bool request_line_as_input();  // 内部复用：申请普通输入模式（用于初始化和回滚）
+    void stop_monitoring_locked();  // 内部无锁停止方法，防止递归死锁
 
     std::string chip_name_;
     unsigned int line_num_;
@@ -61,6 +63,12 @@ class LibGpiodPin final : public hal::IGpioPin {
 
     std::thread monitor_thread_;
     std::atomic<bool> running_{false};
+
+    // ── 核心并发控制器 ──
+    // 读写锁：保证 close() 与 read/write 并发时的绝对安全 (防 TOCTOU)
+    mutable std::shared_mutex io_mutex_;
+    // 用于瞬间打断 poll() 的事件通知 FD
+    int cancel_fd_{-1};
 
     // RT 优先级继承互斥量：防止主线程（低优先级）持锁时，
     // GPIO 监控线程（高 RT 优先级）被阻塞而引发优先级反转。

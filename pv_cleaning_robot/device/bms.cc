@@ -9,18 +9,20 @@
 namespace robot::device {
 
 BMS::BMS(std::shared_ptr<hal::ISerialPort> serial, float full_soc, float low_soc)
-    : protocol_type_(ProtocolType::kUart),
-      serial_(std::move(serial)),
-      full_soc_(full_soc),
-      low_soc_(low_soc) {}
+    : protocol_type_(ProtocolType::kUart)
+    , serial_(std::move(serial))
+    , full_soc_(full_soc)
+    , low_soc_(low_soc) {}
 
-BMS::BMS(std::shared_ptr<hal::IModbusMaster> modbus, uint8_t slave_id, float full_soc,
+BMS::BMS(std::shared_ptr<hal::IModbusMaster> modbus,
+         uint8_t slave_id,
+         float full_soc,
          float low_soc)
-    : protocol_type_(ProtocolType::kModbus),
-      modbus_(std::move(modbus)),
-      slave_id_(slave_id),
-      full_soc_(full_soc),
-      low_soc_(low_soc) {}
+    : protocol_type_(ProtocolType::kModbus)
+    , modbus_(std::move(modbus))
+    , slave_id_(slave_id)
+    , full_soc_(full_soc)
+    , low_soc_(low_soc) {}
 
 BMS::~BMS() {
     close();
@@ -41,7 +43,7 @@ DeviceError BMS::open() {
             if (transact(req.data(), req.size(), 500) and not parser_.is_error() and
                 parser_.get_cmd() == 0x05) {
                 auto ver = protocol::BmsProtocol::decode_version(parser_.get_data(),
-                                                                  parser_.get_data_len());
+                                                                 parser_.get_data_len());
                 if (ver) {
                     std::lock_guard<std::mutex> lk(mtx_);
                     diag_.hw_version = *ver;
@@ -79,6 +81,7 @@ void BMS::close() {
 // == 核心事务 ==================================================================
 
 bool BMS::transact(const uint8_t* req, size_t req_len, int timeout_ms) {
+    std::lock_guard<std::mutex> lock(uart_tx_mtx_);
     using namespace std::chrono;
 
     // 判断 BMS 是否可能已休眠：从未通讯过、或距上次成功超过 kSleepTimeoutSec
@@ -248,8 +251,8 @@ bool BMS::read_cell_voltages_uart() {
 void BMS::update() {
     ++update_cycle_;
 
-    bool ok = (protocol_type_ == ProtocolType::kUart) ? read_basic_info_uart()
-                                                       : read_basic_info_modbus();
+    bool ok =
+        (protocol_type_ == ProtocolType::kUart) ? read_basic_info_uart() : read_basic_info_modbus();
     if (not ok) {
         std::lock_guard<std::mutex> lk(mtx_);
         ++diag_.error_count;
@@ -336,19 +339,24 @@ int BMS::modbus_read_regs(int addr, int count, uint16_t* out) {
         if (n == count) {
             last_comm_time_ = Clock::now();
             if (may_be_sleeping && attempt > 0) {
-                spdlog::info("[BMS2] 唤醒成功 attempt={}/{} addr={:#04x}",
-                             attempt + 1, max_attempts, addr);
+                spdlog::info(
+                    "[BMS2] 唤醒成功 attempt={}/{} addr={:#04x}", attempt + 1, max_attempts, addr);
             }
             return n;
         }
 
         if (may_be_sleeping && attempt < max_attempts - 1) {
             spdlog::info("[BMS2] 唤醒查询 {}/{} 超时 (addr={:#04x})，等待 {} ms 后重试",
-                         attempt + 1, max_attempts, addr, kWakeupDelayMs);
+                         attempt + 1,
+                         max_attempts,
+                         addr,
+                         kWakeupDelayMs);
             std::this_thread::sleep_for(milliseconds(kWakeupDelayMs));
         } else {
             spdlog::debug("[BMS2] read_registers 失败 attempt={}/{} addr={:#04x}",
-                          attempt + 1, max_attempts, addr);
+                          attempt + 1,
+                          max_attempts,
+                          addr);
         }
     }
     return -1;
@@ -357,15 +365,14 @@ int BMS::modbus_read_regs(int addr, int count, uint16_t* out) {
 bool BMS::read_basic_info_modbus() {
     // 1. 读取主状态块（0x38，46 个寄存器）
     uint16_t status_regs[protocol::kBms2StatusBlockLen];
-    int n = modbus_read_regs(protocol::kBms2RegStatusBase,
-                             protocol::kBms2StatusBlockLen, status_regs);
+    int n =
+        modbus_read_regs(protocol::kBms2RegStatusBase, protocol::kBms2StatusBlockLen, status_regs);
     if (n != static_cast<int>(protocol::kBms2StatusBlockLen)) {
         spdlog::warn("[BMS2] 主状态块读取失败 (n={})", n);
         return false;
     }
 
-    auto info =
-        protocol::Bms2Protocol::decode_basic_info(status_regs, static_cast<uint16_t>(n));
+    auto info = protocol::Bms2Protocol::decode_basic_info(status_regs, static_cast<uint16_t>(n));
     if (not info)
         return false;
 
@@ -391,8 +398,8 @@ bool BMS::read_basic_info_modbus() {
     std::optional<protocol::Bms2AlarmFlags> alarm_opt;
     {
         uint16_t alarm_regs[protocol::kBms2AlarmBlockLen];
-        int an = modbus_read_regs(protocol::kBms2RegAlarmBase,
-                                  protocol::kBms2AlarmBlockLen, alarm_regs);
+        int an =
+            modbus_read_regs(protocol::kBms2RegAlarmBase, protocol::kBms2AlarmBlockLen, alarm_regs);
         if (an == static_cast<int>(protocol::kBms2AlarmBlockLen)) {
             alarm_opt =
                 protocol::Bms2Protocol::decode_alarm_flags(alarm_regs, static_cast<uint16_t>(an));
@@ -435,17 +442,28 @@ bool BMS::read_basic_info_modbus() {
     if (alarm_opt) {
         diag_.alarm_detail2 = *alarm_opt;
         uint16_t flags = 0u;
-        if (alarm_opt->cell_overvolt_level > 0)  flags |= PROT_CELL_OVERVOLT;
-        if (alarm_opt->cell_undervolt_level > 0) flags |= PROT_CELL_UNDERVOLT;
-        if (alarm_opt->bat_overvolt_level > 0)   flags |= PROT_BAT_OVERVOLT;
-        if (alarm_opt->bat_undervolt_level > 0)  flags |= PROT_BAT_UNDERVOLT;
-        if (alarm_opt->chg_overtemp_level > 0)   flags |= PROT_CHG_OVERTEMP;
-        if (alarm_opt->chg_lowtemp_level > 0)    flags |= PROT_CHG_LOWTEMP;
-        if (alarm_opt->dsg_overtemp_level > 0)   flags |= PROT_DSG_OVERTEMP;
-        if (alarm_opt->dsg_lowtemp_level > 0)    flags |= PROT_DSG_LOWTEMP;
-        if (alarm_opt->chg_overcurr_level > 0)   flags |= PROT_CHG_OVERCURR;
-        if (alarm_opt->dsg_overcurr_level > 0)   flags |= PROT_DSG_OVERCURR;
-        if (alarm_opt->short_circuit)            flags |= PROT_SHORT_CIRCUIT;
+        if (alarm_opt->cell_overvolt_level > 0)
+            flags |= PROT_CELL_OVERVOLT;
+        if (alarm_opt->cell_undervolt_level > 0)
+            flags |= PROT_CELL_UNDERVOLT;
+        if (alarm_opt->bat_overvolt_level > 0)
+            flags |= PROT_BAT_OVERVOLT;
+        if (alarm_opt->bat_undervolt_level > 0)
+            flags |= PROT_BAT_UNDERVOLT;
+        if (alarm_opt->chg_overtemp_level > 0)
+            flags |= PROT_CHG_OVERTEMP;
+        if (alarm_opt->chg_lowtemp_level > 0)
+            flags |= PROT_CHG_LOWTEMP;
+        if (alarm_opt->dsg_overtemp_level > 0)
+            flags |= PROT_DSG_OVERTEMP;
+        if (alarm_opt->dsg_lowtemp_level > 0)
+            flags |= PROT_DSG_LOWTEMP;
+        if (alarm_opt->chg_overcurr_level > 0)
+            flags |= PROT_CHG_OVERCURR;
+        if (alarm_opt->dsg_overcurr_level > 0)
+            flags |= PROT_DSG_OVERCURR;
+        if (alarm_opt->short_circuit)
+            flags |= PROT_SHORT_CIRCUIT;
         diag_.alarm_flags = flags;
     }
 
@@ -485,8 +503,7 @@ bool BMS::read_cell_voltages_modbus() {
         return false;
     }
 
-    auto cells =
-        protocol::Bms2Protocol::decode_cell_voltages(cell_regs, static_cast<uint16_t>(n));
+    auto cells = protocol::Bms2Protocol::decode_cell_voltages(cell_regs, static_cast<uint16_t>(n));
     if (not cells)
         return false;
 

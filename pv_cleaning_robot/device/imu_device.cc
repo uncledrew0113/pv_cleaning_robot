@@ -1,6 +1,8 @@
 #include <algorithm>
 #include <chrono>
 #include <ctime>
+#include <pthread.h>
+#include <sched.h>
 #include <thread>
 
 #include "pv_cleaning_robot/device/imu_device.h"
@@ -18,6 +20,18 @@ bool ImuDevice::open() {
         return false;
     running_.store(true);
     read_thread_ = std::thread(&ImuDevice::read_loop, this);
+    // IMU 读取线程：SCHED_FIFO 68，绑定到 CPU 6（导航专用大核）
+    // walk_ctrl 通过 IMU 缓存读取偏航角，需确保读线程不被饿死
+    {
+        sched_param sp{};
+        sp.sched_priority = 68;
+        pthread_setschedparam(read_thread_.native_handle(), SCHED_FIFO, &sp);
+        cpu_set_t cpuset;
+        CPU_ZERO(&cpuset);
+        CPU_SET(6, &cpuset);
+        pthread_setaffinity_np(read_thread_.native_handle(), sizeof(cpuset), &cpuset);
+        pthread_setname_np(read_thread_.native_handle(), "imu_read");
+    }
     return true;
 }
 
@@ -29,24 +43,27 @@ void ImuDevice::close() {
 }
 
 DeviceError ImuDevice::set_output_rate(int hz) {
-    // WIT Motion 频率码映射（RRATE 寄存器，0x03）
-    uint8_t rate_code = 0x06;  // 默认 50 Hz
+    // WIT Motion RRATE 寄存器（地址 0x03）频率码，来自官方 REG.h / imu.md
+    // 出厂默认值：0x06 = 10 Hz
+    // 0x01=0.2Hz  0x02=0.5Hz  0x03=1Hz   0x04=2Hz   0x05=5Hz
+    // 0x06=10Hz   0x07=20Hz   0x08=50Hz  0x09=100Hz 0x0B=200Hz
+    uint8_t rate_code = 0x08;  // 默认 50 Hz
     if (hz <= 1)
-        rate_code = 0x01;
+        rate_code = 0x03;  // 1 Hz
     else if (hz <= 2)
-        rate_code = 0x02;
+        rate_code = 0x04;  // 2 Hz
     else if (hz <= 5)
-        rate_code = 0x03;
+        rate_code = 0x05;  // 5 Hz
     else if (hz <= 10)
-        rate_code = 0x04;
+        rate_code = 0x06;  // 10 Hz
     else if (hz <= 20)
-        rate_code = 0x05;
+        rate_code = 0x07;  // 20 Hz
     else if (hz <= 50)
-        rate_code = 0x06;
+        rate_code = 0x08;  // 50 Hz
     else if (hz <= 100)
-        rate_code = 0x07;
-    else if (hz <= 200)
-        rate_code = 0x08;
+        rate_code = 0x09;  // 100 Hz
+    else
+        rate_code = 0x0B;  // 200 Hz
 
     auto cmd = protocol::ImuProtocol::encode_set_rate(rate_code);
     return send_write_cmd(cmd, 150);
@@ -68,12 +85,12 @@ DeviceError ImuDevice::reset() {
 }
 
 ImuDevice::ImuData ImuDevice::get_latest() const {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<hal::PiMutex> lk(mtx_);
     return static_cast<ImuData>(diag_);
 }
 
 ImuDevice::Diagnostics ImuDevice::get_diagnostics() const {
-    std::lock_guard<std::mutex> lk(mtx_);
+    std::lock_guard<hal::PiMutex> lk(mtx_);
     return diag_;
 }
 
@@ -83,29 +100,36 @@ void ImuDevice::read_loop() {
     uint32_t frames_since_last = 0;
 
     while (running_.load()) {
-        int n = serial_->read(byte_buf, sizeof(byte_buf), 20);
-        if (n <= 0)
+        if (is_configuring_.load(std::memory_order_acquire)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
             continue;
-
-        for (int i = 0; i < n; ++i) {
-            parser_.push_byte(byte_buf[i]);
-            if (parser_.frame_complete()) {
-                auto& frame = parser_.take_frame();
-                if (frame.valid) {
-                    std::lock_guard<std::mutex> lk(mtx_);
-                    // 拷贝协议层数据到设备层结构
-                    std::copy(
-                        std::begin(frame.accel), std::end(frame.accel), std::begin(diag_.accel));
-                    std::copy(std::begin(frame.gyro), std::end(frame.gyro), std::begin(diag_.gyro));
-                    std::copy(std::begin(frame.mag), std::end(frame.mag), std::begin(diag_.mag));
-                    std::copy(std::begin(frame.quat), std::end(frame.quat), std::begin(diag_.quat));
-                    diag_.roll_deg = frame.roll_deg;
-                    diag_.pitch_deg = frame.pitch_deg;
-                    diag_.yaw_deg = frame.yaw_deg;
-                    diag_.timestamp_us = frame.timestamp_us;
-                    diag_.valid = true;
-                    ++diag_.frame_count;
-                    ++frames_since_last;
+        }
+        int n = serial_->read(byte_buf, sizeof(byte_buf), 20);
+        if (n > 0) {
+            for (int i = 0; i < n; ++i) {
+                parser_.push_byte(byte_buf[i]);
+                if (parser_.frame_complete()) {
+                    auto& frame = parser_.take_frame();
+                    if (frame.valid) {
+                        std::lock_guard<hal::PiMutex> lk(mtx_);
+                        // 拷贝协议层数据到设备层结构
+                        std::copy(std::begin(frame.accel),
+                                  std::end(frame.accel),
+                                  std::begin(diag_.accel));
+                        std::copy(
+                            std::begin(frame.gyro), std::end(frame.gyro), std::begin(diag_.gyro));
+                        std::copy(
+                            std::begin(frame.mag), std::end(frame.mag), std::begin(diag_.mag));
+                        std::copy(
+                            std::begin(frame.quat), std::end(frame.quat), std::begin(diag_.quat));
+                        diag_.roll_deg = frame.roll_deg;
+                        diag_.pitch_deg = frame.pitch_deg;
+                        diag_.yaw_deg = frame.yaw_deg;
+                        diag_.timestamp_us = frame.timestamp_us;
+                        diag_.valid = true;
+                        ++diag_.frame_count;
+                        ++frames_since_last;
+                    }
                 }
             }
         }
@@ -114,8 +138,11 @@ void ImuDevice::read_loop() {
         auto now = std::chrono::steady_clock::now();
         double elapsed = std::chrono::duration<double>(now - t_last_stat).count();
         if (elapsed >= 1.0) {
-            std::lock_guard<std::mutex> lk(mtx_);
+            std::lock_guard<hal::PiMutex> lk(mtx_);
             diag_.frame_rate_hz = static_cast<float>(frames_since_last / elapsed);
+            if (frames_since_last == 0) {
+                diag_.valid = false;
+            }
             frames_since_last = 0;
             t_last_stat = now;
         }
@@ -125,12 +152,26 @@ void ImuDevice::read_loop() {
 DeviceError ImuDevice::send_command(const protocol::ImuProtocol::Cmd& cmd, int wait_ms) {
     if (!serial_->is_open())
         return DeviceError::NOT_OPEN;
+    // 1. 挂起后台 read_loop 线程
+    is_configuring_.store(true, std::memory_order_release);
+
+    // 2. 等待后台线程进入 sleep，并清空残留数据
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    serial_->flush_input();
+
+    // 3. 发送命令（盲发，开环控制）
     int written = serial_->write(cmd.data(), cmd.size());
+
+    // 4. 等待传感器内部处理完成（配置生效需要时间）
+    std::this_thread::sleep_for(std::chrono::milliseconds(wait_ms));
+
+    // 5. 恢复后台 read_loop 线程
+    is_configuring_.store(false, std::memory_order_release);
+
     if (written < 0 || static_cast<size_t>(written) < cmd.size()) {
         return DeviceError::COMM_TIMEOUT;
     }
-    // 等待命令生效
-    std::this_thread::sleep_for(std::chrono::milliseconds(wait_ms));
+
     return DeviceError::OK;
 }
 

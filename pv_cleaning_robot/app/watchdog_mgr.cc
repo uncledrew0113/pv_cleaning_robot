@@ -1,5 +1,7 @@
 #include "pv_cleaning_robot/app/watchdog_mgr.h"
 #include <fcntl.h>
+#include <pthread.h>
+#include <sched.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
 #include <linux/watchdog.h>
@@ -30,6 +32,19 @@ bool WatchdogMgr::start()
 
     running_.store(true);
     monitor_thread_ = std::thread(&WatchdogMgr::monitor_loop, this);
+
+    // 看门狗监控线程：SCHED_FIFO 50，绑定到 CPU 7（大核，用于管理任务）
+    // 需要能抢占所有 SCHED_OTHER 线程以保证超时检测及时
+    {
+        sched_param sp{};
+        sp.sched_priority = 50;
+        pthread_setschedparam(monitor_thread_.native_handle(), SCHED_FIFO, &sp);
+        cpu_set_t cpuset;
+        CPU_ZERO(&cpuset);
+        CPU_SET(7, &cpuset);
+        pthread_setaffinity_np(monitor_thread_.native_handle(), sizeof(cpuset), &cpuset);
+        pthread_setname_np(monitor_thread_.native_handle(), "watchdog_mon");
+    }
     return true;
 }
 
@@ -48,7 +63,7 @@ void WatchdogMgr::stop()
 
 int WatchdogMgr::register_thread(const std::string& name, int timeout_ms)
 {
-    std::lock_guard<std::mutex> lk(tickets_mtx_);
+    std::lock_guard<hal::PiMutex> lk(tickets_mtx_);
     int id = next_ticket_id_++;
     tickets_[id] = {name, timeout_ms, std::chrono::steady_clock::now(), false};
     return id;
@@ -56,7 +71,7 @@ int WatchdogMgr::register_thread(const std::string& name, int timeout_ms)
 
 void WatchdogMgr::heartbeat(int ticket_id)
 {
-    std::lock_guard<std::mutex> lk(tickets_mtx_);
+    std::lock_guard<hal::PiMutex> lk(tickets_mtx_);
     auto it = tickets_.find(ticket_id);
     if (it != tickets_.end()) {
         it->second.last_beat = std::chrono::steady_clock::now();
@@ -77,7 +92,7 @@ void WatchdogMgr::monitor_loop()
 
         // 检查所有票据
         {
-            std::lock_guard<std::mutex> lk(tickets_mtx_);
+            std::lock_guard<hal::PiMutex> lk(tickets_mtx_);
             auto now = std::chrono::steady_clock::now();
             for (auto& [id, ticket] : tickets_) {
                 if (ticket.expired) continue;

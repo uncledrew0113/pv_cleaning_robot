@@ -39,6 +39,13 @@ add_executable(unit_tests
   ${PROJECT_SOURCE_DIR}/pv_cleaning_robot/driver/libserialport_port.cc
   ${PROJECT_SOURCE_DIR}/pv_cleaning_robot/driver/libgpiod_pin.cc
   ${PROJECT_SOURCE_DIR}/pv_cleaning_robot/driver/linux_can_socket.cc
+
+  # 驱动层单元测试（纯软件路径 + 线程安全，无需真实硬件即可运行）
+  driver_pi_mutex_test.cc
+  driver_libgpiod_pin_test.cc
+  driver_linux_can_socket_test.cc
+  driver_libserialport_test.cc
+  driver_libmodbus_test.cc
 )
 
 target_include_directories(unit_tests PRIVATE

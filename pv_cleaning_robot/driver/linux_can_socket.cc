@@ -122,7 +122,7 @@ bool LinuxCanSocket::send(const hal::CanFrame& frame) {
         return false;
     }
 
-    if (bus_off_.load(std::memory_order_relaxed)) {
+    if (bus_off_.load()) {
         // RT 热路径：不打印日志（spdlog 内存分配可导致延迟峰値）。
         // Bus-Off 状态变化时已在 recv() 中记录了一次。
         return false;

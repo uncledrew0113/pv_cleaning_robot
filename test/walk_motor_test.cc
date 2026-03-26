@@ -30,6 +30,7 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <spdlog/spdlog.h>
 #include <thread>
 
 #include "mock/mock_can_bus.h"
@@ -37,7 +38,6 @@
 #include "pv_cleaning_robot/device/walk_motor_group.h"
 #include "pv_cleaning_robot/driver/linux_can_socket.h"
 #include "pv_cleaning_robot/protocol/walk_motor_can_codec.h"
-#include <spdlog/spdlog.h>
 
 using namespace robot;
 
@@ -995,8 +995,8 @@ TEST_CASE("设备层WalkMotorGroup - get_group_status() 返回4轮初始状态",
 //    ./unit_tests "~[integration]"
 // ═══════════════════════════════════════════════════════════════════════════
 
-static constexpr char    kCanIface[] = "can0";
-static constexpr uint8_t kMotorId   = 1u;
+static constexpr char kCanIface[] = "can0";
+static constexpr uint8_t kMotorId = 1u;
 
 // ── 集成测试 1：CAN 总线打开与电机在线检测 ──────────────────────────────────
 TEST_CASE("集成测试 WalkMotor - CAN总线打开与电机在线检测", "[integration][walk_motor]") {
@@ -1022,10 +1022,14 @@ TEST_CASE("集成测试 WalkMotor - CAN总线打开与电机在线检测", "[int
         }
 
         auto d = motor.get_diagnostics();
-        spdlog::info("[WalkMotor 集成] online={}  frames={}  "
-                     "speed={:.2f}rpm  torque={:.3f}A  pos={:.2f}deg",
-                     d.online, d.feedback_frame_count,
-                     d.speed_rpm, d.torque_a, d.position_deg);
+        spdlog::info(
+            "[WalkMotor 集成] online={}  frames={}  "
+            "speed={:.2f}rpm  torque={:.3f}A  pos={:.2f}deg",
+            d.online,
+            d.feedback_frame_count,
+            d.speed_rpm,
+            d.torque_a,
+            d.position_deg);
 
         REQUIRE(online);
         REQUIRE(d.feedback_frame_count > 0u);
@@ -1046,18 +1050,22 @@ TEST_CASE("集成测试 WalkMotor - 状态数据合理性验证", "[integration]
         std::this_thread::sleep_for(10ms);
 
     auto d = motor.get_diagnostics();
-    spdlog::info("[WalkMotor 集成] speed={:.2f}rpm  torque={:.3f}A  pos={:.2f}deg  "
-                 "fault={}  mode={}  frames={}",
-                 d.speed_rpm, d.torque_a, d.position_deg,
-                 static_cast<int>(d.fault), static_cast<int>(d.mode),
-                 d.feedback_frame_count);
+    spdlog::info(
+        "[WalkMotor 集成] speed={:.2f}rpm  torque={:.3f}A  pos={:.2f}deg  "
+        "fault={}  mode={}  frames={}",
+        d.speed_rpm,
+        d.torque_a,
+        d.position_deg,
+        static_cast<int>(d.fault),
+        static_cast<int>(d.mode),
+        d.feedback_frame_count);
 
     CHECK(d.feedback_frame_count >= 5u);
-    CHECK(d.speed_rpm   >= -210.0f);
-    CHECK(d.speed_rpm   <=  210.0f);
-    CHECK(d.torque_a    >=  -33.0f);
-    CHECK(d.torque_a    <=   33.0f);
-    CHECK(d.position_deg >=   0.0f);
+    CHECK(d.speed_rpm >= -210.0f);
+    CHECK(d.speed_rpm <= 210.0f);
+    CHECK(d.torque_a >= -33.0f);
+    CHECK(d.torque_a <= 33.0f);
+    CHECK(d.position_deg >= 0.0f);
     CHECK(d.position_deg <= 360.0f);
     CHECK(d.can_err_count == 0u);
 
@@ -1104,7 +1112,7 @@ TEST_CASE("集成测试 WalkMotor - 低速(30RPM)速度环运行验证", "[integ
 
     motor.enable();
     motor.set_mode(protocol::WalkMotorMode::SPEED);
-    std::this_thread::sleep_for(50ms);
+    std::this_thread::sleep_for(150ms);
 
     SECTION("set_speed(30.0) 返回 OK") {
         auto err = motor.set_speed(30.0f);
@@ -1117,9 +1125,13 @@ TEST_CASE("集成测试 WalkMotor - 低速(30RPM)速度环运行验证", "[integ
         std::this_thread::sleep_for(500ms);
 
         auto d = motor.get_diagnostics();
-        spdlog::info("[WalkMotor 集成] target={:.1f}rpm  actual={:.2f}rpm  "
-                     "torque={:.3f}A  can_err={}",
-                     d.target_value, d.speed_rpm, d.torque_a, d.can_err_count);
+        spdlog::info(
+            "[WalkMotor 集成] target={:.1f}rpm  actual={:.2f}rpm  "
+            "torque={:.3f}A  can_err={}",
+            d.target_value,
+            d.speed_rpm,
+            d.torque_a,
+            d.can_err_count);
 
         CHECK(d.can_err_count == 0u);
         // 低速段：允许 ±80 RPM 的加速偏差
@@ -1151,10 +1163,58 @@ TEST_CASE("集成测试 WalkMotor - update() 心跳重发无通信错误", "[int
 
     auto d = motor.get_diagnostics();
     spdlog::info("[WalkMotor 集成] update ×5 完成  can_err={}  frames={}",
-                 d.can_err_count, d.feedback_frame_count);
+                 d.can_err_count,
+                 d.feedback_frame_count);
 
     REQUIRE(d.can_err_count == 0u);
 
     motor.disable();
+    motor.close();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Integration test: 查询模式+读超时1000ms+速度环+心跳维持
+// 步骤：
+//  1) 设置反馈方式为查询（period_ms=0），通信超时1000ms
+//  2) 切换速度环，设定目标速度
+//  3) 每500ms调用 update() 并主动查询状态，持续2~3秒
+//  4) 检查期间 online 始终为 true，未掉线
+// 说明：需真实电机，TEST_CAN_IFACE 指定接口，motor_id=1
+TEST_CASE("integration - WalkMotor query mode, 1000ms timeout, keepalive by polling",
+          "[integration][walk_motor]") {
+    using namespace std::chrono_literals;
+
+    const char* iface_env = std::getenv("TEST_CAN_IFACE");
+    std::string iface = iface_env ? iface_env : "can0";
+
+    auto bus = std::make_shared<robot::driver::LinuxCanSocket>(iface);
+    device::WalkMotor motor(bus, 1u);
+
+    REQUIRE(bus->open() == true);
+    REQUIRE(motor.open() == device::DeviceError::OK);
+
+    // 1) 设置为查询模式，通信超时1000ms
+    REQUIRE(motor.set_feedback_mode(0u) == device::DeviceError::OK);
+    std::this_thread::sleep_for(150ms);
+    REQUIRE(motor.set_comm_timeout(1000u) == device::DeviceError::OK);
+    std::this_thread::sleep_for(150ms);
+    // 2) 切换速度环，设定目标速度
+    REQUIRE(motor.set_mode(protocol::WalkMotorMode::SPEED) == device::DeviceError::OK);
+    std::this_thread::sleep_for(150ms);
+    REQUIRE(motor.set_speed(50.0f) == device::DeviceError::OK);
+    std::this_thread::sleep_for(150ms);
+    // 3) 每500ms调用 update() 并主动查询状态，持续3秒
+    bool always_online = true;
+    for (int i = 0; i < 6; ++i) {
+        motor.update();
+        std::this_thread::sleep_for(150ms);  // 先等一会，避免刚切换模式时误判
+        // 主动查询一次（模拟主机问答）
+        REQUIRE(motor.read_comm_timeout() == device::DeviceError::OK);
+        std::this_thread::sleep_for(450ms);
+        always_online = always_online && motor.get_diagnostics().online;
+    }
+
+    REQUIRE(always_online);
+
     motor.close();
 }

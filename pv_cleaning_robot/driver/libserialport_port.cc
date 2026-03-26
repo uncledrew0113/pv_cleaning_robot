@@ -29,7 +29,7 @@ bool LibSerialPort::open() {
     std::unique_lock<std::shared_mutex> lk(port_rwlock_);
 
     // 防止重入：若已打开则先安全关闭（调用无锁内部函数避免死锁）
-    if (connected_.load(std::memory_order_relaxed)) {
+    if (connected_.load()) {
         close_locked();
     }
 

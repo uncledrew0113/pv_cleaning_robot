@@ -328,3 +328,144 @@ TEST_CASE("LibGpiodPin 硬件 - 析构时活跃监控线程自动被 join", "[dr
         // 超出作用域：析构自动 join
     }());
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+//  线程安全补充测试（纯软件，无需硬件）
+// ═══════════════════════════════════════════════════════════════════════
+
+TEST_CASE("LibGpiodPin - 多线程并发 is_open 读取无数据竞争", "[driver][gpio]") {
+    driver::LibGpiodPin pin("nonexistent_chip", 0);
+    constexpr int THREADS = 8;
+    constexpr int ITERS = 20000;
+    std::atomic<bool> go{false};
+    std::vector<std::thread> threads;
+
+    for (int i = 0; i < THREADS; ++i) {
+        threads.emplace_back([&] {
+            while (!go.load(std::memory_order_acquire)) {
+            }
+            for (int j = 0; j < ITERS; ++j)
+                (void)pin.is_open();  // shared_mutex 保护，并发读无竞争
+        });
+    }
+    go.store(true, std::memory_order_release);
+    for (auto& t : threads)
+        t.join();
+    SUCCEED("并发 is_open 读取无崩溃");
+}
+
+TEST_CASE("LibGpiodPin - 多线程并发注册边沿回调（PiMutex cb_mutex_ 保护）", "[driver][gpio]") {
+    driver::LibGpiodPin pin("nonexistent_chip", 0);
+    constexpr int THREADS = 6;
+    constexpr int ITERS = 5000;
+    std::atomic<bool> go{false};
+    std::atomic<int> invoke_count{0};
+    std::vector<std::thread> threads;
+
+    const hal::GpioEdge edges[] = {
+        hal::GpioEdge::RISING, hal::GpioEdge::FALLING, hal::GpioEdge::BOTH};
+
+    for (int i = 0; i < THREADS; ++i) {
+        threads.emplace_back([&, i] {
+            while (!go.load(std::memory_order_acquire)) {
+            }
+            for (int j = 0; j < ITERS; ++j) {
+                // 多线程并发写 callbacks_ 数组，PiMutex 保证互斥
+                pin.set_edge_callback(edges[i % 3], [&invoke_count]() {
+                    invoke_count.fetch_add(1, std::memory_order_relaxed);
+                });
+            }
+        });
+    }
+    go.store(true, std::memory_order_release);
+    for (auto& t : threads)
+        t.join();
+    SUCCEED("并发注册回调无崩溃");
+}
+
+TEST_CASE("LibGpiodPin - 并发 set_edge_callback 与 start/stop_monitoring 无崩溃",
+          "[driver][gpio]") {
+    // 未打开时 start_monitoring 内部 is_open()==false 提前返回；
+    // 并发注册回调与幂等 start/stop 不应崩溃。
+    driver::LibGpiodPin pin("nonexistent_chip", 0);
+    constexpr int THREADS = 4;
+    constexpr int ITERS = 2000;
+    std::atomic<bool> go{false};
+    std::vector<std::thread> threads;
+
+    for (int i = 0; i < THREADS; ++i) {
+        if (i % 2 == 0) {
+            threads.emplace_back([&] {
+                while (!go.load(std::memory_order_acquire)) {
+                }
+                for (int j = 0; j < ITERS; ++j) {
+                    pin.set_edge_callback(hal::GpioEdge::RISING, []() {});
+                    pin.set_edge_callback(hal::GpioEdge::FALLING, []() {});
+                }
+            });
+        } else {
+            threads.emplace_back([&] {
+                while (!go.load(std::memory_order_acquire)) {
+                }
+                for (int j = 0; j < ITERS; ++j) {
+                    pin.start_monitoring();  // is_open()==false → 立即返回
+                    pin.stop_monitoring();   // 幂等
+                }
+            });
+        }
+    }
+    go.store(true, std::memory_order_release);
+    for (auto& t : threads)
+        t.join();
+    SUCCEED("并发 set_callback+start/stop 无崩溃");
+}
+
+TEST_CASE("LibGpiodPin - stop_monitoring 重复调用幂等安全", "[driver][gpio]") {
+    driver::LibGpiodPin pin("nonexistent_chip", 0);
+    for (int i = 0; i < 10; ++i)
+        REQUIRE_NOTHROW(pin.stop_monitoring());
+}
+
+TEST_CASE("LibGpiodPin - 多次实例化 open/close 循环（非硬件路径）无崩溃", "[driver][gpio]") {
+    constexpr int CYCLES = 10;
+    for (int i = 0; i < CYCLES; ++i) {
+        driver::LibGpiodPin pin("nonexistent_chip", 0);
+        hal::GpioConfig cfg;
+        cfg.direction = hal::GpioDirection::INPUT;
+        pin.open(cfg);  // 预期失败
+        pin.close();    // 幂等
+        CHECK_FALSE(pin.is_open());
+    }
+    SUCCEED("多次实例化 open/close 无崩溃");
+}
+
+TEST_CASE("LibGpiodPin - 多线程并发 read_value/write_value（未打开快速失败）无崩溃",
+          "[driver][gpio]") {
+    driver::LibGpiodPin pin("nonexistent_chip", 0);
+    constexpr int THREADS = 4;
+    constexpr int ITERS = 5000;
+    std::atomic<bool> go{false};
+    std::vector<std::thread> threads;
+
+    for (int i = 0; i < THREADS; ++i) {
+        if (i % 2 == 0) {
+            threads.emplace_back([&] {
+                while (!go.load(std::memory_order_acquire)) {
+                }
+                for (int j = 0; j < ITERS; ++j)
+                    (void)pin.read_value();  // 未打开：shared_lock → false
+            });
+        } else {
+            threads.emplace_back([&] {
+                while (!go.load(std::memory_order_acquire)) {
+                }
+                for (int j = 0; j < ITERS; ++j)
+                    pin.write_value(j % 2 == 0);  // 未打开：shared_lock → false
+            });
+        }
+    }
+    go.store(true, std::memory_order_release);
+    for (auto& t : threads)
+        t.join();
+    SUCCEED("并发 read_value/write_value（未打开）无崩溃");
+}

@@ -1,3 +1,13 @@
+/*
+ * @Author: UncleDrew
+ * @Date: 2026-03-14 13:19:39
+ * @LastEditors: UncleDrew
+ * @LastEditTime: 2026-03-24 16:01:08
+ * @FilePath: /pv_cleaning_robot/include/pv_cleaning_robot/device/imu_device.h
+ * @Description:
+ *
+ * Copyright (c) 2026 by UncleDrew, All Rights Reserved.
+ */
 #pragma once
 #include <atomic>
 #include <memory>
@@ -6,6 +16,7 @@
 
 #include "pv_cleaning_robot/device/device_error.h"
 #include "pv_cleaning_robot/hal/i_serial_port.h"
+#include "pv_cleaning_robot/hal/pi_mutex.h"
 #include "pv_cleaning_robot/protocol/imu_protocol.h"
 
 namespace robot::device {
@@ -65,11 +76,14 @@ class ImuDevice {
     std::shared_ptr<hal::ISerialPort> serial_;
     protocol::ImuProtocol parser_;
 
-    mutable std::mutex mtx_;
+    mutable hal::PiMutex mtx_;
     Diagnostics diag_{};
 
     std::thread read_thread_;
     std::atomic<bool> running_{false};
+
+    // 【新增】配置标志：当下发命令时，挂起后台读取线程，防止 ACK 冲突
+    std::atomic<bool> is_configuring_{false};
 };
 
 }  // namespace robot::device

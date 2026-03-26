@@ -37,8 +37,9 @@ enum class GpioBias {
 struct GpioConfig {
     GpioDirection direction{GpioDirection::INPUT};
     GpioBias bias{GpioBias::DISABLE};
-    int debounce_ms{0};  ///< 软件消抖时间（毫秒），0 表示不开启消抖
-    int rt_priority = 0;
+    int debounce_ms{0};   ///< 软件消抖时间（毫秒），0 表示不开启消抖
+    int rt_priority = 0; ///< SCHED_FIFO 优先级（0=不提升）
+    int cpu_affinity = 0; ///< CPU 亲和性掩码（0=不绑定；1<<N=绑定到核心N）
 };
 
 /// @brief GPIO 引脚硬件抽象接口

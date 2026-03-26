@@ -1,12 +1,14 @@
 #pragma once
-#include "pv_cleaning_robot/device/device_error.h"
-#include "pv_cleaning_robot/hal/i_can_bus.h"
-#include "pv_cleaning_robot/protocol/walk_motor_can_codec.h"
 #include <atomic>
 #include <chrono>
 #include <memory>
 #include <mutex>
 #include <thread>
+
+#include "pv_cleaning_robot/device/device_error.h"
+#include "pv_cleaning_robot/hal/i_can_bus.h"
+#include "pv_cleaning_robot/protocol/walk_motor_can_codec.h"
+
 
 namespace robot::device {
 
@@ -17,20 +19,20 @@ namespace robot::device {
 /// set_speed() / set_current() 等控制方法直接发送 CAN 帧，延迟 < 1 ms。
 /// update() 建议每 10 ms 调用一次，重发当前设定值作为通信保活心跳。
 class WalkMotor {
-public:
+   public:
     /// 精简状态（生产上报）
     struct Status {
-        float          speed_rpm;     ///< 实测转速（-210 ~ +210 RPM）
-        float          torque_a;      ///< 转矩电流（-33 ~ +33 A）
-        float          position_deg;  ///< 当前位置（0 ~ 360°）
+        float speed_rpm;                 ///< 实测转速（-210 ~ +210 RPM）
+        float torque_a;                  ///< 转矩电流（-33 ~ +33 A）
+        float position_deg;              ///< 当前位置（0 ~ 360°）
         protocol::WalkMotorFault fault;  ///< 故障码
-        protocol::WalkMotorMode  mode;   ///< 当前运行模式
-        bool           online;        ///< 最近 500 ms 内是否收到过反馈帧
+        protocol::WalkMotorMode mode;    ///< 当前运行模式
+        bool online;                     ///< 最近 500 ms 内是否收到过反馈帧
     };
 
     /// 完整诊断数据（开发阶段）
     struct Diagnostics : Status {
-        float    target_value;          ///< 当前设定值（量纲取决于模式）
+        float target_value;             ///< 当前设定值（量纲取决于模式）
         uint32_t feedback_frame_count;  ///< 累计收到反馈帧数
         uint32_t feedback_lost_count;   ///< 累计在线→离线转换次数
         uint32_t can_err_count;         ///< CAN 发送失败次数
@@ -43,7 +45,7 @@ public:
     /// 打开 CAN 总线，设置接收过滤器，启动接收线程
     DeviceError open();
     /// 停止接收线程，关闭 CAN 总线
-    void        close();
+    void close();
 
     // ── 控制接口 ──────────────────────────────────────────────────────────
     /// 切换运行模式（使能/失能/速度/电流/位置/开环）
@@ -82,34 +84,34 @@ public:
     DeviceError set_open_loop(int16_t raw_value);
 
     // ── 状态读取（线程安全，无 I/O）─────────────────────────────────────
-    Status      get_status()      const;
+    Status get_status() const;
     Diagnostics get_diagnostics() const;
 
     // ── 周期心跳（建议由控制线程调用，10 ms）────────────────────────────
     /// 重发当前设定值；更新 online 状态；维持电机通信看门狗
     void update();
 
-private:
-    std::shared_ptr<hal::ICanBus>  can_;
-    protocol::WalkMotorCanCodec    codec_;
+   private:
+    std::shared_ptr<hal::ICanBus> can_;
+    protocol::WalkMotorCanCodec codec_;
 
-    std::thread       recv_thread_;
+    std::thread recv_thread_;
     std::atomic<bool> running_{false};
 
     mutable std::mutex mtx_;
-    Diagnostics        diag_{};
+    Diagnostics diag_{};
 
     /// 当前设定值对应的 CAN 帧（由 set_xx 方法填写）
     hal::CanFrame last_ctrl_frame_{};
-    bool          has_ctrl_frame_{false};
-    float         target_value_{0.0f};
+    bool has_ctrl_frame_{false};
+    float target_value_{0.0f};
 
     /// 最近一次收到反馈帧的时刻（epoch 表示"从未收到"）
     std::chrono::steady_clock::time_point last_fb_time_{};
 
     static constexpr auto kOnlineTimeout = std::chrono::milliseconds(500);
 
-    void        recv_loop();
+    void recv_loop();
     DeviceError send_frame(const hal::CanFrame& frame);
 };
 

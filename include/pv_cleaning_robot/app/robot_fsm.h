@@ -9,6 +9,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include "pv_cleaning_robot/hal/pi_mutex.h"
 
 namespace sml = boost::sml;
 
@@ -103,7 +104,7 @@ private:
     std::shared_ptr<service::FaultService>  fault_;
     middleware::EventBus&                   bus_;
 
-    mutable std::mutex            mtx_;
+    mutable hal::PiMutex          mtx_;
     std::string                   state_name_{"Init"};
     std::unique_ptr<sml::sm<Fsm>> sm_;
 };

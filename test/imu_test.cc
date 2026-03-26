@@ -459,7 +459,7 @@ TEST_CASE("设备层 - set_output_rate 发送解锁 + RRATE 命令", "[device][i
     device::ImuDevice imu(serial);
     REQUIRE(imu.open());
 
-    // set_output_rate(50) → rate_code=0x06
+    // set_output_rate(50) → rate_code=0x08 (50Hz，RRATE_50HZ)
     // 预期：先发 unlock(5字节)，再发 RRATE 命令(5字节)，共 10 字节
     auto err = imu.set_output_rate(50);
 
@@ -475,11 +475,11 @@ TEST_CASE("设备层 - set_output_rate 发送解锁 + RRATE 命令", "[device][i
     REQUIRE(serial->tx_captured[3] == 0x88);
     REQUIRE(serial->tx_captured[4] == 0xB5);
 
-    // 验证 RRATE 命令 FF AA 03 06 00
+    // 验证 RRATE 命令 FF AA 03 08 00（0x08 = 50Hz）
     REQUIRE(serial->tx_captured[5] == 0xFF);
     REQUIRE(serial->tx_captured[6] == 0xAA);
     REQUIRE(serial->tx_captured[7] == 0x03);
-    REQUIRE(serial->tx_captured[8] == 0x06);
+    REQUIRE(serial->tx_captured[8] == 0x08);
     REQUIRE(serial->tx_captured[9] == 0x00);
 }
 

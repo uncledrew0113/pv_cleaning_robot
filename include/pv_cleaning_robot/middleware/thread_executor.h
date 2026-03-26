@@ -24,6 +24,7 @@ public:
         int         period_ms{100};  ///< 调用 update() 的周期（毫秒）
         int         sched_policy{0}; ///< SCHED_OTHER=0, SCHED_FIFO=1, SCHED_RR=2
         int         sched_priority{0}; ///< RT 优先级（SCHED_FIFO/RR 时有效）
+        int         cpu_affinity{0}; ///< CPU 亲和性掩码（0=不绑定；1<<N=绑定到核心N）
     };
 
     explicit ThreadExecutor(Config cfg);

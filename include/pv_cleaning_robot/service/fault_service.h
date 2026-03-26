@@ -1,5 +1,6 @@
 #pragma once
 #include "pv_cleaning_robot/middleware/event_bus.h"
+#include "pv_cleaning_robot/hal/pi_mutex.h"
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -37,7 +38,7 @@ private:
     middleware::EventBus& bus_;
     FaultEvent            last_fault_{};
     bool                  has_fault_{false};
-    mutable std::mutex    mtx_;
+    mutable hal::PiMutex  mtx_;
 };
 
 } // namespace robot::service

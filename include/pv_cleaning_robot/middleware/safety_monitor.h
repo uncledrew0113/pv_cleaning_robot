@@ -1,6 +1,6 @@
 #pragma once
 #include "pv_cleaning_robot/device/limit_switch.h"
-#include "pv_cleaning_robot/device/walk_motor.h"
+#include "pv_cleaning_robot/device/walk_motor_group.h"
 #include "pv_cleaning_robot/middleware/event_bus.h"
 #include <atomic>
 #include <memory>
@@ -17,7 +17,8 @@ namespace robot::middleware {
 ///         → on_limit_trigger() [在 GPIO 监控线程栈上同步调用]
 ///             → WalkMotor::emergency_stop() [直写 CAN 帧, <1ms]
 ///
-/// @note WalkMotor 的急停路径不经任何队列，直接调用 ICanBus::send()
+/// @note WalkMotorGroup 的急停路径不经任何队列，直接调用 ICanBus::send()
+/// emergency_override(0.0f) 同时停全部4轮并锁定心跳，防止50ms周期帧重新驱动电机
 class SafetyMonitor {
 public:
     /// @brief 发布到 EventBus 的限位触发事件
@@ -25,10 +26,10 @@ public:
         device::LimitSide side;
     };
 
-    SafetyMonitor(std::shared_ptr<device::WalkMotor>  walk_motor,
-                  std::shared_ptr<device::LimitSwitch> front_switch,
-                  std::shared_ptr<device::LimitSwitch> rear_switch,
-                  EventBus&                             event_bus);
+    SafetyMonitor(std::shared_ptr<device::WalkMotorGroup> walk_group,
+                  std::shared_ptr<device::LimitSwitch>    front_switch,
+                  std::shared_ptr<device::LimitSwitch>    rear_switch,
+                  EventBus&                               event_bus);
     ~SafetyMonitor();
 
     /// 启动安全监控（启动 GPIO 监控线程，设置 SCHED_FIFO 99）
@@ -50,10 +51,10 @@ private:
     /// 安全监视主循环（SCHED_FIFO 99）
     void monitor_loop();
 
-    std::shared_ptr<device::WalkMotor>   walk_motor_;
-    std::shared_ptr<device::LimitSwitch> front_switch_;
-    std::shared_ptr<device::LimitSwitch> rear_switch_;
-    EventBus&                            event_bus_;
+    std::shared_ptr<device::WalkMotorGroup> walk_group_;
+    std::shared_ptr<device::LimitSwitch>    front_switch_;
+    std::shared_ptr<device::LimitSwitch>    rear_switch_;
+    EventBus&                               event_bus_;
 
     std::atomic<bool> running_{false};
     std::atomic<bool> estop_active_{false};

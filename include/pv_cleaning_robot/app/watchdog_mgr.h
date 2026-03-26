@@ -4,6 +4,7 @@
 #include <functional>
 #include <mutex>
 #include <thread>
+#include "pv_cleaning_robot/hal/pi_mutex.h"
 #include <unordered_map>
 
 namespace robot::app {
@@ -52,7 +53,7 @@ private:
     int         hw_watchdog_fd_{-1};
 
     std::unordered_map<int, Ticket> tickets_;
-    mutable std::mutex              tickets_mtx_;
+    mutable hal::PiMutex            tickets_mtx_;
     int                             next_ticket_id_{0};
 
     TimeoutCallback                 on_timeout_;

@@ -75,21 +75,21 @@ class BMS {
 
     /// 完整诊断数据（开发调试、云端上报使用）
     struct Diagnostics : BatteryData {
-        float remaining_capacity_ah;              ///< 剩余容量（Ah）
-        float nominal_capacity_ah;                ///< 标称容量（Ah）（kUart 有效；kModbus=0）
-        uint32_t cycle_count;                     ///< 循环次数
-        uint8_t cell_count;                       ///< 串联节数
-        uint8_t ntc_count;                        ///< NTC 探头数量
+        float remaining_capacity_ah;  ///< 剩余容量（Ah）
+        float nominal_capacity_ah;    ///< 标称容量（Ah）（kUart 有效；kModbus=0）
+        uint32_t cycle_count;         ///< 循环次数
+        uint8_t cell_count;           ///< 串联节数
+        uint8_t ntc_count;            ///< NTC 探头数量
         float ntc_temps_c[protocol::kBmsMaxNtc];  ///< 各探头温度（℃）
         float cell_voltage_max_v;                 ///< 最高单体电压（V）
         float cell_voltage_min_v;                 ///< 最低单体电压（V）
         protocol::BmsCellVoltages cell_voltages;  ///< 各节电压（mV）（kUart 专用）
-        std::string hw_version;                   ///< 硬件版本字符串（kUart 专用，0x05 读取）
+        std::string hw_version;  ///< 硬件版本字符串（kUart 专用，0x05 读取）
         // -- kModbus 专用字段 -------------------------------------------------
         protocol::Bms2CellVoltages cell_voltages2;  ///< 各节电压（mV）（kModbus 专用）
-        protocol::Bms2AlarmFlags alarm_detail2;     ///< 完整告警/故障状态（kModbus 专用）
-        float power_w;                              ///< 实时功率（W）（kModbus 专用）
-        float energy_wh;                            ///< 累计能量（Wh）（kModbus 专用）
+        protocol::Bms2AlarmFlags alarm_detail2;  ///< 完整告警/故障状态（kModbus 专用）
+        float power_w;                           ///< 实时功率（W）（kModbus 专用）
+        float energy_wh;                         ///< 累计能量（Wh）（kModbus 专用）
         // -- 通用计数 ---------------------------------------------------------
         uint32_t update_count;  ///< 成功 update() 次数
         uint32_t error_count;   ///< 通信错误（超时/校验失败）次数
@@ -124,7 +124,9 @@ class BMS {
     void close();
 
     /// 返回当前使用的协议类型
-    ProtocolType protocol_type() const noexcept { return protocol_type_; }
+    ProtocolType protocol_type() const noexcept {
+        return protocol_type_;
+    }
 
     // == 周期更新（由外部 ~500ms 定时器调用）====================================
 
@@ -150,28 +152,29 @@ class BMS {
     // -- kUart 专用 -----------------------------------------------------------
     // 发送 req 帧后阻塞等待完整应答帧（含校验），超时返回 false
     bool transact(const uint8_t* req, size_t req_len, int timeout_ms = 300);
-    bool read_basic_info_uart();      // 命令 0x03
-    bool read_cell_voltages_uart();   // 命令 0x04
+    bool read_basic_info_uart();     // 命令 0x03
+    bool read_cell_voltages_uart();  // 命令 0x04
 
     // -- kModbus 专用 ---------------------------------------------------------
     bool read_basic_info_modbus();
     bool read_cell_voltages_modbus();
     /// 带休眠唤醒重试的 Modbus 寄存器读取（同 transact() 的休眠逻辑）
-    int  modbus_read_regs(int addr, int count, uint16_t* out);
+    int modbus_read_regs(int addr, int count, uint16_t* out);
 
     // -- 成员变量 --------------------------------------------------------------
     ProtocolType protocol_type_;
 
-    std::shared_ptr<hal::ISerialPort> serial_;   ///< kUart 专用
-    protocol::BmsProtocol parser_;               ///< kUart 专用
+    std::shared_ptr<hal::ISerialPort> serial_;  ///< kUart 专用
+    protocol::BmsProtocol parser_;              ///< kUart 专用
 
-    std::shared_ptr<hal::IModbusMaster> modbus_; ///< kModbus 专用
-    uint8_t slave_id_{0};                        ///< kModbus 专用
+    std::shared_ptr<hal::IModbusMaster> modbus_;  ///< kModbus 专用
+    uint8_t slave_id_{0};                         ///< kModbus 专用
 
     float full_soc_;
     float low_soc_;
 
     mutable std::mutex mtx_;
+    std::mutex uart_tx_mtx_;
     Diagnostics diag_{};
 
     int full_charge_count_{0};
@@ -186,7 +189,7 @@ class BMS {
     Clock::time_point last_comm_time_{Clock::time_point::min()};  ///< 上次通讯成功时刻
     static constexpr int kSleepTimeoutSec = 55;  ///< BMS 休眠阈值留 5s 余量（实际 60s）
     static constexpr int kWakeupDelayMs = 200;   ///< 唤醒帧发出后等待 BMS 启动的时间
-    static constexpr int kMaxRetries = 2;        ///< 唤醒重试上限（唤醒帧 + 正式帧）
+    static constexpr int kMaxRetries = 3;        ///< 唤醒重试上限（唤醒帧 + 正式帧）
 };
 
 }  // namespace robot::device

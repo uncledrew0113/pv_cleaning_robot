@@ -1,25 +1,24 @@
-#include "pv_cleaning_robot/device/walk_motor.h"
 #include <chrono>
 #include <thread>
+
+#include "pv_cleaning_robot/device/walk_motor.h"
 
 namespace robot::device {
 
 WalkMotor::WalkMotor(std::shared_ptr<hal::ICanBus> can, uint8_t motor_id)
-    : can_(std::move(can)), codec_(motor_id)
-{
-}
+    : can_(std::move(can)), codec_(motor_id) {}
 
-WalkMotor::~WalkMotor()
-{
+WalkMotor::~WalkMotor() {
     close();
 }
 
 // ── 生命周期 ─────────────────────────────────────────────────────────────────
 
-DeviceError WalkMotor::open()
-{
-    if (can_->is_open()) return DeviceError::OK;
-    if (!can_->open()) return DeviceError::NOT_OPEN;
+DeviceError WalkMotor::open() {
+    if (can_->is_open())
+        return DeviceError::OK;
+    if (!can_->open())
+        return DeviceError::NOT_OPEN;
 
     // 只接收本电机的状态反馈帧（0x96 + motor_id，标准帧 11-bit ID）
     // 使用栈变量调用纯虚接口，避免构造临时 vector 带来的堆分配
@@ -34,18 +33,19 @@ DeviceError WalkMotor::open()
     return DeviceError::OK;
 }
 
-void WalkMotor::close()
-{
+void WalkMotor::close() {
     running_.store(false);
-    if (recv_thread_.joinable()) recv_thread_.join();
-    if (can_->is_open()) can_->close();
+    if (recv_thread_.joinable())
+        recv_thread_.join();
+    if (can_->is_open())
+        can_->close();
 }
 
 // ── 内部帧发送 ────────────────────────────────────────────────────────────────
 
-DeviceError WalkMotor::send_frame(const hal::CanFrame& frame)
-{
-    if (!can_->is_open()) return DeviceError::NOT_OPEN;
+DeviceError WalkMotor::send_frame(const hal::CanFrame& frame) {
+    if (!can_->is_open())
+        return DeviceError::NOT_OPEN;
     if (!can_->send(frame)) {
         std::lock_guard<std::mutex> lk(mtx_);
         ++diag_.can_err_count;
@@ -56,109 +56,98 @@ DeviceError WalkMotor::send_frame(const hal::CanFrame& frame)
 
 // ── 控制接口 ─────────────────────────────────────────────────────────────────
 
-DeviceError WalkMotor::set_mode(protocol::WalkMotorMode mode)
-{
+DeviceError WalkMotor::set_mode(protocol::WalkMotorMode mode) {
     return send_frame(codec_.encode_set_mode(mode));
 }
 
-DeviceError WalkMotor::enable()
-{
+DeviceError WalkMotor::enable() {
     return set_mode(protocol::WalkMotorMode::ENABLE);
 }
 
-DeviceError WalkMotor::disable()
-{
+DeviceError WalkMotor::disable() {
     return set_mode(protocol::WalkMotorMode::DISABLE);
 }
 
-DeviceError WalkMotor::set_feedback_mode(uint8_t period_ms)
-{
+DeviceError WalkMotor::set_feedback_mode(uint8_t period_ms) {
     return send_frame(codec_.encode_set_feedback(period_ms));
 }
 
-DeviceError WalkMotor::set_node_id()
-{
+DeviceError WalkMotor::set_node_id() {
     return send_frame(codec_.encode_set_node_id());
 }
 
-DeviceError WalkMotor::set_comm_timeout(uint16_t timeout_ms)
-{
+DeviceError WalkMotor::set_comm_timeout(uint16_t timeout_ms) {
     return send_frame(codec_.encode_set_comm_timeout(timeout_ms));
 }
 
-DeviceError WalkMotor::reset_comm_timeout()
-{
+DeviceError WalkMotor::reset_comm_timeout() {
     return send_frame(codec_.encode_reset_comm_timeout());
 }
 
-DeviceError WalkMotor::read_comm_timeout()
-{
+DeviceError WalkMotor::read_comm_timeout() {
     return send_frame(codec_.encode_read_comm_timeout());
 }
 
-DeviceError WalkMotor::set_termination(bool enable)
-{
+DeviceError WalkMotor::set_termination(bool enable) {
     std::array<bool, 8> enables{};
     if (codec_.motor_id() >= 1u && codec_.motor_id() <= 8u)
         enables[codec_.motor_id() - 1u] = enable;
     return send_frame(protocol::WalkMotorCanCodec::encode_set_termination_batch(enables));
 }
 
-DeviceError WalkMotor::query_firmware()
-{
+DeviceError WalkMotor::query_firmware() {
     return send_frame(protocol::WalkMotorCanCodec::encode_query_firmware());
 }
 
-DeviceError WalkMotor::set_speed(float rpm)
-{
-    if (rpm < -210.0f || rpm > 210.0f) return DeviceError::INVALID_PARAM;
+DeviceError WalkMotor::set_speed(float rpm) {
+    if (rpm < -210.0f || rpm > 210.0f)
+        return DeviceError::INVALID_PARAM;
     auto frame = codec_.encode_speed(rpm);
     {
         std::lock_guard<std::mutex> lk(mtx_);
         last_ctrl_frame_ = frame;
-        has_ctrl_frame_  = true;
-        target_value_    = rpm;
+        has_ctrl_frame_ = true;
+        target_value_ = rpm;
         diag_.target_value = rpm;
     }
     return send_frame(frame);
 }
 
-DeviceError WalkMotor::set_current(float amps)
-{
-    if (amps < -33.0f || amps > 33.0f) return DeviceError::INVALID_PARAM;
+DeviceError WalkMotor::set_current(float amps) {
+    if (amps < -33.0f || amps > 33.0f)
+        return DeviceError::INVALID_PARAM;
     auto frame = codec_.encode_current(amps);
     {
         std::lock_guard<std::mutex> lk(mtx_);
         last_ctrl_frame_ = frame;
-        has_ctrl_frame_  = true;
-        target_value_    = amps;
+        has_ctrl_frame_ = true;
+        target_value_ = amps;
         diag_.target_value = amps;
     }
     return send_frame(frame);
 }
 
-DeviceError WalkMotor::set_position(float deg)
-{
-    if (deg < 0.0f || deg > 360.0f) return DeviceError::INVALID_PARAM;
+DeviceError WalkMotor::set_position(float deg) {
+    if (deg < 0.0f || deg > 360.0f)
+        return DeviceError::INVALID_PARAM;
     auto frame = codec_.encode_position(deg);
     {
         std::lock_guard<std::mutex> lk(mtx_);
         last_ctrl_frame_ = frame;
-        has_ctrl_frame_  = true;
-        target_value_    = deg;
+        has_ctrl_frame_ = true;
+        target_value_ = deg;
         diag_.target_value = deg;
     }
     return send_frame(frame);
 }
 
-DeviceError WalkMotor::set_open_loop(int16_t raw_value)
-{
+DeviceError WalkMotor::set_open_loop(int16_t raw_value) {
     auto frame = codec_.encode_open_loop(raw_value);
     {
         std::lock_guard<std::mutex> lk(mtx_);
         last_ctrl_frame_ = frame;
-        has_ctrl_frame_  = true;
-        target_value_    = static_cast<float>(raw_value);
+        has_ctrl_frame_ = true;
+        target_value_ = static_cast<float>(raw_value);
         diag_.target_value = target_value_;
     }
     return send_frame(frame);
@@ -166,23 +155,21 @@ DeviceError WalkMotor::set_open_loop(int16_t raw_value)
 
 // ── 状态读取 ─────────────────────────────────────────────────────────────────
 
-WalkMotor::Status WalkMotor::get_status() const
-{
+WalkMotor::Status WalkMotor::get_status() const {
     std::lock_guard<std::mutex> lk(mtx_);
     return static_cast<Status>(diag_);
 }
 
-WalkMotor::Diagnostics WalkMotor::get_diagnostics() const
-{
+WalkMotor::Diagnostics WalkMotor::get_diagnostics() const {
     std::lock_guard<std::mutex> lk(mtx_);
     return diag_;
 }
 
 // ── 周期心跳 ─────────────────────────────────────────────────────────────────
 
-void WalkMotor::update()
-{
-    if (!can_->is_open()) return;
+void WalkMotor::update() {
+    if (!can_->is_open())
+        return;
 
     // 1. 更新 online 状态
     auto now = std::chrono::steady_clock::now();
@@ -204,15 +191,15 @@ void WalkMotor::update()
     {
         std::lock_guard<std::mutex> lk(mtx_);
         ctrl = last_ctrl_frame_;
-        has  = has_ctrl_frame_;
+        has = has_ctrl_frame_;
     }
-    if (has) send_frame(ctrl);
+    if (has)
+        send_frame(ctrl);
 }
 
 // ── 后台接收线程 ─────────────────────────────────────────────────────────────
 
-void WalkMotor::recv_loop()
-{
+void WalkMotor::recv_loop() {
     hal::CanFrame frame;
     while (running_.load()) {
         // 50 ms 超时：快速响应 close() 而不长期阻塞
@@ -226,20 +213,21 @@ void WalkMotor::recv_loop()
         }
 
         auto maybe = codec_.decode_status(frame);
-        if (!maybe) continue;
+        if (!maybe)
+            continue;
 
         const auto& s = *maybe;
         auto now = std::chrono::steady_clock::now();
         {
             std::lock_guard<std::mutex> lk(mtx_);
-            diag_.speed_rpm    = s.speed_rpm;
-            diag_.torque_a     = s.torque_a;
+            diag_.speed_rpm = s.speed_rpm;
+            diag_.torque_a = s.torque_a;
             diag_.position_deg = s.position_deg;
-            diag_.fault        = s.fault;
-            diag_.mode         = s.mode;
-            diag_.online       = true;
+            diag_.fault = s.fault;
+            diag_.mode = s.mode;
+            diag_.online = true;
             ++diag_.feedback_frame_count;
-            last_fb_time_      = now;
+            last_fb_time_ = now;
         }
     }
 }
