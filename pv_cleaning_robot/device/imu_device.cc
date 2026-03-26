@@ -1,9 +1,11 @@
 #include <algorithm>
 #include <chrono>
+#include <cstring>
 #include <ctime>
 #include <pthread.h>
 #include <sched.h>
 #include <thread>
+#include <spdlog/spdlog.h>
 
 #include "pv_cleaning_robot/device/imu_device.h"
 
@@ -20,18 +22,6 @@ bool ImuDevice::open() {
         return false;
     running_.store(true);
     read_thread_ = std::thread(&ImuDevice::read_loop, this);
-    // IMU 读取线程：SCHED_FIFO 68，绑定到 CPU 6（导航专用大核）
-    // walk_ctrl 通过 IMU 缓存读取偏航角，需确保读线程不被饿死
-    {
-        sched_param sp{};
-        sp.sched_priority = 68;
-        pthread_setschedparam(read_thread_.native_handle(), SCHED_FIFO, &sp);
-        cpu_set_t cpuset;
-        CPU_ZERO(&cpuset);
-        CPU_SET(6, &cpuset);
-        pthread_setaffinity_np(read_thread_.native_handle(), sizeof(cpuset), &cpuset);
-        pthread_setname_np(read_thread_.native_handle(), "imu_read");
-    }
     return true;
 }
 
@@ -95,6 +85,22 @@ ImuDevice::Diagnostics ImuDevice::get_diagnostics() const {
 }
 
 void ImuDevice::read_loop() {
+    // ── 线程自身完成 RT 提权 + CPU 绑定 ──
+    {
+        sched_param sp{};
+        sp.sched_priority = 68;
+        int rc = pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp);
+        if (rc != 0) {
+            spdlog::warn("[ImuDevice] RT priority elevation failed: {}", strerror(rc));
+        }
+        cpu_set_t cpuset;
+        CPU_ZERO(&cpuset);
+        CPU_SET(6, &cpuset);
+        if (pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset) != 0) {
+            spdlog::warn("[ImuDevice] CPU 6 affinity set failed: {}", strerror(errno));
+        }
+        pthread_setname_np(pthread_self(), "imu_read");
+    }
     uint8_t byte_buf[64];
     auto t_last_stat = std::chrono::steady_clock::now();
     uint32_t frames_since_last = 0;
@@ -181,7 +187,12 @@ DeviceError ImuDevice::send_write_cmd(const protocol::ImuProtocol::Cmd& cmd, int
     auto err = send_command(unlock, 50);
     if (err != DeviceError::OK)
         return err;
-    return send_command(cmd, wait_ms);
+    err = send_command(cmd, wait_ms);
+    if (err != DeviceError::OK)
+        return err;
+    // 写入 Flash，掉电不丢失。WIT Motion 保存命令需 200ms 等待
+    auto save = protocol::ImuProtocol::encode_save_config();
+    return send_command(save, 200);
 }
 
 }  // namespace robot::device

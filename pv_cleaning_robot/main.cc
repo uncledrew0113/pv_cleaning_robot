@@ -338,6 +338,9 @@ int main() {
     // HealthService 已内嵌 DiagnosticsCollector 逻辑：
     //   production  -> Mode::HEALTH      （精简状态字段）
     //   development -> Mode::DIAGNOSTICS （完整诊断字段）
+    // local_path 非空时额外把每帧 JSON payload 以 JSONL 追加到本地文件，
+    // 离线调试阶段可直接 cat/grep 查看，完全独立于 MQTT/LoRaWAN。
+    std::string local_tel_path = cfg.get<std::string>("diagnostics.local_path", "");
     auto reporter = std::make_shared<robot::service::HealthService>(
         walk_group,
         brush_motor,
@@ -346,7 +349,8 @@ int main() {
         gps,
         cloud,
         diag_mode == "development" ? robot::service::HealthService::Mode::DIAGNOSTICS
-                                   : robot::service::HealthService::Mode::HEALTH);
+                                   : robot::service::HealthService::Mode::HEALTH,
+        local_tel_path);
 
     // ── 16. 线程执行器 ────────────────────────────────────────────────
     // ── RK3576 CPU 拓扑 ───────────────────────────────────────────────
@@ -381,6 +385,11 @@ int main() {
     robot::middleware::ThreadExecutor bms_exec({"bms", 500, SCHED_OTHER, 0, 0x0F});
     bms_exec.add_runnable(
         std::make_shared<robot::middleware::RunnableAdapter>([&bms]() { bms->update(); }));
+    // BrushMotor 状态不需要实时性，500ms 周期足够。
+    // 将 brush_->update() 安排在此线程，避免 Modbus RTU 阻塞 I/O
+    // 占用 walk_ctrl(FIFO 80, 20ms) 的控制周期时间预算。
+    bms_exec.add_runnable(
+        std::make_shared<robot::middleware::RunnableAdapter>([&brush_motor]() { brush_motor->update(); }));
     int bms_wd = watchdog.register_thread("bms", 2000);
     bms_exec.add_runnable(std::make_shared<robot::middleware::RunnableAdapter>(
         [&watchdog, bms_wd]() { watchdog.heartbeat(bms_wd); }));

@@ -364,7 +364,7 @@ public:
     DeviceError clear_fault();
     Status      get_status() const;
     Diagnostics get_diagnostics() const;
-    void        update();   // ThreadExecutor 50ms 调用
+    void        update();   // bms_exec (SCHED_OTHER, 500ms) 周期调用
 };
 ```
 
@@ -501,8 +501,8 @@ public:
 
 **触发路径**（端到端目标 ≤50ms）：
 ```
-GPIO 下降沿 → libgpiod 事件 → TriggerCallback → SafetyMonitor::on_limit_hit()
-           → WalkMotor::emergency_stop() → EventBus FaultEvent(P0)
+GPIO 下降沿 → libgpiod 事件 → TriggerCallback → SafetyMonitor::on_limit_trigger()
+           → WalkMotorGroup::emergency_override(0.0f) → EventBus LimitTriggerEvent
 ```
 
 ---
@@ -531,10 +531,12 @@ public:
 
 | 特性 | 说明 |
 |------|------|
-| 类型安全 | 基于 `std::type_index` + `std::any`，编译期检查事件类型 |
+| 类型安全 | 基于 `std::type_index`，编译期检查事件类型 |
 | 线程安全 | `subscribe`/`unsubscribe`/`publish` 均持锁 |
 | 同步分发 | `publish()` 在调用方线程同步执行所有回调 |
+| 零堆分配 | 回调签名为 `void(const void*)`，`static_cast` 还原类型；`publish()` 热路径无堆分配，RT 线程安全 |
 | 回调隔离 | 读取回调列表后释放锁，避免回调内死锁 |
+| 优先级安全 | 互斥量使用 `PiMutex`（`PTHREAD_PRIO_INHERIT`），防止 SCHED_FIFO 95 GPIO 线程调用 `publish()` 时发生优先级反转 |
 
 **使用示例**：
 ```cpp
@@ -620,20 +622,23 @@ log->error("[WalkMotor] 通信超时，错误计数={}", err_cnt);
 ```cpp
 class SafetyMonitor {
 public:
-    SafetyMonitor(shared_ptr<WalkMotor>    walk,
-                  shared_ptr<LimitSwitch>  front,
-                  shared_ptr<LimitSwitch>  rear,
-                  EventBus&               bus);
-    void start();
+    SafetyMonitor(shared_ptr<WalkMotorGroup> walk_group,
+                  shared_ptr<LimitSwitch>    front,
+                  shared_ptr<LimitSwitch>    rear,
+                  EventBus&                 bus);
+    bool start();
     void stop();
+    bool is_estop_active() const;
+    void reset_estop();
 };
 ```
 
 **职责**：
-- 注册两个限位开关的触发回调
-- 触发后立即调用 `walk->emergency_stop()`（P0 安全路径，目标 ≤50ms）
-- 同时向 `EventBus` 发布 `FaultEvent{P0, code, "限位触发"}`
-- 独立于调度线程，基于 GPIO 事件中断驱动
+- 注册两个限位开关的触发回调（GPIO 监控线程，SCHED_FIFO **95**）
+- 触发后立即调用 `walk_group->emergency_override(0.0f)`（同时停全部4轮+锁定心跳，P0 安全路径，目标 ≤50ms）
+- 同时向 `EventBus` 发布 `LimitTriggerEvent{side}`，通知 FSM 切换状态
+- `monitor_loop()` 独立线程运行（SCHED_FIFO **94**，5ms 周期，CPU 4 亲和），定期检查 estop 状态
+- `is_estop_active()` / `reset_estop()` 供上层（FaultHandler / RPC）查询和手动解除急停
 
 ---
 
@@ -851,7 +856,7 @@ public:
 - `emergency_stop()` 调用 `group_->emergency_override(0)` 后设置 `override_active_`，阻止 `update()` 心跳帧覆盖停车指令，直到 `cancel_edge_override()` 解除
 - `update()` 读取 ImuDevice 的缓存值（无 I/O），再将 `yaw_deg` 传入 WalkMotorGroup
 
-**⚠️ 架构注意**：`SafetyMonitor` 使用 `WalkMotor`（单电机），不调用 `MotionService::on_edge_triggered()`。
+**⚠️ 架构注意**：`SafetyMonitor` 直接操作 `WalkMotorGroup`（4轮统一急停），不调用 `MotionService::on_edge_triggered()`。
 详见 [第 16 节冗余分析](#16-冗余与优化分析)。
 
 ---
@@ -983,7 +988,8 @@ public:
     HealthService(shared_ptr<WalkMotorGroup>, shared_ptr<BrushMotor>,
                   shared_ptr<BmsDevice>, shared_ptr<ImuDevice>,
                   shared_ptr<GpsDevice>, shared_ptr<CloudService>,
-                  Mode mode = Mode::HEALTH);
+                  Mode        mode            = Mode::HEALTH,
+                  std::string local_log_path  = "");  ///< 本地 JSONL 路径（可选）
 };
 ```
 
@@ -993,6 +999,13 @@ public:
 | `Mode::DIAGNOSTICS` | 完整 | 每轮独立 lt/rt/lb/rb + ctrl_frames/ctrl_err | 开发/调试 | 可配置 |
 
 通过 `config.json` 的 `diagnostics.mode` 字段选择模式：`"production"` → `Mode::HEALTH`，`"development"` → `Mode::DIAGNOSTICS`。
+
+**本地 JSONL 落盘**（`local_log_path` 参数）：
+- 非空时，`update()` 每帧额外将 JSON payload 以 `\n` 结尾追加写入本地文件
+- 完全独立于 MQTT/LoRaWAN；离线测试环境直接 `cat` 或 `jq` 查看
+- 构造时自动调用 `std::filesystem::create_directories()` 创建父目录
+- 配置键：`diagnostics.local_path`，例如 `"/data/pv_robot/logs/telemetry.jsonl"`
+- 生产环境将 `local_path` 置空（默认值）即可禁用，无性能损耗
 
 > **注意**：`DiagnosticsCollector` 已废弃，其功能完全合并到 `HealthService::Mode::DIAGNOSTICS`。
 > 头文件保留为迁移存根，新代码应直接使用 `HealthService`。
@@ -1504,7 +1517,7 @@ MotionService    ──► WalkMotorGroup.emergency_override()   emergency_stop(
 MotionService    ──► WalkMotorGroup.clear_override()       cancel_edge_override()
 MotionService    ──► WalkMotorGroup.update(yaw_deg)        update() 50ms 周期
 MotionService    ──► BrushMotor.start/stop/set_rpm         清扫控制
-MotionService    ──► BrushMotor.update()                   update() 50ms 周期
+                 ─── BrushMotor.update() 已移至 bms_exec（SCHED_OTHER, 500ms）
 MotionService    ──► ImuDevice.get_latest().yaw_deg        update() 读缓存
 
 ───────────────────────────────────────────────────────────────────────

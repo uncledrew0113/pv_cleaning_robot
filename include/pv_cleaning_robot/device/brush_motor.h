@@ -8,7 +8,7 @@
 namespace robot::device {
 
 /// @brief 辊刷电机设备（RS485 Modbus RTU，独立总线1）
-/// update() 由 brush_ctrl_thread (SCHED_FIFO 60, 50ms) 周期调用
+/// update() 由 bms_exec (SCHED_OTHER, 500ms) 周期调用
 ///
 /// @note 寄存器地址请根据辊刷电机驱动器实际手册调整（当前为占位地址）
 class BrushMotor {

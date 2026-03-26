@@ -10,14 +10,13 @@ namespace robot::middleware {
 
 /// @brief 安全监控器
 ///
-/// - SCHED_FIFO 优先级 99，专用线程
-/// - 监听前/后限位开关触发回调（由 LimitSwitch 直接调用）
+/// - 安全监控主循环：SCHED_FIFO 优先级 94，绑定 CPU 4
 /// - 端到端响应路径（触发 → 急停指令发送）目标 ≤ 50 ms：
-///     LimitSwitch::on_edge [GPIO 监控线程, SCHED_FIFO 99]
+///     LimitSwitch::on_edge [GPIO 监控线程, SCHED_FIFO 95]
 ///         → on_limit_trigger() [在 GPIO 监控线程栈上同步调用]
-///             → WalkMotor::emergency_stop() [直写 CAN 帧, <1ms]
+///             → WalkMotorGroup::emergency_override(0.0f) [直写 CAN 帧, <1ms]
 ///
-/// @note WalkMotorGroup 的急停路径不经任何队列，直接调用 ICanBus::send()
+/// @note WalkMotorGroup 的急停路径不经任何队列，直接调用 ICanBus::send()。
 /// emergency_override(0.0f) 同时停全部4轮并锁定心跳，防止50ms周期帧重新驱动电机
 class SafetyMonitor {
 public:
@@ -32,7 +31,7 @@ public:
                   EventBus&                               event_bus);
     ~SafetyMonitor();
 
-    /// 启动安全监控（启动 GPIO 监控线程，设置 SCHED_FIFO 99）
+    /// 启动安全监控（启动 GPIO 监控线程 SCHED_FIFO 95，monitor_loop SCHED_FIFO 94）
     bool start();
 
     /// 停止安全监控
@@ -48,7 +47,7 @@ private:
     /// LimitSwitch 触发回调（在 GPIO 监控线程中被调用，必须极短）
     void on_limit_trigger(device::LimitSide side);
 
-    /// 安全监视主循环（SCHED_FIFO 99）
+    /// 安全监视主循环（SCHED_FIFO 94，5ms 轮询）
     void monitor_loop();
 
     std::shared_ptr<device::WalkMotorGroup> walk_group_;

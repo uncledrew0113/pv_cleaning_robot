@@ -8,6 +8,7 @@
  *
  * Copyright (c) 2026 by UncleDrew, All Rights Reserved.
  */
+#include <filesystem>
 #include <nlohmann/json.hpp>
 
 #include "pv_cleaning_robot/service/health_service.h"
@@ -20,7 +21,8 @@ HealthService::HealthService(std::shared_ptr<device::WalkMotorGroup> walk,
                              std::shared_ptr<device::ImuDevice>      imu,
                              std::shared_ptr<device::GpsDevice>      gps,
                              std::shared_ptr<CloudService>           cloud,
-                             Mode                                    mode)
+                             Mode                                    mode,
+                             std::string                             local_log_path)
     : walk_(std::move(walk))
     , brush_(std::move(brush))
     , bms_(std::move(bms))
@@ -28,6 +30,12 @@ HealthService::HealthService(std::shared_ptr<device::WalkMotorGroup> walk,
     , gps_(std::move(gps))
     , cloud_(std::move(cloud))
     , mode_(mode) {
+    // 本地 JSONL 日志文件（仅 local_log_path 非空时开启，独立于 MQTT/LoRaWAN）
+    if (!local_log_path.empty()) {
+        std::filesystem::create_directories(
+            std::filesystem::path(local_log_path).parent_path());
+        local_log_file_.open(local_log_path, std::ios::app);
+    }
     // 预建 JSON 键树：键名字符串只分配一次，后续 update() 只改数值
     if (mode_ == Mode::HEALTH) {
         // HEALTH 模式：精简字段（avg rpm/current/fault + 温度）
@@ -61,7 +69,13 @@ HealthService::HealthService(std::shared_ptr<device::WalkMotorGroup> walk,
 }
 
 void HealthService::update() {
-    cloud_->publish_telemetry(build_payload());
+    const std::string payload = build_payload();
+    cloud_->publish_telemetry(payload);
+    // 本地 JSONL 落盘：每条记录一行，独立于网络，离线测试直接 cat 查看
+    if (local_log_file_.is_open()) {
+        local_log_file_ << payload << '\n';
+        local_log_file_.flush();
+    }
 }
 
 std::string HealthService::build_payload() const {
@@ -89,7 +103,7 @@ std::string HealthService::build_payload() const {
         j_["walk"]["ctrl_frames"] = gd.ctrl_frame_count;
         j_["walk"]["ctrl_err"]    = gd.ctrl_err_count;
 
-        // 辖刷电机
+        // 辊刷电机
         j_["brush"]["rpm"]      = bd.actual_rpm;
         j_["brush"]["target"]   = bd.target_rpm;
         j_["brush"]["current"]  = bd.current_a;

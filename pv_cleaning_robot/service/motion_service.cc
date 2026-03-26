@@ -28,6 +28,10 @@ MotionService::MotionService(std::shared_ptr<device::WalkMotorGroup> group,
 // ── 运动控制 ──────────────────────────────────────────────────────────────
 
 bool MotionService::start_cleaning() {
+    // 先切换到速度环模式，再使能
+    // M1502E 上电默认模式不确定（可能是开环 0x00），必须显式切换
+    if (group_->set_mode_all(protocol::WalkMotorMode::SPEED) != device::DeviceError::OK)
+        return false;
     // 使能全部行走电机
     if (group_->enable_all() != device::DeviceError::OK)
         return false;
@@ -62,6 +66,9 @@ bool MotionService::start_returning() {
     brush_->stop();
     group_->enable_heading_control(false);
 
+    // 先切换速度环，再使能
+    if (group_->set_mode_all(protocol::WalkMotorMode::SPEED) != device::DeviceError::OK)
+        return false;
     if (group_->enable_all() != device::DeviceError::OK)
         return false;
 
@@ -131,7 +138,9 @@ void MotionService::update() {
     //   4. 每 1000ms 发一次温度查询帧（主动上报不含温度）
     group_->update(yaw);
 
-    brush_->update();
+    // 注意：brush_->update() 已移到 bms_exec 线程（SCHED_OTHER, 500ms）
+    // 原因：Modbus RTU 读取寄存器需 5~10ms阶塞 I/O，放在 walk_ctrl(FIFO 80, 20ms)
+    // 中将住用 25%~50% 控制周期时间预算。BrushMotor 状态 50~500ms 周期平候
 }
 
 }  // namespace robot::service

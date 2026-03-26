@@ -70,19 +70,6 @@ DeviceError WalkMotorGroup::open() {
     running_.store(true);
     recv_thread_ = std::thread(&WalkMotorGroup::recv_loop, this);
 
-    // CAN 接收线程：SCHED_FIFO 82，绑定到 CPU 5（运动控制专用大核）
-    // 设计为略高于 walk_ctrl(80)：优先消化新帧，降低控制拍读取陈旧状态概率。
-    {
-        sched_param sp{};
-        sp.sched_priority = 82;
-        pthread_setschedparam(recv_thread_.native_handle(), SCHED_FIFO, &sp);
-        cpu_set_t cpuset;
-        CPU_ZERO(&cpuset);
-        CPU_SET(5, &cpuset);  ///< 大核 CPU5: 运动控制路径
-        pthread_setaffinity_np(recv_thread_.native_handle(), sizeof(cpuset), &cpuset);
-        pthread_setname_np(recv_thread_.native_handle(), "group_recv");
-    }
-
     // 若配置了通信超时，写入每台电机（确保主控失联时电机自停）
     if (comm_timeout_ms_ > 0u) {
         for (int i = 0; i < kWheelCount; ++i) {
@@ -477,6 +464,23 @@ void WalkMotorGroup::update(float yaw_deg) {
 // ── 后台接收线程 ─────────────────────────────────────────────────────────────
 
 void WalkMotorGroup::recv_loop() {
+    // ── 线程自身完成 RT 提权 + CPU 绑定（SCHED_FIFO 82，CPU 5）──
+    // 设计为略高于 walk_ctrl(80)：优先消化新帧，降低控制拍读取陈旧状态概率。
+    {
+        sched_param sp{};
+        sp.sched_priority = 82;
+        int rc = pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp);
+        if (rc != 0) {
+            spdlog::warn("[WalkMotorGroup] RT priority elevation failed: {}", strerror(rc));
+        }
+        cpu_set_t cpuset;
+        CPU_ZERO(&cpuset);
+        CPU_SET(5, &cpuset);
+        if (pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset) != 0) {
+            spdlog::warn("[WalkMotorGroup] CPU 5 affinity set failed: {}", strerror(errno));
+        }
+        pthread_setname_np(pthread_self(), "group_recv");
+    }
     hal::CanFrame frame;
     while (running_.load()) {
         if (!can_->recv(frame, 50)) {

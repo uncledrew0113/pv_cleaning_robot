@@ -1,5 +1,5 @@
 #pragma once
-#include <any>
+#include <algorithm>
 #include <functional>
 #include <mutex>
 #include <typeindex>
@@ -19,6 +19,9 @@ namespace robot::middleware {
 ///
 /// 订阅者回调在 publish() 的调用线程中执行（同步）。
 /// 如需异步，由调用方在回调中自行投递到队列。
+///
+/// 实现说明：回调签名改为 void(const void*)，用 static_cast 还原原始类型。
+/// 相比 std::any，publish() 热路径完全消除堆分配，对 SCHED_FIFO RT 线程更友好。
 class EventBus {
 public:
     template <typename EventT>
@@ -31,8 +34,8 @@ public:
         std::lock_guard<robot::hal::PiMutex> lk(mtx_);
         int id = next_id_++;
         auto& vec = handlers_[std::type_index(typeid(EventT))];
-        vec.push_back({id, [h = std::move(handler)](const std::any& a) {
-            h(std::any_cast<const EventT&>(a));
+        vec.push_back({id, [h = std::move(handler)](const void* p) {
+            h(*static_cast<const EventT*>(p));
         }});
         return id;
     }
@@ -50,28 +53,30 @@ public:
     }
 
     /// 发布事件——在调用线程中同步回调所有订阅者
+    ///
+    /// publish() 持锁期间仅复制 std::function 指针列表，不复制事件对象本身。
+    /// 回调在锁外执行，事件对象生命期由 publish() 栈帧保证（const EventT& event）。
     template <typename EventT>
     void publish(const EventT& event)
     {
-        std::vector<std::function<void(const std::any&)>> cbs;
+        std::vector<std::function<void(const void*)>> cbs;
         {
             std::lock_guard<robot::hal::PiMutex> lk(mtx_);
             auto it = handlers_.find(std::type_index(typeid(EventT)));
             if (it == handlers_.end()) return;
-            cbs.reserve(it->second.size()); // 避免发布时重复扩容
+            cbs.reserve(it->second.size());
             for (auto& e : it->second) cbs.push_back(e.cb);
         }
-        std::any wrapped = event;
-        for (auto& cb : cbs) cb(wrapped);
+        for (auto& cb : cbs) cb(static_cast<const void*>(&event));
     }
 
 private:
     struct Entry {
         int id;
-        std::function<void(const std::any&)> cb;
+        std::function<void(const void*)> cb;  ///< 类型擦除为 void*，subscribe 中 static_cast 还原
     };
-    // RT 安全互斥量：EventBus::publish() 由 SCHED_FIFO 99 的 SafetyMonitor 直接调用，
-    // 若普通线程持有此锁时被 RT 线程抢占，将出现优先级反转。
+    // RT 安全互斥量：EventBus::publish() 由 SCHED_FIFO 95 的 GPIO 监控线程（SafetyMonitor）
+    // 直接调用。若普通线程持有此锁时被 RT 线程抢占，将出现优先级反转。
     // PiMutex (PTHREAD_PRIO_INHERIT) 自动将持锁线程临时提升至等待者最高优先级。
     robot::hal::PiMutex mtx_;
     std::unordered_map<std::type_index, std::vector<Entry>> handlers_;

@@ -68,7 +68,8 @@
     "mode":                "development",
     "publish_interval_ms": 1000,
     "cloud_upload":        true,
-    "local_log":           true
+    "local_log":           true,
+    "local_path":          "/data/pv_robot/logs/telemetry.jsonl"
   },
 
   "device": {

@@ -5,6 +5,8 @@
 #include <unistd.h>
 #include <sys/ioctl.h>
 #include <linux/watchdog.h>
+#include <cstring>
+#include <spdlog/spdlog.h>
 #include <chrono>
 
 namespace robot::app {
@@ -32,19 +34,6 @@ bool WatchdogMgr::start()
 
     running_.store(true);
     monitor_thread_ = std::thread(&WatchdogMgr::monitor_loop, this);
-
-    // 看门狗监控线程：SCHED_FIFO 50，绑定到 CPU 7（大核，用于管理任务）
-    // 需要能抢占所有 SCHED_OTHER 线程以保证超时检测及时
-    {
-        sched_param sp{};
-        sp.sched_priority = 50;
-        pthread_setschedparam(monitor_thread_.native_handle(), SCHED_FIFO, &sp);
-        cpu_set_t cpuset;
-        CPU_ZERO(&cpuset);
-        CPU_SET(7, &cpuset);
-        pthread_setaffinity_np(monitor_thread_.native_handle(), sizeof(cpuset), &cpuset);
-        pthread_setname_np(monitor_thread_.native_handle(), "watchdog_mon");
-    }
     return true;
 }
 
@@ -86,6 +75,22 @@ void WatchdogMgr::set_timeout_callback(TimeoutCallback cb)
 
 void WatchdogMgr::monitor_loop()
 {
+    // ── 线程自身完成 RT 提权 + CPU 绑定（SCHED_FIFO 50，CPU 7）──
+    {
+        sched_param sp{};
+        sp.sched_priority = 50;
+        int rc = pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp);
+        if (rc != 0) {
+            spdlog::warn("[WatchdogMgr] RT priority elevation failed: {}", strerror(rc));
+        }
+        cpu_set_t cpuset;
+        CPU_ZERO(&cpuset);
+        CPU_SET(7, &cpuset);
+        if (pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset) != 0) {
+            spdlog::warn("[WatchdogMgr] CPU 7 affinity set failed: {}", strerror(errno));
+        }
+        pthread_setname_np(pthread_self(), "watchdog_mon");
+    }
     while (running_.load()) {
         // 喂硬件看门狗
         feed_hw_watchdog();

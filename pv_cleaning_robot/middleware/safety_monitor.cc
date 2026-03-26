@@ -40,22 +40,6 @@ bool SafetyMonitor::start()
     running_.store(true);
     monitor_thread_ = std::thread(&SafetyMonitor::monitor_loop, this);
 
-    // 设置实时调度策略 + CPU 亲和性
-    sched_param sp{};
-    sp.sched_priority = 94;
-    pthread_setschedparam(monitor_thread_.native_handle(), SCHED_FIFO, &sp);
-
-    // 绑定到大核 CPU 4（安全关键专用，避免与运动控制线程竞争同一核心）
-    {
-        cpu_set_t cpuset;
-        CPU_ZERO(&cpuset);
-        CPU_SET(4, &cpuset);
-        if (pthread_setaffinity_np(monitor_thread_.native_handle(), sizeof(cpuset), &cpuset) != 0) {
-            spdlog::warn("[SafetyMonitor] CPU 4 affinity assignment failed: {}", strerror(errno));
-        }
-    }
-    pthread_setname_np(monitor_thread_.native_handle(), "safety_mon");
-
     return true;
 }
 
@@ -114,6 +98,24 @@ void SafetyMonitor::on_limit_trigger(device::LimitSide side)
 
 void SafetyMonitor::monitor_loop()
 {
+    // ── 线程自身完成 RT 提权 + CPU 绑定 ──
+    // 必须在线程内设置：安全关键路径，不容许启动竞争窗口（尤其是 SCHED_FIFO 94）。
+    {
+        sched_param sp{};
+        sp.sched_priority = 94;
+        int rc = pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp);
+        if (rc != 0) {
+            spdlog::warn("[SafetyMonitor] RT priority elevation failed: {}", strerror(rc));
+        }
+        cpu_set_t cpuset;
+        CPU_ZERO(&cpuset);
+        CPU_SET(4, &cpuset);
+        if (pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset) != 0) {
+            spdlog::warn("[SafetyMonitor] CPU 4 affinity set failed: {}", strerror(errno));
+        }
+        pthread_setname_np(pthread_self(), "safety_mon");
+    }
+
     // 备用轮询路径：以防 GPIO 边沿回调丢失（双保险）。
     // 注意：on_limit_trigger() 内部已调用 clear_trigger()，
     // 因此重复触发被抑制，无需额外去重计数器。
