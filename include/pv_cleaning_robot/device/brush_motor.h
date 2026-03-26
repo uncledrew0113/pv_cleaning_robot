@@ -1,6 +1,7 @@
 #pragma once
 #include "pv_cleaning_robot/device/device_error.h"
 #include "pv_cleaning_robot/hal/i_modbus_master.h"
+#include "pv_cleaning_robot/hal/pi_mutex.h"
 #include <memory>
 #include <mutex>
 
@@ -68,7 +69,9 @@ private:
 
     std::shared_ptr<hal::IModbusMaster> modbus_;
     int                                 slave_id_;
-    mutable std::mutex                  mtx_;
+    // PiMutex (PTHREAD_PRIO_INHERIT)：walk_ctrl(FIFO 80) 与 cloud(SCHED_OTHER)
+    // 同时访问 diag_/target_rpm_，需要优先级继承防止 PI 反转。
+    mutable hal::PiMutex                mtx_;
     Diagnostics                         diag_{};
     int                                 target_rpm_{0};
 };

@@ -40,9 +40,10 @@ bool MotionService::start_cleaning() {
         group_->enable_heading_control(true);
     }
 
-    // 同步设定四轮清扫速度（左右同向前进，正值=前进）
+    // 物理安装：LT/RT 正转=前进，LB/RB 因安装方向相反，负转=前进
+    // 车辆前进：LT=+spd, RT=+spd, LB=-spd, RB=-spd
     const float spd = cfg_.clean_speed_rpm;
-    if (group_->set_speeds(spd, spd, spd, spd) != device::DeviceError::OK)
+    if (group_->set_speeds(spd, spd, -spd, -spd) != device::DeviceError::OK)
         return false;
 
     brush_->set_rpm(cfg_.brush_rpm);
@@ -64,8 +65,10 @@ bool MotionService::start_returning() {
     if (group_->enable_all() != device::DeviceError::OK)
         return false;
 
-    const float spd = -cfg_.return_speed_rpm;  // 负值=后退
-    if (group_->set_speeds(spd, spd, spd, spd) != device::DeviceError::OK)
+    // 物理安装：LT/RT 负转=后退，LB/RB 安装相反正转=后退
+    // 车辆后退：LT=-spd, RT=-spd, LB=+spd, RB=+spd
+    const float spd = cfg_.return_speed_rpm;  // 正大小量级
+    if (group_->set_speeds(-spd, -spd, +spd, +spd) != device::DeviceError::OK)
         return false;
 
     return true;

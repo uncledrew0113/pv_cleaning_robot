@@ -1,53 +1,78 @@
 {
-  "can": {
-    "interface": "can0"
+  "logging": {
+    "log_dir":  "/data/pv_robot/logs",
+    "level":    "info",
+    "console":  true
   },
+
+  "can": {
+    "interface": "can0",
+    "walk_motor": {
+      "motor_id":        1,
+      "comm_timeout_ms": 200
+    }
+  },
+
   "serial": {
     "imu":   { "port": "/dev/ttyS1", "baudrate": 921600 },
-    "gps":   { "port": "/dev/ttyS2", "baudrate": 9600 },
-    "brush": { "port": "/dev/ttyS3", "baudrate": 9600 },
-    "bms":   { "port": "/dev/ttyS4", "baudrate": 9600 }
+    "gps":   { "port": "/dev/ttyS2", "baudrate": 9600   },
+    "brush": { "port": "/dev/ttyS3", "baudrate": 9600, "slave_id": 1 },
+    "bms":   { "port": "/dev/ttyS4", "baudrate": 9600   }
   },
+
   "gpio": {
-    "limit_front": { "chip": "gpiochip0", "line": 10 },
-    "limit_rear":  { "chip": "gpiochip0", "line": 11 }
+    "front_limit": { "chip": "gpiochip0", "line": 10 },
+    "rear_limit":  { "chip": "gpiochip0", "line": 11 }
   },
-  "brush": { "slave_id": 1 },
-  "bms":   { "slave_id": 2 },
-  "storage": {
-    "cache_db": "/data/pv_robot/cache.db",
-    "log_dir":  "/data/pv_robot/logs"
-  },
-  "watchdog": {
-    "device": "/dev/watchdog"
-  },
+
   "network": {
     "transport_mode": "mqtt_only",
     "mqtt": {
-      "host":         "tb.example.com",
-      "port":         1883,
-      "token":        "DEVICE_TOKEN_HERE",
-      "tls":          false,
+      "broker_uri":   "tcp://tb.example.com:1883",
+      "client_id":    "pv_robot_001",
+      "tls_enabled":  false,
       "keep_alive_s": 60,
       "qos":          1
     },
     "lorawan": {
       "port":              "/dev/ttyS5",
       "baudrate":          115200,
+      "dev_eui":           "",
+      "app_key":           "",
       "report_interval_s": 300
     }
   },
-  "robot": {
-    "track_length_m":     1000.0,
-    "clean_speed_m_min":  10.0,
-    "wind_threshold_m_s": 12.0,
-    "low_battery_soc":    15,
-    "full_battery_soc":   95
+
+  "storage": {
+    "cache_path": "/data/pv_robot/telemetry_cache.jsonl"
   },
+
+  "system": {
+    "hw_watchdog": "/dev/watchdog"
+  },
+
+  "robot": {
+    "track_length_m":   1000.0,
+    "passes":           1,
+    "clean_speed_rpm":  300.0,
+    "return_speed_rpm": 500.0,
+    "brush_rpm":        1200,
+    "edge_reverse_rpm": 0.0,
+    "heading_pid_en":   true,
+    "battery_full_soc": 95.0,
+    "battery_low_soc":  15.0,
+    "wheel_circ_m":     0.3
+  },
+
   "diagnostics": {
-    "mode":               "development",
-    "collect_interval_ms": 100,
-    "cloud_upload":       true,
-    "local_log":          true
+    "mode":                "development",
+    "publish_interval_ms": 1000,
+    "cloud_upload":        true,
+    "local_log":           true
+  },
+
+  "device": {
+    "fw_version": "1.0.0",
+    "hw_version": "1.0"
   }
 }

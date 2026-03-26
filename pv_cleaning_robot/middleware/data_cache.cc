@@ -1,60 +1,55 @@
 #include "pv_cleaning_robot/middleware/data_cache.h"
-#include <sqlite3.h>
-#include <vector>
+#include <algorithm>
 #include <chrono>
-#include <stdexcept>
+#include <filesystem>
+#include <fstream>
+#include <nlohmann/json.hpp>
+#include <spdlog/spdlog.h>
 
 namespace robot::middleware {
 
-DataCache::DataCache(std::string db_path, size_t max_rows)
-    : db_path_(std::move(db_path)), max_rows_(max_rows)
-{
-}
+DataCache::DataCache(std::string file_path, size_t max_rows)
+    : file_path_(std::move(file_path)), max_rows_(max_rows) {}
 
-DataCache::~DataCache()
-{
-    close();
-}
+DataCache::~DataCache() {}
 
-bool DataCache::open()
-{
+bool DataCache::open() {
     std::lock_guard<std::mutex> lk(mtx_);
-    if (db_) return true;
 
-    int rc = sqlite3_open(db_path_.c_str(), &db_);
-    if (rc != SQLITE_OK) {
-        db_ = nullptr;
-        return false;
+    // 创建父目录（/data/pv_robot/ 等目录首次启动可能不存在）
+    std::error_code ec;
+    auto parent = std::filesystem::path(file_path_).parent_path();
+    if (!parent.empty())
+        std::filesystem::create_directories(parent, ec);
+
+    // 加载已有文件
+    std::ifstream in(file_path_);
+    if (!in.is_open()) return true;  // 文件不存在是正常情况（首次运行）
+
+    std::string line;
+    int64_t max_id = 0;
+    while (std::getline(in, line)) {
+        if (line.empty()) continue;
+        try {
+            auto j   = nlohmann::json::parse(line);
+            Record r;
+            r.id      = j.at("id").get<int64_t>();
+            r.topic   = j.at("topic").get<std::string>();
+            r.payload = j.at("payload").get<std::string>();
+            r.ts_ms   = j.at("ts_ms").get<uint64_t>();
+            if (r.id > max_id) max_id = r.id;
+            queue_.push_back(std::move(r));
+        } catch (...) {
+            spdlog::warn("[DataCache] 跳过损坏行: {}", line.substr(0, 80));
+        }
     }
-
-    // 启用 WAL 模式、外键约束以及合理的超时
-    sqlite3_exec(db_, "PRAGMA journal_mode=WAL;", nullptr, nullptr, nullptr);
-    sqlite3_exec(db_, "PRAGMA synchronous=NORMAL;", nullptr, nullptr, nullptr);
-    sqlite3_busy_timeout(db_, 3000);
-
-    const char* create_sql =
-        "CREATE TABLE IF NOT EXISTS telemetry_cache ("
-        "  id      INTEGER PRIMARY KEY AUTOINCREMENT,"
-        "  topic   TEXT    NOT NULL,"
-        "  payload TEXT    NOT NULL,"
-        "  ts_ms   INTEGER NOT NULL"
-        ");";
-    rc = sqlite3_exec(db_, create_sql, nullptr, nullptr, nullptr);
-    return (rc == SQLITE_OK);
-}
-
-void DataCache::close()
-{
-    std::lock_guard<std::mutex> lk(mtx_);
-    if (db_) {
-        sqlite3_close(db_);
-        db_ = nullptr;
-    }
+    if (max_id >= next_id_) next_id_ = max_id + 1;
+    spdlog::info("[DataCache] 从文件加载 {} 条待发送记录", queue_.size());
+    return true;
 }
 
 bool DataCache::push(const std::string& topic, const std::string& payload,
-                     uint64_t ts_ms)
-{
+                     uint64_t ts_ms) {
     if (ts_ms == 0) {
         ts_ms = static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -62,104 +57,57 @@ bool DataCache::push(const std::string& topic, const std::string& payload,
     }
 
     std::lock_guard<std::mutex> lk(mtx_);
-    if (!db_) return false;
-
-    const char* sql = "INSERT INTO telemetry_cache (topic, payload, ts_ms) VALUES (?,?,?);";
-    sqlite3_stmt* stmt = nullptr;
-    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return false;
-
-    sqlite3_bind_text (stmt, 1, topic.c_str(),   -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text (stmt, 2, payload.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(stmt, 3, static_cast<sqlite3_int64>(ts_ms));
-
-    int rc = sqlite3_step(stmt);
-    sqlite3_finalize(stmt);
-
-    if (rc == SQLITE_DONE) {
-        prune_if_needed();
-        return true;
+    if (queue_.size() >= max_rows_) {
+        queue_.pop_front();  // 超出容量丢弃最旧记录
     }
-    return false;
+    queue_.push_back({next_id_++, topic, payload, ts_ms});
+    flush_to_file();
+    return true;
 }
 
-std::vector<DataCache::Record> DataCache::pop_batch(int max_count)
-{
+std::vector<DataCache::Record> DataCache::pop_batch(int max_count) {
     std::lock_guard<std::mutex> lk(mtx_);
     std::vector<Record> result;
-    result.reserve(static_cast<size_t>(max_count)); // 避免 SQLite 行循环中重复扩容
-    if (!db_) return result;
-
-    const char* sql =
-        "SELECT id, topic, payload, ts_ms FROM telemetry_cache "
-        "ORDER BY id ASC LIMIT ?;";
-    sqlite3_stmt* stmt = nullptr;
-    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return result;
-
-    sqlite3_bind_int(stmt, 1, max_count);
-
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        Record r;
-        r.id      = sqlite3_column_int64(stmt, 0);
-        r.topic   = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
-        r.payload = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
-        r.ts_ms   = static_cast<uint64_t>(sqlite3_column_int64(stmt, 3));
-        result.push_back(std::move(r));
-    }
-    sqlite3_finalize(stmt);
+    int n = std::min(static_cast<int>(queue_.size()), max_count);
+    result.reserve(static_cast<size_t>(n));
+    for (int i = 0; i < n; ++i)
+        result.push_back(queue_[static_cast<size_t>(i)]);
     return result;
 }
 
-void DataCache::confirm_sent(const std::vector<int64_t>& ids)
-{
+void DataCache::confirm_sent(const std::vector<int64_t>& ids) {
     if (ids.empty()) return;
     std::lock_guard<std::mutex> lk(mtx_);
-    if (!db_) return;
-
-    sqlite3_exec(db_, "BEGIN;", nullptr, nullptr, nullptr);
-    sqlite3_stmt* stmt = nullptr;
-    const char* sql = "DELETE FROM telemetry_cache WHERE id = ?;";
-    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) == SQLITE_OK) {
-        for (auto id : ids) {
-            sqlite3_bind_int64(stmt, 1, id);
-            sqlite3_step(stmt);
-            sqlite3_reset(stmt);
-        }
-        sqlite3_finalize(stmt);
+    for (auto id : ids) {
+        auto it = std::find_if(queue_.begin(), queue_.end(),
+                               [id](const Record& r) { return r.id == id; });
+        if (it != queue_.end()) queue_.erase(it);
     }
-    sqlite3_exec(db_, "COMMIT;", nullptr, nullptr, nullptr);
+    flush_to_file();
 }
 
-size_t DataCache::size()
-{
+size_t DataCache::size() {
     std::lock_guard<std::mutex> lk(mtx_);
-    if (!db_) return 0;
-    sqlite3_stmt* stmt = nullptr;
-    sqlite3_prepare_v2(db_, "SELECT COUNT(*) FROM telemetry_cache;", -1, &stmt, nullptr);
-    size_t cnt = 0;
-    if (sqlite3_step(stmt) == SQLITE_ROW)
-        cnt = static_cast<size_t>(sqlite3_column_int64(stmt, 0));
-    sqlite3_finalize(stmt);
-    return cnt;
+    return queue_.size();
 }
 
-// 必须在 mtx_ 持有状态下调用
-void DataCache::prune_if_needed()
-{
-    if (!db_) return;
-    sqlite3_stmt* stmt = nullptr;
-    sqlite3_prepare_v2(db_, "SELECT COUNT(*) FROM telemetry_cache;", -1, &stmt, nullptr);
-    size_t cnt = 0;
-    if (sqlite3_step(stmt) == SQLITE_ROW)
-        cnt = static_cast<size_t>(sqlite3_column_int64(stmt, 0));
-    sqlite3_finalize(stmt);
-
-    if (cnt > max_rows_) {
-        // 删除最旧的 1000 条
-        sqlite3_exec(db_,
-            "DELETE FROM telemetry_cache WHERE id IN "
-            "(SELECT id FROM telemetry_cache ORDER BY id ASC LIMIT 1000);",
-            nullptr, nullptr, nullptr);
+void DataCache::flush_to_file() const {
+    // 原子写：先写 .tmp，再 rename（Linux rename 是原子操作）
+    std::string tmp = file_path_ + ".tmp";
+    {
+        std::ofstream out(tmp, std::ios::trunc);
+        for (const auto& r : queue_) {
+            out << nlohmann::json{{"id",      r.id},
+                                  {"topic",   r.topic},
+                                  {"payload", r.payload},
+                                  {"ts_ms",   r.ts_ms}}.dump()
+                << '\n';
+        }
     }
+    std::error_code ec;
+    std::filesystem::rename(tmp, file_path_, ec);
+    if (ec)
+        spdlog::warn("[DataCache] 文件重写失败: {}", ec.message());
 }
 
 } // namespace robot::middleware

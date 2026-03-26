@@ -7,9 +7,6 @@ add_executable(unit_tests
   # BMS 协议层 + 设备层单元测试（含 /dev/ttyS8 硬件集成测试）
   bms_test.cc
 
-  # BMS2 (Modbus RTU) 协议层 + 设备层单元测试
-  bms2_test.cc
-
   # IMU 协议层 + 设备层单元测试（WIT Motion UART 协议）
   imu_test.cc
 
@@ -23,7 +20,6 @@ add_executable(unit_tests
 
   # 协议层源文件
   ${PROJECT_SOURCE_DIR}/pv_cleaning_robot/protocol/bms_protocol.cc
-  ${PROJECT_SOURCE_DIR}/pv_cleaning_robot/protocol/bms2_protocol.cc
   ${PROJECT_SOURCE_DIR}/pv_cleaning_robot/protocol/imu_protocol.cc
 
   # 设备层 imu_device

@@ -2,7 +2,7 @@
 
 > **目标平台**：RK3576 · aarch64-linux-gnu · C++17  
 > **构建系统**：CMake 3.22 + 交叉编译 Toolchain  
-> **核心依赖**：Boost.SML · spdlog · paho-mqtt-cpp · libmodbus · libserialport · libgpiod · nlohmann/json · sqlite3 · OpenSSL
+> **核心依赖**：Boost.SML · spdlog · paho-mqtt-cpp · libmodbus · libserialport · libgpiod · nlohmann/json · OpenSSL
 
 ---
 
@@ -51,7 +51,7 @@
 ├─────────────────────────────────────────────────────────────────┤
 │                     Protocol Layer（协议层）                      │
 │ WalkMotorCanCodec │ NmeaParser │ ImuProtocol                    │
-│ BmsProtocol │ Bms2Protocol                                      │
+│ BmsProtocol                                                       │
 ├─────────────────────────────────────────────────────────────────┤
 │                      Driver Layer（驱动层）                       │
 │ LinuxCanSocket │ LibSerialPort │ LibGpiodPin │ LibModbusMaster   │
@@ -706,11 +706,13 @@ public:
 
 ---
 
-### 6.7 `DataCache` — 离线遥测缓存（SQLite3 WAL）
+### 6.7 `DataCache` — 离线遥测缓存（JSONL 文件持久化）
 
 ```cpp
 class DataCache {
 public:
+    static constexpr size_t kDefaultMaxRows = 500;
+
     struct Record {
         int64_t     id;
         std::string topic;
@@ -718,22 +720,22 @@ public:
         uint64_t    ts_ms;
     };
 
-    explicit DataCache(string db_path, size_t max_rows = 10000);
+    explicit DataCache(std::string file_path, size_t max_rows = kDefaultMaxRows);
 
-    bool open();
-    void close();
-    bool push(const string& topic, const string& payload, uint64_t ts_ms = 0);
-    vector<Record> pop_batch(int max_count = 50);
-    void confirm_sent(const vector<int64_t>& ids);
+    bool open();   // 创建父目录；从已有 JSONL 文件加载未确认记录（断电恢复）
+    void close();  // 无操作
+    bool push(const std::string& topic, const std::string& payload, uint64_t ts_ms = 0);
+    std::vector<Record> pop_batch(int max_count = 50);
+    void confirm_sent(const std::vector<int64_t>& ids);
     size_t size();
 };
 ```
 
 **工作机制**：
-1. 网络断开时，`CloudService` 调用 `push()` 将遥测写入 SQLite
-2. 网络恢复后，`flush_cache()` 循环 `pop_batch()` → 上报 → `confirm_sent()`
-3. 超过 `max_rows` 自动清理最旧记录，防止磁盘溢出
-4. **WAL 模式**：写入不阻塞读取（SQLite3 `PRAGMA journal_mode=WAL`）
+1. 网络断开时，`CloudService` 调用 `push()` 将遥测追加到内存队列，并**原子重写** JSONL 文件（`.tmp` → `rename`）
+2. 网络恢复后，`flush_cache()` 循环 `pop_batch()` → 上报 → `confirm_sent()`，每次 `confirm_sent()` 同样原子重写文件
+3. 超过 `max_rows`（默认 500）时自动丢弃最旧记录，防止磁盘溢出（500 条 × ~300 B ≈ 150 KB）
+4. **断电安全**：`open()` 重新加载文件中所有未确认记录，重启后自动续传；无 SQLite 依赖
 
 ---
 
@@ -860,40 +862,54 @@ public:
 class NavService : public IRunnable {
 public:
     struct Pose {
-        double distance_m{0.0};  // 累计位移（米）
-        float  pitch_deg{0.0f};  // 纵坡角（IMU，正=上坡）
-        float  roll_deg{0.0f};   // 横坡角
-        float  speed_mps{0.0f};  // 当前速度（m/s）
+        double distance_m{0.0};        // 累计位移（米）
+        float  pitch_deg{0.0f};        // 纵坡角（IMU，正=上坡）
+        float  roll_deg{0.0f};         // 横坡角
+        float  speed_mps{0.0f};        // 当前速度（m/s）
+        bool   spin_free_detected{false}; // 悬空/空转检测触发标志
         bool   valid{false};
     };
 
-    NavService(std::shared_ptr<device::WalkMotor> walk,  // ← 使用单电机
+    NavService(std::shared_ptr<device::WalkMotorGroup> walk_group,
                std::shared_ptr<device::ImuDevice> imu,
                std::shared_ptr<device::GpsDevice> gps,
                float wheel_circumference_m = 0.3f);
 
-    void reset_odometry();
+    void reset_odometry();         // 重置 distance_m / speed_mps / spin 计数器
+    void clear_spin_detection();   // 仅清除悬空检测计数器，保留里程数据
     Pose get_pose() const;
     bool is_slope_too_steep(float threshold_deg = 15.0f) const;
-    void update() override;      // ThreadExecutor 10ms 调用
+    void update() override;        // ThreadExecutor 10ms 调用
 };
 ```
 
 **实现原理（航位推算）**：
 ```
-speed_rpm = walk_->get_status().speed_rpm    ← 读取 WalkMotor 缓存（无 I/O）
-delta_m = (speed_rpm / 60) × wheel_circ_m × dt_s
+// 四轮平均：(左前 + 右前 - 左后 - 右后) / 4（差速抵消原地转）
+avg_rpm = (LT_rpm + RT_rpm - LB_rpm - RB_rpm) / 4.0f
+// 坡度修正：水平分量 = 转速 × cos(pitch)
+delta_m = (avg_rpm / 60.0f) × wheel_circ_m × std::cos(pitch_rad) × kDt
 distance_m += delta_m
-speed_mps = (speed_rpm / 60) × wheel_circ_m
-pitch_deg/roll_deg ← imu_->get_latest().pitch_deg/roll_deg（缓存）
+speed_mps = (avg_rpm / 60.0f) × wheel_circ_m
+pitch_deg/roll_deg ← imu_->get_latest()（缓存，无 I/O）
 ```
 
-**是否最优**：❌ 里程计使用 `WalkMotor`（电机 1 单轮），而运动控制已改为 `WalkMotorGroup`（4轮）。
-应改为读取 WalkMotorGroup 左右轮平均速度，消除单轮打滑误差。  
-GPS 字段在 `Pose` 中未使用，仅存储在 `gps_` 成员中但 `update()` 中不读取 GPS 数据。
+**悬空检测算法（spin-free detection）**：
+```
+// 每 10ms 在 update() 中运行
+if (|avg_rpm| > kSpinCmdThreshold && |commanded_rpm| < kSpinStopThreshold)
+    spin_free_ticks_++
+else
+    spin_free_ticks_ = 0
+if (spin_free_ticks_ >= kSpinMaxTicks)  // 连续 500ms
+    pose_.spin_free_detected = true
+```
+检测到悬空后，`main.cc` 调用 `clear_spin_detection()` 清除标志位，同时上报 P0 故障并停机。  
+`clear_spin_detection()` 不重置 `distance_m`，保留已行走里程。
 
-**⚠️ 架构注意**：`update()` 中 `kDt` 硬编码为 `0.010f`（10ms），但 nav 线程周期为 10ms，
-若调整周期需同步修改此常量（或改为实测dt，同 WalkMotorGroup 的修复方式）。
+**GPS 说明**：固定轨道场景下 GPS 精度（~5 m CEP）不足以替代限位开关；GPS 数据仅上报遥测，不参与里程计算。
+
+**⚠️ 注意**：`kDt` 硬编码为 `0.010f`（10 ms），若 nav 线程周期调整需同步修改。
 
 ---
 
@@ -921,7 +937,7 @@ public:
 
 **离线容错机制**：
 - 网络在线：直接通过 `NetworkManager::publish()`
-- 网络离线：写入 `DataCache`（SQLite）
+- 网络离线：写入 `DataCache`（JSONL 文件，断电可恢复）
 - 网络恢复：`update()` 中调用 `flush_cache()` 批量回传
 
 ---
@@ -1343,13 +1359,13 @@ if (mlockall(MCL_CURRENT | MCL_FUTURE) != 0) {
   },
   "can": {
     "interface": "can0",
-    "walk_motor": { "cmd_id": 1537, "status_id": 1409 }
+    "walk_motor": { "motor_id": 1, "comm_timeout_ms": 200 }
   },
   "serial": {
     "imu":   { "port": "/dev/ttyS1", "baudrate": 921600 },
     "gps":   { "port": "/dev/ttyS2", "baudrate": 9600 },
-    "brush": { "port": "/dev/ttyS3", "baudrate": 115200, "slave_id": 1 },
-    "bms":   { "port": "/dev/ttyS4", "baudrate": 9600, "slave_id": 2 }
+    "brush": { "port": "/dev/ttyS3", "baudrate": 9600, "slave_id": 1 },
+    "bms":   { "port": "/dev/ttyS4", "baudrate": 9600 }
   },
   "gpio": {
     "front_limit": { "chip": "gpiochip0", "line": 10 },
@@ -1370,23 +1386,30 @@ if (mlockall(MCL_CURRENT | MCL_FUTURE) != 0) {
     }
   },
   "storage": {
-    "cache_db": "/var/robot/telemetry.db"
+    "cache_path": "/data/pv_robot/telemetry_cache.jsonl"
   },
   "robot": {
     "track_length_m": 1000.0,
-    "passes": 2,
+    "passes": 1,
     "clean_speed_rpm": 300.0,
     "return_speed_rpm": 500.0,
     "brush_rpm": 1200,
+    "edge_reverse_rpm": 0.0,
+    "heading_pid_en": true,
     "battery_full_soc": 95.0,
-    "battery_low_soc": 15.0
+    "battery_low_soc": 15.0,
+    "wheel_circ_m": 0.3
   },
   "diagnostics": {
-    "mode": "production",
+    "mode": "development",
     "publish_interval_ms": 1000
   },
   "system": {
     "hw_watchdog": "/dev/watchdog"
+  },
+  "device": {
+    "fw_version": "1.0.0",
+    "hw_version": "1.0"
   }
 }
 ```

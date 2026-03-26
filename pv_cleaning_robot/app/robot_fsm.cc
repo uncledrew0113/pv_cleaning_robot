@@ -27,24 +27,36 @@ std::string RobotFsm::current_state() const {
 
 template <>
 void RobotFsm::dispatch<EvStart>(EvStart e) {
-    std::lock_guard<hal::PiMutex> lk(mtx_);
-    sm_->process_event(e);
-    state_name_ = "Homing";
-    spdlog::info("[FSM] → Homing");
-    // 无实体 homing，直接发 HomeDone
-    sm_->process_event(EvHomeDone{});
-    state_name_ = "CleanFwd";
-    spdlog::info("[FSM] → CleanFwd");
-    motion_->start_cleaning();
+    std::function<void()> action;
+    {
+        std::lock_guard<hal::PiMutex> lk(mtx_);
+        sm_->process_event(e);
+        state_name_ = "Homing";
+        spdlog::info("[FSM] → Homing");
+        // 无实体 homing，直接发 HomeDone
+        sm_->process_event(EvHomeDone{});
+        state_name_ = "CleanFwd";
+        spdlog::info("[FSM] → CleanFwd");
+        // 安全路径：I/O 在 FSM 锁解除后执行
+        action = [this]() { motion_->start_cleaning(); };
+    }
+    if (action)
+        action();
 }
 
 template <>
 void RobotFsm::dispatch<EvStop>(EvStop e) {
-    std::lock_guard<hal::PiMutex> lk(mtx_);
-    sm_->process_event(e);
-    state_name_ = "Returning";
-    spdlog::info("[FSM] → Returning");
-    motion_->start_returning();
+    std::function<void()> action;
+    {
+        std::lock_guard<hal::PiMutex> lk(mtx_);
+        sm_->process_event(e);
+        state_name_ = "Returning";
+        spdlog::info("[FSM] → Returning");
+        // 安全路径：I/O 在 FSM 锁解除后执行
+        action = [this]() { motion_->start_returning(); };
+    }
+    if (action)
+        action();
 }
 
 template <>
@@ -89,20 +101,33 @@ void RobotFsm::dispatch<EvReachHome>(EvReachHome e) {
 
 template <>
 void RobotFsm::dispatch<EvFaultP0>(EvFaultP0 e) {
-    std::lock_guard<hal::PiMutex> lk(mtx_);
-    sm_->process_event(e);
-    state_name_ = "Fault";
-    spdlog::error("[FSM] → Fault (P0)");
-    motion_->emergency_stop();
+    std::function<void()> action;
+    {
+        std::lock_guard<hal::PiMutex> lk(mtx_);
+        sm_->process_event(e);
+        state_name_ = "Fault";
+        spdlog::error("[FSM] → Fault (P0)");
+        // 安全路径：I/O 动作在 FSM 锁解除后执行，
+        // 防止 EventBus 被 Modbus+CAN I/O 阻塞（约 8~15ms）
+        action = [this]() { motion_->emergency_stop(); };
+    }
+    if (action)
+        action();
 }
 
 template <>
 void RobotFsm::dispatch<EvFaultP1>(EvFaultP1 e) {
-    std::lock_guard<hal::PiMutex> lk(mtx_);
-    sm_->process_event(e);
-    state_name_ = "Returning";
-    spdlog::warn("[FSM] → Returning (P1 fault)");
-    motion_->start_returning();
+    std::function<void()> action;
+    {
+        std::lock_guard<hal::PiMutex> lk(mtx_);
+        sm_->process_event(e);
+        state_name_ = "Returning";
+        spdlog::warn("[FSM] → Returning (P1 fault)");
+        // 安全路径：I/O 在 FSM 锁解除后执行
+        action = [this]() { motion_->start_returning(); };
+    }
+    if (action)
+        action();
 }
 
 template <>
@@ -115,11 +140,17 @@ void RobotFsm::dispatch<EvFaultReset>(EvFaultReset e) {
 
 template <>
 void RobotFsm::dispatch<EvLowBattery>(EvLowBattery e) {
-    std::lock_guard<hal::PiMutex> lk(mtx_);
-    sm_->process_event(e);
-    state_name_ = "Returning";
-    spdlog::warn("[FSM] → Returning (low battery)");
-    motion_->start_returning();
+    std::function<void()> action;
+    {
+        std::lock_guard<hal::PiMutex> lk(mtx_);
+        sm_->process_event(e);
+        state_name_ = "Returning";
+        spdlog::warn("[FSM] → Returning (low battery)");
+        // 安全路径：I/O 在 FSM 锁解除后执行
+        action = [this]() { motion_->start_returning(); };
+    }
+    if (action)
+        action();
 }
 
 template <>

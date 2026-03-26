@@ -187,7 +187,9 @@ DeviceError WalkMotorGroup::set_speeds(const SpeedCmd& cmd) {
 }
 
 DeviceError WalkMotorGroup::set_speed_uniform(float rpm) {
-    return set_speeds(rpm, rpm, rpm, rpm);
+    // 物理安装：LT/RT 正转=前进，LB/RB 因安装方向相反，负转=前进
+    // rpm > 0 = 车辆前进，rpm < 0 = 车辆后退
+    return set_speeds(rpm, rpm, -rpm, -rpm);
 }
 
 DeviceError WalkMotorGroup::set_currents(float lt, float rt, float lb, float rb) {
@@ -325,12 +327,21 @@ DeviceError WalkMotorGroup::emergency_override(float reverse_rpm) {
     override_active_.store(true);
 
     // 2. 直接发送停止或反转帧（不走 last_ctrl_frame_ 缓存）
-    float rpm = (reverse_rpm > 0.0f) ? -clamp_rpm(reverse_rpm) : 0.0f;
-    auto frame = protocol::WalkMotorCanCodec::encode_group_speed(id_base_, rpm, rpm, rpm, rpm);
+    // 物理安装：LT/RT 正转=前进，LB/RB 因安装方向相反，负转=前进。
+    // reverse_rpm > 0 = 车辆后退 → LT/RT=-rpm，LB/RB=+rpm（与前进方向相反）
+    float lt, rt, lb, rb;
+    if (reverse_rpm > 0.0f) {
+        float rpm = clamp_rpm(reverse_rpm);
+        lt = -rpm;  rt = -rpm;  // 上轮后退
+        lb = +rpm;  rb = +rpm;  // 下轮后退（安装反向，正值=后退）
+    } else {
+        lt = rt = lb = rb = 0.0f;
+    }
+    auto frame = protocol::WalkMotorCanCodec::encode_group_speed(id_base_, lt, rt, lb, rb);
 
     auto ret = send_ctrl(frame);
 
-    spdlog::warn("[WalkMotorGroup] emergency_override: reverse_rpm={:.1f}", rpm);
+    spdlog::warn("[WalkMotorGroup] emergency_override: vehicle_reverse_rpm={:.1f}", reverse_rpm);
     return ret;
 }
 
@@ -433,8 +444,9 @@ void WalkMotorGroup::update(float yaw_deg) {
             // correction > 0 → 偏右（yaw < target），加大左侧速度
             float lt = clamp_rpm(base_lt_rpm_ + correction);
             float rt = clamp_rpm(base_rt_rpm_ - correction);
-            float lb = lt;  // 同侧前后同号
-            float rb = rt;
+            // 物理安装：LB/RB 安装方向与 LT/RT 相反，需取反才能同向运动
+            float lb = -lt;
+            float rb = -rt;
             ctrl = protocol::WalkMotorCanCodec::encode_group_speed(id_base_, lt, rt, lb, rb);
         }
     }

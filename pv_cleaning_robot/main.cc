@@ -263,7 +263,7 @@ int main() {
 
     // ── 12. 数据缓存 ───────────────────────────────────────────────────
     auto data_cache = std::make_shared<robot::middleware::DataCache>(
-        cfg.get<std::string>("storage.cache_db", "/var/robot/telemetry.db"));
+        cfg.get<std::string>("storage.cache_path", "/var/robot/telemetry_cache.jsonl"));
     data_cache->open();
 
     // ── 13. 服务层 ─────────────────────────────────────────────────────
@@ -408,6 +408,18 @@ int main() {
             fsm->current_state() != "Charging") {
             log->warn("[Main] 电量不足，触发返回");
             fsm->dispatch(robot::app::EvLowBattery{});
+        }
+
+        // 悬空检测：轮子空转 > 500ms 触发 P0 级故障
+        // 排除 Idle/Charging（静止状态）和 Fault（已居存故障，避免重复上报）
+        const auto cur_state = fsm->current_state();
+        if (cur_state != "Idle" && cur_state != "Charging" && cur_state != "Fault") {
+            if (nav->get_pose().spin_free_detected) {
+                log->error("[Main] 悬空检测触发——立即停机");
+                fault->report(robot::service::FaultService::FaultEvent::Level::P0,
+                              0x0002, "wheel spin-free detected");
+                nav->clear_spin_detection();  // 仅清除计数器，不重置里程计
+            }
         }
 
         std::this_thread::sleep_for(std::chrono::milliseconds(100));

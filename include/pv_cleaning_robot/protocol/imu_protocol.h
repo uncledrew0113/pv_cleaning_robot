@@ -67,7 +67,11 @@ class ImuProtocol {
     // 所有写寄存器命令均为固定 5 字节：0xFF 0xAA [reg] [data_lo] [data_hi]
     using Cmd = std::array<uint8_t, 5>;
 
-    /// 编码设置输出频率命令（0x01~0x0B 对应 0.1~200Hz，常用 0x06=50Hz）
+    /// 编码设置输出频率命令
+    /// rate_code 取值（来自官方 REG.h）：
+    ///   0x01=0.2Hz  0x02=0.5Hz  0x03=1Hz  0x04=2Hz  0x05=5Hz
+    ///   0x06=10Hz   0x07=20Hz   0x08=50Hz 0x09=100Hz 0x0B=200Hz
+    /// 常用：0x08=50Hz，0x09=100Hz
     static Cmd encode_set_rate(uint8_t rate_code);
 
     /// 编码设置波特率命令（0x00=4800 ~ 0x05=115200，0x06=230400，0x07=921600）
