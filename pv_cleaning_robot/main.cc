@@ -129,7 +129,7 @@ int main() {
         robot::hal::ModbusConfig{cfg.get<int>("serial.brush.baudrate", 115200)});
     // BMS 使用嘉佰达通用协议 V4（UART，9600 bps，8-N-1）
     auto bms_serial = std::make_shared<robot::driver::LibSerialPort>(
-        cfg.get<std::string>("serial.bms.port", "/dev/ttyS4"),
+        cfg.get<std::string>("serial.bms.port", "/dev/ttyS8"),
         robot::hal::UartConfig{cfg.get<int>("serial.bms.baudrate", 9600)});
 
     auto brush_motor = std::make_shared<robot::device::BrushMotor>(
@@ -269,8 +269,9 @@ int main() {
     // ── 13. 服务层 ─────────────────────────────────────────────────────
     robot::service::MotionService::Config motion_cfg;
     motion_cfg.clean_speed_rpm = cfg.get<float>("robot.clean_speed_rpm", 300.0f);
-    motion_cfg.return_speed_rpm = cfg.get<float>("robot.return_speed_rpm", 500.0f);
-    motion_cfg.brush_rpm = cfg.get<int>("robot.brush_rpm", 1200);
+    motion_cfg.return_speed_rpm = cfg.get<float>("robot.return_speed_rpm", 300.0f);
+    motion_cfg.brush_rpm = cfg.get<int>("robot.brush_rpm", 1000);
+    motion_cfg.return_brush_rpm = cfg.get<int>("robot.return_brush_rpm", 1000);
     motion_cfg.edge_reverse_rpm = cfg.get<float>("robot.edge_reverse_rpm", 0.0f);
     motion_cfg.heading_pid_en = cfg.get<bool>("robot.heading_pid_en", true);
 
@@ -295,25 +296,98 @@ int main() {
     auto fsm = std::make_shared<robot::app::RobotFsm>(motion, nav, fault, event_bus);
     fsm->dispatch(robot::app::EvInitDone{});
 
-    // ── 限位开关事件订阅：将 LimitTriggerEvent 映射到 FSM 事件 ──────────
-    // 此订阅由 EventBus 在 GPIO 监控线程中调用，必须极短不得阐塞。
-    //   FRONT 下降沿 → EvReachEnd  → FSM 进入 CleanReturn，运动服务反向
-    //   REAR  下降沿 → EvReachHome → FSM 进入 CleanFwd/Charging，运动服务停止或再前进
-    event_bus.subscribe<robot::middleware::SafetyMonitor::LimitTriggerEvent>(
-        [&fsm, &log](const robot::middleware::SafetyMonitor::LimitTriggerEvent& evt) {
+    // ── 限位开关防抖事件订阅：LimitSettledEvent → FSM ──────────────────
+    // SafetyMonitor::monitor_loop (SCHED_FIFO 94) 在急停后延迟 180ms 发布此事件。
+    // 回调在 monitor_loop 线程上执行，必须极短（不阻塞，不持锁调 I/O）。
+    event_bus.subscribe<robot::middleware::SafetyMonitor::LimitSettledEvent>(
+        [&fsm, &log](const robot::middleware::SafetyMonitor::LimitSettledEvent& evt) {
             if (evt.side == robot::device::LimitSide::FRONT) {
-                log->info("[Limit] 前端到达，调度 EvReachEnd");
-                fsm->dispatch(robot::app::EvReachEnd{});
+                log->info("[Limit] 前端防抖完成，调度 EvFrontLimitSettled");
+                fsm->dispatch(robot::app::EvFrontLimitSettled{});
             } else {
-                log->info("[Limit] 尾端到达停机位，调度 EvReachHome");
-                fsm->dispatch(robot::app::EvReachHome{});
+                log->info("[Limit] 尾端防抖完成，调度 EvRearLimitSettled");
+                fsm->dispatch(robot::app::EvRearLimitSettled{});
             }
         });
 
     robot::app::CleanTask::Config task_cfg;
     task_cfg.track_length_m = cfg.get<float>("robot.track_length_m", 1000.0f);
-    task_cfg.passes = cfg.get<int>("robot.passes", 1);
+    task_cfg.passes = cfg.get<float>("robot.passes", 1.0f);
     auto clean_task = std::make_shared<robot::app::CleanTask>(motion, nav, task_cfg);
+
+    // ── 调度服务：定时触发清扫任务（读取 config.json 的 scheduler.windows） ─────
+    robot::service::SchedulerService scheduler;
+    {
+        auto windows_json = cfg.get_subtree("scheduler.windows");
+        if (windows_json.is_array()) {
+            for (auto& w : windows_json) {
+                robot::service::SchedulerService::TimeWindow tw;
+                tw.hour   = w.value("hour",   8);
+                tw.minute = w.value("minute",  0);
+                scheduler.add_window(tw);
+            }
+        }
+    }
+    scheduler.set_on_task_start(
+        [&fsm, &rear_switch, &front_switch, &rear_open_ok, &front_open_ok, &cfg]() {
+            const bool at_home =
+                rear_open_ok  && !rear_switch->read_current_level();
+            const bool at_front =
+                front_open_ok && !front_switch->read_current_level();
+            const float passes = cfg.get<float>("robot.passes", 1.0f);
+            fsm->dispatch(robot::app::EvScheduleStart{at_home, at_front, passes});
+        });
+
+    // ── 云端 RPC 处理器 ─────────────────────────────────────────────
+    cloud->register_rpc("start", [&](const std::string& /*params*/) {
+        const bool at_home  = rear_open_ok  && !rear_switch->read_current_level();
+        const bool at_front = front_open_ok && !front_switch->read_current_level();
+        fsm->dispatch(robot::app::EvScheduleStart{
+            at_home, at_front, cfg.get<float>("robot.passes", 1.0f)});
+        return nlohmann::json{{"result", "ok"}}.dump();
+    });
+    cloud->register_rpc("stop", [&](const std::string& /*params*/) {
+        fsm->dispatch(robot::app::EvFaultP1{});  // 安全返回（停刷）
+        return nlohmann::json{{"result", "ok"}}.dump();
+    });
+    cloud->register_rpc("reset_fault", [&](const std::string& /*params*/) {
+        fsm->dispatch(robot::app::EvFaultReset{});
+        return nlohmann::json{{"result", "ok"}}.dump();
+    });
+    cloud->register_rpc("set_schedule", [&](const std::string& params) {
+        try {
+            auto j = nlohmann::json::parse(params);
+            if (j.contains("windows") && j["windows"].is_array()) {
+                scheduler.clear_windows();
+                for (auto& w : j["windows"]) {
+                    robot::service::SchedulerService::TimeWindow tw;
+                    tw.hour   = w.value("hour",   8);
+                    tw.minute = w.value("minute",  0);
+                    scheduler.add_window(tw);
+                }
+                cfg.set("scheduler.windows", j["windows"]);
+            }
+            if (j.contains("passes"))
+                cfg.set("robot.passes", j["passes"].get<float>());
+            cfg.save();
+            return nlohmann::json{{"result", "ok"}}.dump();
+        } catch (...) {
+            return nlohmann::json{{"result", "error"}}.dump();
+        }
+    });
+
+    // ── 共享属性回调：远程更新配置，持久化到 config.json （下次启动生效）──
+    cloud->subscribe_shared_attributes([&cfg](const nlohmann::json& attrs) {
+        if (attrs.contains("passes"))
+            cfg.set("robot.passes",          attrs["passes"].get<float>());
+        if (attrs.contains("clean_speed_rpm"))
+            cfg.set("robot.clean_speed_rpm",  attrs["clean_speed_rpm"].get<float>());
+        if (attrs.contains("return_speed_rpm"))
+            cfg.set("robot.return_speed_rpm", attrs["return_speed_rpm"].get<float>());
+        if (attrs.contains("brush_rpm"))
+            cfg.set("robot.brush_rpm",        attrs["brush_rpm"].get<int>());
+        cfg.save();
+    });
 
     robot::app::FaultHandler fault_handler(
         motion, event_bus, [fsm](const robot::service::FaultService::FaultEvent& evt) {
@@ -322,6 +396,8 @@ int main() {
                 fsm->dispatch(robot::app::EvFaultP0{});
             else if (evt.level == Level::P1)
                 fsm->dispatch(robot::app::EvFaultP1{});
+            else if (evt.level == Level::P2)
+                fsm->dispatch(robot::app::EvFaultP2{});
         });
     fault_handler.start_listening();
 
@@ -366,7 +442,7 @@ int main() {
     //
     // 行走控制线程：SCHED_FIFO 80, 20ms (50Hz)，绑定 CPU 5
     // 50Hz PID 与 100Hz IMU 组合，采样/控制比 2:1，路align 速度 1.5m/s 下 20ms 塔偏跨度 ≤ 30mm
-    robot::middleware::ThreadExecutor walk_exec({"walk_ctrl", 20, SCHED_FIFO, 80, 1 << 5});
+    robot::middleware::ThreadExecutor walk_exec({"walk_ctrl", 50, SCHED_FIFO, 80, 1 << 5});
     walk_exec.add_runnable(motion);
     // 心跳在 walk_ctrl 线程自身内汇报（超时 = 该线程死锁，而非主线程死锁）
     int walk_wd = watchdog.register_thread("walk_ctrl", 500);
@@ -388,8 +464,8 @@ int main() {
     // BrushMotor 状态不需要实时性，500ms 周期足够。
     // 将 brush_->update() 安排在此线程，避免 Modbus RTU 阻塞 I/O
     // 占用 walk_ctrl(FIFO 80, 20ms) 的控制周期时间预算。
-    bms_exec.add_runnable(
-        std::make_shared<robot::middleware::RunnableAdapter>([&brush_motor]() { brush_motor->update(); }));
+    bms_exec.add_runnable(std::make_shared<robot::middleware::RunnableAdapter>(
+        [&brush_motor]() { brush_motor->update(); }));
     int bms_wd = watchdog.register_thread("bms", 2000);
     bms_exec.add_runnable(std::make_shared<robot::middleware::RunnableAdapter>(
         [&watchdog, bms_wd]() { watchdog.heartbeat(bms_wd); }));
@@ -412,6 +488,9 @@ int main() {
 
     // ── 17. 主循环 ───────────────────────────────────────────────────
     while (g_running.load()) {
+        // 调度器 tick：切换到从 SCHED_OTHER 主循环调用，精度 100ms（调度窪口最小误微差 1min）
+        scheduler.tick();
+
         // BMS 低电量检测
         if (bms->is_low_battery() && fsm->current_state() != "Returning" &&
             fsm->current_state() != "Charging") {
@@ -426,7 +505,8 @@ int main() {
             if (nav->get_pose().spin_free_detected) {
                 log->error("[Main] 悬空检测触发——立即停机");
                 fault->report(robot::service::FaultService::FaultEvent::Level::P0,
-                              0x0002, "wheel spin-free detected");
+                              0x0002,
+                              "wheel spin-free detected");
                 nav->clear_spin_detection();  // 仅清除计数器，不重置里程计
             }
         }

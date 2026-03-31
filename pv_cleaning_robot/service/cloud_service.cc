@@ -20,6 +20,15 @@ CloudService::CloudService(std::shared_ptr<middleware::NetworkManager> network,
         [this](const std::string& t, const std::string& p) {
             on_rpc_message(t, p);
         });
+    // 订阅共享属性下行（服务端推送，初始接入时也会收到全量属性）
+    network_->subscribe(topics_.attributes,
+        [this](const std::string& /*t*/, const std::string& p) {
+            if (!attr_cb_) return;
+            try {
+                auto j = nlohmann::json::parse(p);
+                attr_cb_(j);
+            } catch (...) {}
+        });
 }
 
 bool CloudService::publish_telemetry(const std::string& json_payload)
@@ -41,6 +50,12 @@ void CloudService::register_rpc(const std::string& method, RpcHandler handler)
 {
     std::lock_guard<std::mutex> lk(rpc_mtx_);
     rpc_handlers_[method] = std::move(handler);
+}
+
+void CloudService::subscribe_shared_attributes(AttrCallback cb)
+{
+    std::lock_guard<std::mutex> lk(rpc_mtx_);
+    attr_cb_ = std::move(cb);
 }
 
 void CloudService::flush_cache()

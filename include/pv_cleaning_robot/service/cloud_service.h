@@ -3,6 +3,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <nlohmann/json.hpp>
 
 #include "pv_cleaning_robot/middleware/data_cache.h"
 #include "pv_cleaning_robot/middleware/event_bus.h"
@@ -20,6 +21,8 @@ namespace robot::service {
 class CloudService : public middleware::IRunnable {
    public:
     using RpcHandler = std::function<std::string(const std::string& params)>;
+    /// 共享属性下行回调（ThingsBoard 服务端推送，参数为解析后的 JSON 对象）
+    using AttrCallback = std::function<void(const nlohmann::json& attrs)>;
 
     struct Topics {
         std::string telemetry{"v1/devices/me/telemetry"};
@@ -46,6 +49,11 @@ class CloudService : public middleware::IRunnable {
     /// @param handler 返回 JSON 字符串作为响应
     void register_rpc(const std::string& method, RpcHandler handler);
 
+    /// 注册服务端共享属性下行回调
+    /// 订阅 ThingsBoard v1/devices/me/attributes topic，服务端推送时调用 cb
+    /// @note 须在网络连接后调用（NetworkManager::connect() 之后）
+    void subscribe_shared_attributes(AttrCallback cb);
+
     /// 尝试将 DataCache 中的积压数据上传（网络恢复时调用）
     void flush_cache();
 
@@ -58,6 +66,7 @@ class CloudService : public middleware::IRunnable {
     std::shared_ptr<middleware::DataCache> cache_;
     Topics topics_;
     std::unordered_map<std::string, RpcHandler> rpc_handlers_;
+    AttrCallback attr_cb_;  ///< 共享属性回调（为空则不分发）
     std::mutex rpc_mtx_;
 };
 

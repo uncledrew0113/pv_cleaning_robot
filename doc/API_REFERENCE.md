@@ -229,18 +229,89 @@ auto can = std::make_shared<LinuxCanSocket>("can0");
 
 ### 4.1 `WalkMotorCanCodec` — 行走电机 CAN 编解码
 
-负责将速度命令编码为 CAN 帧，将状态 CAN 帧解码为 `WalkMotor::Status`。
+负责将速度/电流/位置命令编码为 CAN 帧，将状态 CAN 帧解码为 `WalkMotor::Status`。
+
+每个 `WalkMotorCanCodec` 实例对应一台电机；`WalkMotorGroup` 持有 4 个实例。
+**组控制 API 为静态方法**，一次 CAN 帧同步控制 4 台电机（CAN ID 0x32 / 0x33）。
+
+#### 组控制（WalkMotorGroup 内部使用，静态方法）
+
+```cpp
+// 一帧 4 轮速度给定（-210~+210 RPM，int16 × 100 量化，big-endian）
+// id_base=1 → CAN ID 0x32；id_base=5 → CAN ID 0x33
+static hal::CanFrame encode_group_speed(uint8_t id_base,
+                                        float lt, float rt, float lb, float rb);
+// 一帧 4 轮电流给定（-33~+33 A）
+static hal::CanFrame encode_group_current(uint8_t id_base,
+                                         float lt, float rt, float lb, float rb);
+// 一帧 4 轮开环给定
+static hal::CanFrame encode_group_open_loop(uint8_t id_base,
+                                            int16_t lt, int16_t rt, int16_t lb, int16_t rb);
+// 一帧 4 轮位置环给定（0~360°）
+static hal::CanFrame encode_group_position(uint8_t id_base,
+                                           float lt_deg, float rt_deg,
+                                           float lb_deg, float rb_deg);
+// 批量设置 8 路电机模式（CAN ID 0x105）
+static hal::CanFrame encode_set_mode_batch(const std::array<WalkMotorMode, 8>& modes);
+// 批量设置 8 路反馈方式（CAN ID 0x106）
+static hal::CanFrame encode_set_feedback_batch(const std::array<uint8_t, 8>& periods);
+// 批量设置 8 路终端电阻（CAN ID 0x109）
+static hal::CanFrame encode_set_termination_batch(const std::array<bool, 8>& enables);
+// 固件版本广播查询
+static hal::CanFrame encode_query_firmware();
+```
+
+#### 单电机（实例方法）
 
 ```cpp
 class WalkMotorCanCodec {
 public:
-    WalkMotorCanCodec(uint32_t cmd_id, uint32_t status_id);
-    hal::CanFrame encode_speed(float rpm) const;
-    hal::CanFrame encode_enable(bool en) const;
-    hal::CanFrame encode_emergency_stop() const;
-    bool decode_status(const hal::CanFrame& frame, WalkMotorStatus& out) const;
+    explicit WalkMotorCanCodec(uint8_t motor_id);
+    uint32_t status_can_id() const;  ///< 0x96 + motor_id（接收过滤器用）
+    // 向单台电机写入通信超时（ms），超时自停
+    hal::CanFrame encode_set_comm_timeout(uint16_t ms) const;
+    // 主动查询（最多 3 个目标：SPEED / TORQUE / POSITION / TEMP / MODE）
+    hal::CanFrame encode_query(WalkMotorQueryTarget t1,
+                               WalkMotorQueryTarget t2 = WalkMotorQueryTarget::NONE,
+                               WalkMotorQueryTarget t3 = WalkMotorQueryTarget::NONE) const;
+    // 解码状态反馈帧（帧 ID 不匹配返回 std::nullopt）
+    std::optional<WalkMotor::Status> decode_status(const hal::CanFrame& frame) const;
 };
 ```
+
+#### 速度帧格式（CAN ID 0x32/0x33，DLC=8）
+
+```
+字节位置  内容
+[0~1]     motor_id=id_base+0 速度（int16 big-endian，value = RPM × 100）
+[2~3]     motor_id=id_base+1 速度
+[4~5]     motor_id=id_base+2 速度
+[6~7]     motor_id=id_base+3 速度
+
+示例：300 RPM → 30000 → 0x75 0x30
+      -200 RPM → -20000 → 0xB1 0xE0
+```
+
+#### 状态反馈帧（CAN ID = 0x96 + motor_id，DLC=8，100Hz 主动上报）
+
+```
+[0~1] speed_rpm（int16 big-endian，÷100 = RPM）
+[2~3] torque_a（int16 big-endian）
+[4~5] position_deg（uint16 big-endian）
+[6]   fault_code
+[7]   mode（WalkMotorMode 枚举）
+```
+
+#### `WalkMotorMode` 枚举
+
+| 枚举值 | 含义 |
+|--------|------|
+| `DISABLE` | 失能（自由转动） |
+| `ENABLE` | 使能（保持当前模式） |
+| `SPEED` | 速度环 |
+| `CURRENT` | 电流环 |
+| `POSITION` | 位置环 |
+| `OPEN_LOOP` | 开环 |
 
 ---
 
@@ -302,6 +373,8 @@ public:
 
 ### 5.1 `WalkMotor` — 行走电机（CAN）
 
+> **⚠️ 生产路径已弃用**：生产运动控制路径全部使用 `WalkMotorGroup`（4轮统一控制）。`WalkMotor` 仍在 `WalkMotorGroup` 内部实例化用于解码状态帧，外部代码不应直接使用 `WalkMotor`。
+
 ```cpp
 class WalkMotor {
 public:
@@ -338,7 +411,107 @@ public:
 
 ---
 
-### 5.2 `BrushMotor` — 滚刷电机（Modbus RTU）
+### 5.2 `WalkMotorGroup` — 行走电机组（CAN，4轮统一控制）
+
+```cpp
+class WalkMotorGroup {
+public:
+    static constexpr int kWheelCount = 4;
+    enum class Wheel : int { LT=0, RT=1, LB=2, RB=3 };
+
+    struct SpeedCmd { float lt_rpm, rt_rpm, lb_rpm, rb_rpm; };
+
+    struct GroupStatus {
+        std::array<WalkMotor::Status, 4> wheel;
+        float temperature_deg;
+    };
+
+    struct GroupDiagnostics {
+        std::array<WalkMotor::Diagnostics, 4> wheel;
+        uint32_t ctrl_frame_count;   ///< 已发控制帧总数
+        uint32_t ctrl_err_count;     ///< CAN 发送失败次数
+        float    temperature_deg;
+    };
+
+    /// 航向 PID 参数（差速修正）
+    struct HeadingPidParams {
+        float kp{0.5f};              ///< 比例系数
+        float ki{0.05f};             ///< 积分系数
+        float kd{0.1f};              ///< 微分系数
+        float max_output{30.0f};     ///< 最大差速输出（RPM），建议 ≤ clean_speed_rpm/2
+        float integral_limit{20.0f}; ///< 积分限幅（RPM）
+    };
+
+    explicit WalkMotorGroup(std::shared_ptr<hal::ICanBus> can,
+                            uint8_t id_base = 1u,
+                            uint16_t comm_timeout_ms = 200u);
+
+    DeviceError open();    // 打开 CAN，设接收过滤器，启动 group_recv 线程，写入通信超时
+    void        close();   // 停 recv 线程，关 CAN
+
+    // ── 模式控制（一帧 0x105 控制4台电机）──────────────────────────────
+    DeviceError set_mode_all(WalkMotorMode mode);
+    DeviceError enable_all();
+    DeviceError disable_all();
+
+    // ── 速度给定（一帧 0x32 同步4台）──────────────────────────────────
+    // 物理安装：LT/RT 正转=前进，LB/RB 安装相反，负转=前进
+    // 前进：set_speeds(+spd, +spd, -spd, -spd)
+    // 后退：set_speeds(-spd, -spd, +spd, +spd)
+    DeviceError set_speeds(float lt, float rt, float lb, float rb);  // 各轮 clamp 到 [-210, +210]
+    DeviceError set_speed_uniform(float rpm);  // = set_speeds(rpm, rpm, -rpm, -rpm)
+
+    // ── 航向 PID（差速直线修正）────────────────────────────────────────
+    void set_heading_pid_params(const HeadingPidParams& p);
+    void enable_heading_control(bool en);
+    void set_target_heading(float yaw_deg);  // 重置 PID 积分，设新目标
+
+    // ── 紧急覆盖（最高优先级，立即生效）───────────────────────────────
+    DeviceError emergency_override(float reverse_rpm = 0.0f);  // 发停/反转帧，锁定心跳
+    void        clear_override();                               // 解除，恢复心跳和 PID
+    bool        is_override_active() const;
+
+    // ── 状态读取（线程安全，无 I/O）─────────────────────────────────
+    GroupStatus      get_group_status() const;
+    GroupDiagnostics get_group_diagnostics() const;
+
+    // ── 周期心跳（20ms，by walk_ctrl 线程）──────────────────────────
+    // override 激活时跳过；PID 使能时计算差速并编码新帧
+    void update(float yaw_deg = 0.0f);
+};
+```
+
+**物理安装约定**（清扫机器人）：
+
+```
+        前进方向 ↑
+  LT(+spd) ○ ○ RT(+spd)
+  LB(-spd) ○ ○ RB(-spd)
+```
+
+LB/RB 安装方向与 LT/RT 相反，正转为车体后退，因此"前进"时 LB/RB 给负速度。
+
+**航向 PID 差速算法**（在 `update(yaw_deg)` 中每 20ms 执行）：
+
+```
+err        = norm_angle(target_yaw - current_yaw)      // 归一化到 [-180, +180]°
+correction = clamp(Kp*err + Ki*∫err + Kd*derr,         // PID 输出
+                   -max_output, +max_output)            // 默认 ±30 RPM
+
+lt_final = clamp(base_lt + correction, -210, +210)     // correction>0 → 左轮加速（偏右修正）
+rt_final = clamp(base_rt - correction, -210, +210)
+lb_final = -lt_final                                   // 物理安装反向
+rb_final = -rt_final
+```
+
+> **⚠️ 方向反转风险**：若 `|base_speed| < max_output`（默认 30 RPM），PID 差速可使某侧电机从正转变为反转。
+> 默认参数（`clean_speed_rpm=300`，`return_speed_rpm=500`）下不会发生，`300 ≫ 30`。
+> 若将清扫速度配置为 **< 30 RPM**（如 `clean_speed_rpm=20` + `correction=25`），则 `rt = 20 - 25 = -5 RPM`，发生方向反转。
+> **预防措施**：确保 `clean_speed_rpm ≥ max_output × 2`；或在极低速场景将 `max_output` 调小（如 5 RPM）。
+
+---
+
+### 5.3 `BrushMotor` — 滚刷电机（Modbus RTU）
 
 ```cpp
 class BrushMotor {
@@ -381,7 +554,7 @@ public:
 
 ---
 
-### 5.3 `BMS` — 电池管理系统（Modbus RTU）
+### 5.4 `BMS` — 电池管理系统（Modbus RTU）
 
 ```cpp
 class BMS {
@@ -430,7 +603,7 @@ public:
 
 ---
 
-### 5.4 `ImuDevice` — 九轴 IMU（UART）
+### 5.5 `ImuDevice` — 九轴 IMU（UART）
 
 ```cpp
 class ImuDevice {
@@ -461,7 +634,7 @@ public:
 
 ---
 
-### 5.5 `GpsDevice` — GPS（UART NMEA）
+### 5.6 `GpsDevice` — GPS（UART NMEA）
 
 ```cpp
 class GpsDevice {
@@ -480,7 +653,7 @@ public:
 
 ---
 
-### 5.6 `LimitSwitch` — 感应式限位开关（GPIO）
+### 5.7 `LimitSwitch` — 感应式限位开关（GPIO）
 
 ```cpp
 class LimitSwitch {
@@ -820,7 +993,8 @@ public:
         float clean_speed_rpm{300.0f};   ///< 清扫行进速度（RPM）
         float return_speed_rpm{500.0f};  ///< 返回速度（RPM）
         int   brush_rpm{1200};           ///< 滚刷转速
-        float edge_reverse_rpm{0.0f};    ///< 边缘触发反转速度（0=原地停）
+        float edge_reverse_rpm{150.0f};  ///< 边缘触发反转速度（RPM，0=原地停，默认150=缓速后退）
+        int   return_brush_rpm{1200};    ///< 辊刷返程转速绝对值（方向自动取反）
         bool  heading_pid_en{true};      ///< 是否使能航向 PID
         device::WalkMotorGroup::HeadingPidParams pid{};  ///< PID 参数
     };
@@ -834,8 +1008,9 @@ public:
 
     bool start_cleaning();       // 使能行走 + 滚刷；锁定当前 yaw 为 PID 目标
     void stop_cleaning();        // 停滚刷，行走归零，禁用 PID
-    bool start_returning();      // 以返回速度反向行进（禁用 PID）
-    void emergency_stop();       // group->emergency_override(0) + disable_all
+    bool start_returning();          // 以返回速度反向行进（保持航向 PID）
+    bool start_returning_no_brush(); // P1 故障路径：先停刷，再反向返回，不启动 PID
+    void emergency_stop();           // group->emergency_override(0) + disable_all
 
     // 边缘触发接口（硬件限位或障碍物）
     void on_edge_triggered();    // group->emergency_override(edge_reverse_rpm) + 停刷
@@ -846,15 +1021,20 @@ public:
     bool is_brush_running() const;
     bool is_edge_override_active() const;
 
-    void update() override;      // ThreadExecutor 50ms 调用
+    void update() override;      // ThreadExecutor 20ms 调用（50Hz PID）
                                  // 读 imu_->get_latest().yaw_deg，传入 group_->update(yaw)
 };
 ```
 
 **实现原理**：
-- `start_cleaning()` 时以当前 IMU yaw 锁定航向目标，WalkMotorGroup 在每次 `update()` 内依据 yaw 误差差速修正左右轮
-- `emergency_stop()` 调用 `group_->emergency_override(0)` 后设置 `override_active_`，阻止 `update()` 心跳帧覆盖停车指令，直到 `cancel_edge_override()` 解除
-- `update()` 读取 ImuDevice 的缓存值（无 I/O），再将 `yaw_deg` 传入 WalkMotorGroup
+- `start_cleaning()`：切换速度环 → 使能 → 锁定当前 yaw → 启动 PID → `set_speeds(+300, +300, -300, -300)` → 启动辊刷
+- `start_returning()`：`clear_override()` → 锁定当前 yaw → 保持 PID → `set_speeds(-500, -500, +500, +500)` → 辊刷反向（-rpm）
+- `start_returning_no_brush()`：`brush.stop()` → 禁用 PID → `clear_override()` → `set_speeds(-500, -500, +500, +500)`（P1 故障路径）
+- `emergency_stop()`：`brush.stop()` → `group_->emergency_override(0)` → `override_active_=true`（抑制心跳帧） → `disable_all()`
+- `on_edge_triggered()`：`group_->emergency_override(edge_reverse_rpm=150)` → `brush.stop()`（注：SafetyMonitor 直接调 WalkMotorGroup，不经本方法）
+- `update()`（**20ms 周期，50Hz**）：读 IMU 缓存 yaw → `group_->update(yaw)` → WalkMotorGroup 内 PID 计算 + 心跳重发
+
+**⚠️ PID 方向反转警告**：默认 `max_output=30 RPM`。若 `clean_speed_rpm` 配置低于 30，PID 差速可使某侧电机从正转变反转（见 §5.2 WalkMotorGroup 方向反转风险）。
 
 **⚠️ 架构注意**：`SafetyMonitor` 直接操作 `WalkMotorGroup`（4轮统一急停），不调用 `MotionService::on_edge_triggered()`。
 详见 [第 16 节冗余分析](#16-冗余与优化分析)。
@@ -1047,47 +1227,61 @@ public:
 | 状态 | 说明 |
 |------|------|
 | `StateInit` | 初始化中 |
-| `StateIdle` | 待机 |
-| `StateHoming` | 归零（回到轨道起点）|
-| `StateCleanFwd` | 正向清扫 |
-| `StateCleanReturn` | 反向清扫（往复中）|
-| `StateReturning` | 返回停机位 |
-| `StateCharging` | 充电中 |
-| `StateFault` | 故障停机 |
+| `StateIdle` | 待机，等待调度或 RPC |
+| `StateSelfCheck` | 调度触发后自检（确认停机位/前端位置，初始化趟数计数器）|
+| `StateCleanFwd` | 正向清扫（从停机位向前端运动）|
+| `StateCleanReturn` | 返程清扫（从前端返回停机位）|
+| `StateReturning` | 故障/低电主动返回停机位 |
+| `StateCharging` | 在停机位（充电或待机）|
+| `StateFault` | P0 严重故障，等待人工复位 |
 
 #### 事件定义
 
 | 事件 | 触发来源 | 说明 |
 |------|----------|------|
 | `EvInitDone` | `main()` | 系统初始化完成 |
-| `EvStart` | `SchedulerService` / 远程 RPC | 开始清扫任务 |
-| `EvStop` | 远程 RPC / 手动 | 停止清扫，返回停机位 |
-| `EvHomeDone` | `NavService` | 归零完成 |
-| `EvReachEnd` | `CleanTask` | 到达轨道端头 |
-| `EvReachHome` | `CleanTask` | 到达轨道起点 |
-| `EvChargeDone` | `BMS` | 电池充满 |
-| `EvFaultP0` | `FaultHandler` | P0 级故障 |
-| `EvFaultP1` | `FaultHandler` | P1 级故障 |
-| `EvFaultReset` | 远程 RPC | 故障复位 |
-| `EvLowBattery` | `main()` 轮询 | BMS 低电量 |
+| `EvScheduleStart{at_home, at_front, passes}` | `SchedulerService` / RPC | 开始清扫任务；`at_home`/`at_front` 表示当前位置；`passes` 趟数（0.5=单程，1=往返）|
+| `EvFrontLimitSettled` | `SafetyMonitor` LimitSettledEvent | 前端限位防抖完成（经 ~200ms 延迟后发布）|
+| `EvRearLimitSettled` | `SafetyMonitor` LimitSettledEvent | 尾端限位防抖完成 |
+| `EvFaultP0` | `FaultHandler` | P0 严重故障 → Fault |
+| `EvFaultP1` | `FaultHandler` | P1 故障 → 停刷安全返回 |
+| `EvFaultP2` | `FaultHandler` | P2 故障 → **不转换状态**，仅记录告警 |
+| `EvFaultReset` | 远程 RPC / 手动 | 故障复位 → Idle |
+| `EvLowBattery` | `main()` BMS 轮询 | 低电量 → Returning |
+| `EvChargeDone` | BMS 充满检测 / RPC | 充电完成 → Idle |
+| *(内部) `EvSelfCheckOk`* | `dispatch<EvScheduleStart>` | 自检通过（at_home），直接进入 CleanFwd |
+| *(内部) `EvSelfCheckOkReturn`* | `dispatch<EvScheduleStart>` | 自检通过（at_front），进入 CleanReturn |
+| *(内部) `EvSelfCheckFail`* | `dispatch<EvScheduleStart>` | 自检失败（位置未知），拒绝启动 |
+| *(内部) `EvTaskComplete`* | `dispatch<EvFrontLimit/RearLimit>` | 指定趟数全部完成 → Charging |
 
 #### 状态转换矩阵
 
 ```
-Init       --EvInitDone-->   Idle
-Idle       --EvStart-->      Homing
-Homing     --EvHomeDone-->   CleanFwd
-CleanFwd   --EvReachEnd-->   CleanReturn
-CleanReturn--EvReachHome-->  CleanFwd         (往复继续)
-CleanFwd   --EvStop-->       Returning
-CleanReturn--EvStop-->       Returning
-Returning  --EvReachHome-->  Charging
-Charging   --EvChargeDone--> Idle
-CleanFwd   --EvLowBattery--> Returning
-CleanReturn--EvLowBattery--> Returning
-[任意清扫/返回状态] --EvFaultP0--> Fault
-[任意清扫状态]      --EvFaultP1--> Returning
-Fault      --EvFaultReset--> Idle
+Init          --EvInitDone-->              Idle
+Idle          --EvScheduleStart-->         SelfCheck
+Charging      --EvScheduleStart-->         SelfCheck
+SelfCheck     --[at_home OK] EvSelfCheckOk-->        CleanFwd   (motion->start_cleaning)
+SelfCheck     --[at_front OK] EvSelfCheckOkReturn-->  CleanReturn（motion->start_returning）
+SelfCheck     --[unknown] EvSelfCheckFail-->          Idle（拒绝）
+
+CleanFwd      --EvFrontLimitSettled-->     CleanReturn  (motion->start_returning)
+CleanFwd      --EvTaskComplete（趟数满）-->  Charging    (motion->stop_cleaning)
+CleanReturn   --EvRearLimitSettled-->      CleanFwd     (motion->start_cleaning，趟数<N)
+CleanReturn   --EvTaskComplete（趟数满）-->  Charging    (motion->stop_cleaning)
+
+CleanFwd      --EvLowBattery-->            Returning   (motion->start_returning)
+CleanReturn   --EvLowBattery-->            Returning   (motion->start_returning)
+CleanFwd      --EvFaultP1-->               Returning   (motion->start_returning_no_brush)
+CleanReturn   --EvFaultP1-->               Returning   (motion->start_returning_no_brush)
+Returning     --EvRearLimitSettled-->      Charging    (motion->stop_cleaning)
+
+CleanFwd      --EvFaultP0-->               Fault       (motion->emergency_stop)
+CleanReturn   --EvFaultP0-->               Fault       (motion->emergency_stop)
+Returning     --EvFaultP0-->               Fault       (motion->emergency_stop)
+Fault         --EvFaultReset-->            Idle
+
+Charging      --EvChargeDone-->            Idle
+CleanFwd/Return --EvFaultP2-->            (不变，仅告警)
 ```
 
 ```cpp
@@ -1217,7 +1411,7 @@ HAL 层返回值  →  Device 层 DeviceError  →  Service 层 FaultEvent.Level
 | `safety_monitor` | SCHED_FIFO | **94** | **4** | 5ms 轮询（备份） | monitor_loop 备份轮询 + 急停兜底 |
 | `gpio_front` | SCHED_FIFO | **95** | **4** | 事件驱动 | front LimitSwitch GPIO edge 监控 |
 | `gpio_rear` | SCHED_FIFO | **95** | **4** | 事件驱动 | rear LimitSwitch GPIO edge 监控 |
-| `walk_ctrl` | SCHED_FIFO | **80** | **5** | **50ms** | MotionService::update() → WalkMotorGroup::update(yaw) |
+| `walk_ctrl` | SCHED_FIFO | **80** | **5** | **20ms** | MotionService::update() → WalkMotorGroup::update(yaw)（50Hz PID）|
 | `group_recv` | SCHED_FIFO | **82** | **5** | 流式 | WalkMotorGroup CAN 接收线程（4轮组） |
 | `imu_read` | SCHED_FIFO | **68** | **6** | 流式 | ImuDevice UART 读取线程 |
 | `nav` | SCHED_FIFO | **65** | **6** | 10ms | NavService 里程计更新（WalkMotorGroup + IMU） |
@@ -1243,7 +1437,7 @@ RK3576 为大小核异构架构：
 | CPU | 专用任务 | 原因 |
 |-----|----------|------|
 | **CPU 4** | gpio_front/rear(95) + safety_monitor(94) | 边沿中断路径优先；轮询线程仅做兜底，不反向压制 GPIO |
-| **CPU 5** | group_recv(82) + walk_ctrl(80) | 先接收后控制，降低 50ms 控制拍读取到陈旧 CAN 状态的概率 |
+| **CPU 5** | group_recv(82) + walk_ctrl(80) | 先接收后控制，降低 20ms 控制拍读取到陈旧 CAN 状态的概率 |
 | **CPU 6** | imu_read(68) + nav(65) | 导航感知组：IMU 读取为 nav 的上游，同核数据局部性好 |
 | **CPU 7** | watchdog_mon(50) | 管理任务，低优先级但需 SCHED_FIFO 以保证能抢占所有 SCHED_OTHER |
 
@@ -1460,7 +1654,7 @@ main()
 
 ---
 
-*文档生成日期：2026-03-25*  
+*文档生成日期：2026-03-28*  
 *对应代码版本：pv_cleaning_robot @ RK3576 aarch64*
 
 ---
@@ -1721,6 +1915,129 @@ FaultHandler::on_fault(evt)  (在 publish() 的调用线程中执行)
 
 ---
 
+### 14.6 电机速度控制完整流程路径
+
+本节汇总所有涉及行走电机速度控制的业务流程，从 FSM 事件触发到 CAN 帧发送的完整调用链。
+
+#### A. start_cleaning()（正向清扫）
+
+触发事件：`EvScheduleStart{at_home=true, passes=N}`
+
+```
+FSM::dispatch<EvScheduleStart>（持 PiMutex）
+  ├─ EvSelfCheckOk → state=CleanFwd
+  └─ action = motion_->start_cleaning()               【锁外执行】
+
+MotionService::start_cleaning()
+  ├─ group_->clear_override()                         解除任何旧的急停锁
+  ├─ group_->set_mode_all(SPEED)                   →  CAN 0x105（1帧，4轮切速度环）
+  ├─ group_->enable_all()                          →  CAN 0x105（1帧，4轮使能）
+  ├─ group_->set_target_heading(cur_yaw)              锁定当前 IMU yaw 为 PID 目标
+  ├─ group_->enable_heading_control(true)             启动 PID 差速
+  ├─ group_->set_speeds(+300, +300, -300, -300)    →  CAN 0x32（1帧，4轮同步）
+  ├─ brush_->set_rpm(1200) + brush_->start()       →  Modbus 写 REG_TARGET_RPM + REG_ENABLE=1
+  └─ return true
+
+每 20ms（walk_ctrl SCHED_FIFO 80, CPU 5）：
+  MotionService::update() → group_->update(yaw)
+    ├─ calc_pid_correction(yaw, 0.020s) → correction（±30 RPM 限幅）
+    ├─ lt = clamp(300 + correction, -210, +210)
+    ├─ rt = clamp(300 - correction, -210, +210)
+    └─ CAN 0x32（含 PID 差速帧，4轮同步，20ms 心跳）
+```
+
+CAN 帧统计：启动时 2 帧（0x105×2）+ 1 帧（0x32）；运行中每 20ms 1 帧（0x32）
+
+#### B. start_returning()（返程清扫，前端→尾端）
+
+触发事件：`EvFrontLimitSettled`（非末趟）或 `EvLowBattery`
+
+```
+MotionService::start_returning()
+  ├─ group_->clear_override()
+  ├─ brush_->set_rpm(-1200) + brush_->start()         辊刷反向运行
+  ├─ group_->set_target_heading(cur_yaw)              重锁当前 yaw（返程时机可能偏转）
+  ├─ group_->enable_heading_control(true)
+  ├─ group_->set_mode_all(SPEED)                   →  CAN 0x105
+  ├─ group_->enable_all()                          →  CAN 0x105
+  └─ group_->set_speeds(-500, -500, +500, +500)    →  CAN 0x32（后退）
+```
+
+#### C. start_returning_no_brush()（P1 故障安全返回）
+
+触发事件：`EvFaultP1`
+
+```
+MotionService::start_returning_no_brush()
+  ├─ brush_->stop()                                →  Modbus REG_ENABLE=0（先停刷）
+  ├─ group_->enable_heading_control(false)            禁用 PID（故障状态不做差速修正）
+  ├─ group_->clear_override()
+  ├─ group_->set_mode_all(SPEED)                   →  CAN 0x105
+  ├─ group_->enable_all()                          →  CAN 0x105
+  └─ group_->set_speeds(-500, -500, +500, +500)    →  CAN 0x32
+```
+
+#### D. stop_cleaning()（停止清扫）
+
+触发事件：`EvTaskComplete`（末趟到达）
+
+```
+MotionService::stop_cleaning()
+  ├─ brush_->stop()                                →  Modbus REG_ENABLE=0
+  ├─ group_->enable_heading_control(false)
+  ├─ group_->set_speed_uniform(0.0f)               →  CAN 0x32（全0）
+  └─ group_->disable_all()                         →  CAN 0x105（4轮失能）
+```
+
+#### E. emergency_stop()（P0 严重故障急停）
+
+触发来源：`FaultHandler::on_fault(P0)` → `RobotFsm::dispatch<EvFaultP0>` → `motion_->emergency_stop()`
+
+```
+MotionService::emergency_stop()
+  ├─ brush_->stop()                                →  Modbus REG_ENABLE=0
+  ├─ group_->emergency_override(0.0f)              →  CAN 0x32（4轮全0，立即）
+  │                                                   override_active_=true（锁定心跳帧）
+  └─ group_->disable_all()                         →  CAN 0x105（4轮失能）
+```
+
+#### F. SafetyMonitor 直接急停（GPIO 边沿触发）
+
+触发来源：libgpiod GPIO 边沿 → LimitSwitch::on_edge() → SafetyMonitor::on_limit_trigger()
+**不经过 MotionService**，直接调用 WalkMotorGroup：
+
+```
+SafetyMonitor::on_limit_trigger(REAR)
+  ├─ estop_active_.store(true)
+  ├─ walk_group_->emergency_override(0.0f)         →  CAN 0x32（4轮全0，<2ms 达到电机）
+  │                                                   override_active_=true（锁定后续心跳）
+  └─ bus_.publish(LimitSettledEvent{REAR})            延迟 ~200ms 后经 SafetyMonitor::monitor_loop 发出
+```
+
+#### G. PID 差速补偿心跳（20ms 周期）
+
+由 `walk_ctrl`（SCHED_FIFO 80）线程持续调用，在 start_cleaning/start_returning 运行期间每帧执行：
+
+```
+WalkMotorGroup::update(yaw_deg)
+  前提：override_active_=false，heading_ctrl_en_=true，has_ctrl_frame_=true
+  │
+  ├─ dt_s = 实测距上次 update 时间（限幅 10ms~500ms）
+  ├─ err = norm_angle(target_yaw - yaw_deg)          归一化到 [-180, +180]°
+  ├─ integral += err × dt_s（限幅 ±20 RPM）
+  ├─ derivative = (err - prev_err) / dt_s
+  ├─ correction = clamp(Kp×err + Ki×I + Kd×D, -30, +30)   默认 Kp=0.5, Ki=0.05, Kd=0.1
+  ├─ lt = clamp(base_lt + correction, -210, +210)
+  ├─ rt = clamp(base_rt - correction, -210, +210)
+  ├─ lb = -lt；rb = -rt
+  └─ CAN 0x32（1帧4轮差速帧）
+
+  ⚠️ 若 |base_speed| < max_output（默认30），correction 幅度可超过 base_speed 导致方向反转
+  ✅ 默认 clean_speed_rpm=300 >> 30；return_speed_rpm=500 >> 30；不会反转
+```
+
+---
+
 ## 15. 实时性分析
 
 ### 15.1 安全关键路径（目标 ≤50ms）
@@ -1948,9 +2265,11 @@ avg_rpm /= static_cast<float>(device::WalkMotorGroup::kWheelCount);
 | 16.11 | 进程缺少 mlockall，缺页中断引入 RT 延迟抖动 | 🔴 | ✅ 已修复（main.cc 启动时调用）|
 | 16.12 | safety_monitor(99) 高于 GPIO(95) 可能反向压制边沿事件 | 🟡 | ✅ 已修复（safety_monitor 调整为 FIFO 94）|
 | 16.13 | group_recv 低于 walk_ctrl 可能导致控制拍读取旧 CAN 状态 | 🟡 | ✅ 已修复（group_recv 调整为 FIFO 82）|
-| 16.14 | NavService 使用 shared_mutex 存在 RT 写者等待低优先级读者风险 | 🟡 | ✅ 已修复（迁移至 PiMutex）|
+| 16.14 | PID max_output=30 RPM，若 clean_speed_rpm < 30 可导致电机方向反转 | 🟡 | ⏳ 建议配置约束 clean_speed_rpm ≥ max_output×2 |
+| 16.15 | set_walk_speed(rpm) 调用 set_speeds(rpm,rpm,rpm,rpm) 未考虑 LB/RB 安装反向 | 🟡 | ⏳ 待修复（CleanTask 死代码路径）|
+| 16.16 | NavService 使用 shared_mutex 存在 RT 写者等待低优先级读者风险 | 🟡 | ✅ 已修复（迁移至 PiMutex）|
 
 ---
 
-*文档生成日期：2026-03-26*  
+*文档生成日期：2026-03-28*  
 *对应代码版本：pv_cleaning_robot @ RK3576 aarch64（WalkMotor 全面替换为 WalkMotorGroup，DiagnosticsCollector 合并至 HealthService，RT 调度/CPU 亲和性/PiMutex/mlockall 全面补齐）*

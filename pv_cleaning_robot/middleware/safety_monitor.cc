@@ -67,32 +67,30 @@ void SafetyMonitor::reset_estop()
 void SafetyMonitor::on_limit_trigger(device::LimitSide side)
 {
     // ============================================================
-    // 安全优先关键路径：此函数在 GPIO 监控线程中被调用
-    // 目标：从触发到指令发出 ≤ 50 ms
+    // 安全优先关键路径：此函数在 GPIO 监控线程中被调用（SCHED_FIFO 95）
+    // 目标：从触发到急停指令发出 ≤ 50 ms
     //
-    // 前端下降沿（FRONT）：到达光伏板前端 → 立即反向，不急停。
-    //   此为正常行程事件，不置 estop_active_，清除触发标志防止
-    //   monitor_loop 备用路径重复触发。
+    // 两端均执行：立即停车 + 置 pending 标志
+    // 防抖延迟（180ms）和 FSM 通知由 monitor_loop（SCHED_FIFO 94）负责
     //
-    // 尾端下降沿（REAR）：到达停机位 → 立即禁止行走，置急停标志。
+    // 前端（FRONT）：清扫到头，不置 estop_active_（下一步由 FSM 反向）
+    // 尾端（REAR）：到达停机位，置 estop_active_ 防止 update() 重驱
     // ============================================================
 
     if (side == device::LimitSide::FRONT) {
-        // 清除触发标志（防止 monitor_loop 每 5 ms 重复派发）
         front_switch_->clear_trigger();
-        // 发布事件，由 EventBus 订阅者驱动 FSM 发出 EvReachEnd → 反向
-        event_bus_.publish(LimitTriggerEvent{side});
+        // 1. 立即停全部4轮（直写 CAN 帧，< 1ms）
+        walk_group_->emergency_override(0.0f);
+        // 2. 置 pending 标志（原子，monitor_loop 内防抖后发布 LimitSettledEvent）
+        pending_front_.store(true, std::memory_order_release);
     } else {
-        // 1. 置位急停标志（原子，防止 monitor_loop 重复触发）
+        // 1. 置急停标志（防止 monitor_loop 5ms 心跳重复触发）
         estop_active_.store(true, std::memory_order_release);
         rear_switch_->clear_trigger();
-        // 2. 立即停全部4轮：emergency_override(0) 同时:
-        //    a) 发1帧 4轮停止 CAN 帧（< 1 ms）
-        //    b) 设置 override_active_=true，屏蔽 update() 50ms 心跳重发
-        //    防止控制线程在急停后5~50ms内重新驱动电机
+        // 2. 立即停全部4轮
         walk_group_->emergency_override(0.0f);
-        // 3. 发布事件，由 EventBus 订阅者驱动 FSM 发出 EvReachHome
-        event_bus_.publish(LimitTriggerEvent{side});
+        // 3. 置 pending 标志
+        pending_rear_.store(true, std::memory_order_release);
     }
 }
 
@@ -114,6 +112,26 @@ void SafetyMonitor::monitor_loop()
             spdlog::warn("[SafetyMonitor] CPU 4 affinity set failed: {}", strerror(errno));
         }
         pthread_setname_np(pthread_self(), "safety_mon");
+    }
+
+    // pending 防抖处理：on_limit_trigger() 置位，此处延迟后通知 FSM。
+    // 运行在 SCHED_FIFO 94，nanosleep 主动出让 CPU，不干扰 GPIO 线程（FIFO 95）。
+    // ── 前端 pending ──────────────────────────────────────────────────
+    if (pending_front_.exchange(false, std::memory_order_acquire)) {
+        struct timespec ts{0, 180'000'000L};  // 180ms，total ~200ms（+~20ms GPIO 至此）
+        nanosleep(&ts, nullptr);
+        // 注意：前端不设 estop_active_，无需 reset_estop()，
+        // start_returning() 内 group_->clear_override() 会解除 override 锁。
+        event_bus_.publish(LimitSettledEvent{device::LimitSide::FRONT});
+    }
+    // ── 尾端 pending ──────────────────────────────────────────────────
+    if (pending_rear_.exchange(false, std::memory_order_acquire)) {
+        struct timespec ts{0, 180'000'000L};
+        nanosleep(&ts, nullptr);
+        // 解除急停锁：清 estop_active_ + override_active_，
+        // 允许后续 start_cleaning()/start_returning() 正常驱动电机。
+        reset_estop();
+        event_bus_.publish(LimitSettledEvent{device::LimitSide::REAR});
     }
 
     // 备用轮询路径：以防 GPIO 边沿回调丢失（双保险）。

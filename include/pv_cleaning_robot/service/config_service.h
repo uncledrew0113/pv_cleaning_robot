@@ -33,6 +33,22 @@ public:
         }
     }
 
+    /// 设置配置项（path 以 '.' 分隔）—仅更新内存，需调用 save() 持久化
+    template <typename T>
+    void set(const std::string& path, T value)
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        auto parts = split_path(path);
+        nlohmann::json* node = &root_;
+        for (std::size_t i = 0; i + 1 < parts.size(); ++i) {
+            node = &(*node)[parts[i]];
+        }
+        (*node)[parts.back()] = std::move(value);
+    }
+
+    /// 将当前内存配置写回 config_path_（原子临时文件 rename）
+    bool save() const;
+
     /// 获取 JSON 子树
     nlohmann::json get_subtree(const std::string& path) const;
 

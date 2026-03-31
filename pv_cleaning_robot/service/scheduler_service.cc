@@ -9,6 +9,12 @@ void SchedulerService::add_window(TimeWindow w)
     windows_.push_back(w);
 }
 
+void SchedulerService::clear_windows()
+{
+    windows_.clear();
+    in_window_ = false;  // 清除后立即允许下次调度触发
+}
+
 void SchedulerService::set_on_task_start(TaskCallback cb)
 {
     on_start_ = std::move(cb);

@@ -20,6 +20,7 @@ public:
     using TaskCallback = std::function<void()>;
 
     void add_window(TimeWindow w);
+    void clear_windows();  ///< 清除所有时间窗口（远程配置更新时使用）
     void set_on_task_start(TaskCallback cb);
     void set_on_task_end(TaskCallback cb);
 

@@ -1,3 +1,5 @@
+#include <algorithm>
+#include <cmath>
 #include <functional>
 #include <spdlog/spdlog.h>
 
@@ -22,81 +24,116 @@ std::string RobotFsm::current_state() const {
     return state_name_;
 }
 
-// 显式实例化需要在 .cc 中定义，以下是事件分发的外部显式特化：
-// （由于 SML 在 .cc 中，模板定义必须在此处提供）
+// ── 事件分发特化 ──────────────────────────────────────────────────────
+// 设计说明：
+//   1. 所有 I/O（CAN/Modbus）在锁外执行，防止阻塞 EventBus 调用线程
+//   2. sm_->process_event() 维护 SML 内部状态与 state_name_ 一致
+//   3. 内部事件（EvSelfCheckOk 等）仅在本 .cc 内使用，不对外暴露
 
 template <>
-void RobotFsm::dispatch<EvStart>(EvStart e) {
-    std::function<void()> action;
-    {
-        std::lock_guard<hal::PiMutex> lk(mtx_);
-        sm_->process_event(e);
-        state_name_ = "Homing";
-        spdlog::info("[FSM] → Homing");
-        // 无实体 homing，直接发 HomeDone
-        sm_->process_event(EvHomeDone{});
-        state_name_ = "CleanFwd";
-        spdlog::info("[FSM] → CleanFwd");
-        // 安全路径：I/O 在 FSM 锁解除后执行
-        action = [this]() { motion_->start_cleaning(); };
-    }
-    if (action)
-        action();
+void RobotFsm::dispatch<EvInitDone>(EvInitDone e) {
+    std::lock_guard<hal::PiMutex> lk(mtx_);
+    sm_->process_event(e);
+    state_name_ = "Idle";
+    spdlog::info("[FSM] → Idle");
 }
 
 template <>
-void RobotFsm::dispatch<EvStop>(EvStop e) {
+void RobotFsm::dispatch<EvScheduleStart>(EvScheduleStart e) {
     std::function<void()> action;
     {
         std::lock_guard<hal::PiMutex> lk(mtx_);
-        sm_->process_event(e);
-        state_name_ = "Returning";
-        spdlog::info("[FSM] → Returning");
-        // 安全路径：I/O 在 FSM 锁解除后执行
-        action = [this]() { motion_->start_returning(); };
-    }
-    if (action)
-        action();
-}
+        // 计算目标半趟数（passes * 2，最小 1）
+        target_half_passes_ = std::max(1, static_cast<int>(std::round(e.passes * 2.0f)));
+        completed_half_passes_ = 0;
 
-template <>
-void RobotFsm::dispatch<EvReachEnd>(EvReachEnd e) {
-    std::function<void()> action;
-    {
-        std::lock_guard<hal::PiMutex> lk(mtx_);
+        // → SelfCheck
         sm_->process_event(e);
-        state_name_ = "CleanReturn";
-        spdlog::info("[FSM] → CleanReturn（前端到达，立即反向）");
-        // 安全路径：记录后在解锁后执行动作，避免在 GPIO 线程持有 FSM 锁时做跨层 I/O
-        action = [this]() { motion_->start_returning(); };
-    }
-    if (action)
-        action();
-}
+        state_name_ = "SelfCheck";
+        spdlog::info("[FSM] → SelfCheck（趟数={:.1f}，目标半趟={}）",
+                     e.passes, target_half_passes_);
 
-template <>
-void RobotFsm::dispatch<EvReachHome>(EvReachHome e) {
-    std::function<void()> action;
-    {
-        std::lock_guard<hal::PiMutex> lk(mtx_);
-        // 记录转换前的状态，处理完事件后根据前状态决定动作
-        const bool was_clean_return = (state_name_ == "CleanReturn");
-        sm_->process_event(e);
-
-        if (was_clean_return) {
-            // CleanReturn → CleanFwd：到达停机位，开始下一趣正向清扫
+        if (e.at_home) {
+            // 正常情况：从停机位正向清扫
+            going_forward_ = true;
+            sm_->process_event(EvSelfCheckOk{});
             state_name_ = "CleanFwd";
-            spdlog::info("[FSM] → CleanFwd（到达停机位，进行下一趣清扫）");
+            spdlog::info("[FSM] → CleanFwd（自检通过，从停机位出发）");
             action = [this]() { motion_->start_cleaning(); };
+        } else if (e.at_front) {
+            // N=0.5 恢复：上次停在前端，本次从前端反向返回
+            going_forward_ = false;
+            sm_->process_event(EvSelfCheckOkReturn{});
+            state_name_ = "CleanReturn";
+            spdlog::info("[FSM] → CleanReturn（自检：机器在前端，开始反向清扫返回）");
+            action = [this]() { motion_->start_returning(); };
         } else {
-            // Returning → Charging：主动返回停机位，令其停止
-            state_name_ = "Charging";
-            spdlog::info("[FSM] → Charging（已返回停机位）");
-            action = [this]() { motion_->stop_cleaning(); };
+            // 既不在停机位也不在前端 → 拒绝
+            sm_->process_event(EvSelfCheckFail{});
+            state_name_ = "Idle";
+            spdlog::error("[FSM] → Idle（自检失败：设备不在已知端点，拒绝启动清扫）");
         }
     }
-    if (action)
-        action();
+    if (action) action();
+}
+
+template <>
+void RobotFsm::dispatch<EvFrontLimitSettled>(EvFrontLimitSettled e) {
+    std::function<void()> action;
+    {
+        std::lock_guard<hal::PiMutex> lk(mtx_);
+        completed_half_passes_++;
+        spdlog::info("[FSM] 前端限位已稳定（已完成半趟 {}/{}）",
+                     completed_half_passes_, target_half_passes_);
+
+        if (completed_half_passes_ >= target_half_passes_) {
+            // 任务完成（N=0.5 单程结束）
+            sm_->process_event(EvTaskComplete{});
+            state_name_ = "Charging";
+            spdlog::info("[FSM] → Charging（任务完成，停在前端）");
+            action = [this]() { motion_->stop_cleaning(); };
+        } else {
+            // 继续：前端到头，反向返回
+            sm_->process_event(e);
+            state_name_ = "CleanReturn";
+            spdlog::info("[FSM] → CleanReturn（前端到达，刷反向返回）");
+            action = [this]() { motion_->start_returning(); };
+        }
+    }
+    if (action) action();
+}
+
+template <>
+void RobotFsm::dispatch<EvRearLimitSettled>(EvRearLimitSettled e) {
+    std::function<void()> action;
+    {
+        std::lock_guard<hal::PiMutex> lk(mtx_);
+
+        if (state_name_ == "CleanReturn") {
+            completed_half_passes_++;
+            spdlog::info("[FSM] 尾端限位已稳定（已完成半趟 {}/{}）",
+                         completed_half_passes_, target_half_passes_);
+
+            if (completed_half_passes_ >= target_half_passes_) {
+                sm_->process_event(EvTaskComplete{});
+                state_name_ = "Charging";
+                spdlog::info("[FSM] → Charging（全部趟数完成，回到停机位）");
+                action = [this]() { motion_->stop_cleaning(); };
+            } else {
+                sm_->process_event(e);
+                state_name_ = "CleanFwd";
+                spdlog::info("[FSM] → CleanFwd（回到停机位，继续正向清扫）");
+                action = [this]() { motion_->start_cleaning(); };
+            }
+        } else if (state_name_ == "Returning") {
+            sm_->process_event(e);
+            state_name_ = "Charging";
+            spdlog::info("[FSM] → Charging（故障/低电返回停机位完成）");
+            action = [this]() { motion_->stop_cleaning(); };
+        }
+        // 其他状态收到尾端信号：忽略
+    }
+    if (action) action();
 }
 
 template <>
@@ -106,13 +143,10 @@ void RobotFsm::dispatch<EvFaultP0>(EvFaultP0 e) {
         std::lock_guard<hal::PiMutex> lk(mtx_);
         sm_->process_event(e);
         state_name_ = "Fault";
-        spdlog::error("[FSM] → Fault (P0)");
-        // 安全路径：I/O 动作在 FSM 锁解除后执行，
-        // 防止 EventBus 被 Modbus+CAN I/O 阻塞（约 8~15ms）
+        spdlog::error("[FSM] → Fault (P0 严重故障)");
         action = [this]() { motion_->emergency_stop(); };
     }
-    if (action)
-        action();
+    if (action) action();
 }
 
 template <>
@@ -122,12 +156,17 @@ void RobotFsm::dispatch<EvFaultP1>(EvFaultP1 e) {
         std::lock_guard<hal::PiMutex> lk(mtx_);
         sm_->process_event(e);
         state_name_ = "Returning";
-        spdlog::warn("[FSM] → Returning (P1 fault)");
-        // 安全路径：I/O 在 FSM 锁解除后执行
-        action = [this]() { motion_->start_returning(); };
+        spdlog::warn("[FSM] → Returning (P1 故障，停刷安全返回)");
+        action = [this]() { motion_->start_returning_no_brush(); };
     }
-    if (action)
-        action();
+    if (action) action();
+}
+
+template <>
+void RobotFsm::dispatch<EvFaultP2>(EvFaultP2) {
+    // P2 故障：不转换状态，仅记录告警
+    // fault_->report() 已由 FaultHandler 在 EventBus 回调中调用
+    spdlog::warn("[FSM] P2 故障告警，继续执行 (state={})", current_state());
 }
 
 template <>
@@ -135,7 +174,7 @@ void RobotFsm::dispatch<EvFaultReset>(EvFaultReset e) {
     std::lock_guard<hal::PiMutex> lk(mtx_);
     sm_->process_event(e);
     state_name_ = "Idle";
-    spdlog::info("[FSM] → Idle (fault reset)");
+    spdlog::info("[FSM] → Idle (故障复位)");
 }
 
 template <>
@@ -145,12 +184,11 @@ void RobotFsm::dispatch<EvLowBattery>(EvLowBattery e) {
         std::lock_guard<hal::PiMutex> lk(mtx_);
         sm_->process_event(e);
         state_name_ = "Returning";
-        spdlog::warn("[FSM] → Returning (low battery)");
-        // 安全路径：I/O 在 FSM 锁解除后执行
+        spdlog::warn("[FSM] → Returning (低电量，带刷返回)");
+        // 低电量属于计划内返回，刷保持运行
         action = [this]() { motion_->start_returning(); };
     }
-    if (action)
-        action();
+    if (action) action();
 }
 
 template <>
@@ -158,15 +196,7 @@ void RobotFsm::dispatch<EvChargeDone>(EvChargeDone e) {
     std::lock_guard<hal::PiMutex> lk(mtx_);
     sm_->process_event(e);
     state_name_ = "Idle";
-    spdlog::info("[FSM] → Idle (charge done)");
+    spdlog::info("[FSM] → Idle (充电完成)");
 }
 
-template <>
-void RobotFsm::dispatch<EvInitDone>(EvInitDone e) {
-    std::lock_guard<hal::PiMutex> lk(mtx_);
-    sm_->process_event(e);
-    state_name_ = "Idle";
-    spdlog::info("[FSM] → Idle (init done)");
-}
-
-}  // namespace robot::app
+} // namespace robot::app

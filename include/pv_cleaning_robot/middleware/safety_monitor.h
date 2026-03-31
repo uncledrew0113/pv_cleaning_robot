@@ -1,10 +1,22 @@
+/*
+ * @Author: UncleDrew
+ * @Date: 2026-03-14 16:02:26
+ * @LastEditors: UncleDrew
+ * @LastEditTime: 2026-03-27 16:04:36
+ * @FilePath: /pv_cleaning_robot/include/pv_cleaning_robot/middleware/safety_monitor.h
+ * @Description:
+ *
+ * Copyright (c) 2026 by UncleDrew, All Rights Reserved.
+ */
 #pragma once
-#include "pv_cleaning_robot/device/limit_switch.h"
-#include "pv_cleaning_robot/device/walk_motor_group.h"
-#include "pv_cleaning_robot/middleware/event_bus.h"
 #include <atomic>
 #include <memory>
 #include <thread>
+
+#include "pv_cleaning_robot/device/limit_switch.h"
+#include "pv_cleaning_robot/device/walk_motor_group.h"
+#include "pv_cleaning_robot/middleware/event_bus.h"
+
 
 namespace robot::middleware {
 
@@ -19,16 +31,22 @@ namespace robot::middleware {
 /// @note WalkMotorGroup 的急停路径不经任何队列，直接调用 ICanBus::send()。
 /// emergency_override(0.0f) 同时停全部4轮并锁定心跳，防止50ms周期帧重新驱动电机
 class SafetyMonitor {
-public:
-    /// @brief 发布到 EventBus 的限位触发事件
+   public:
+    /// @brief 限位触发事件（已废弃，不再由 SafetyMonitor 发布；保留结构体以兼容旧代码）
     struct LimitTriggerEvent {
         device::LimitSide side;
     };
 
+    /// @brief 限位防抖完成事件（monitor_loop 延迟 180ms 后发布）
+    /// 订阅者（main.cc）将其转发给 RobotFsm::dispatch<EvFrontLimitSettled/EvRearLimitSettled>
+    struct LimitSettledEvent {
+        device::LimitSide side;
+    };
+
     SafetyMonitor(std::shared_ptr<device::WalkMotorGroup> walk_group,
-                  std::shared_ptr<device::LimitSwitch>    front_switch,
-                  std::shared_ptr<device::LimitSwitch>    rear_switch,
-                  EventBus&                               event_bus);
+                  std::shared_ptr<device::LimitSwitch> front_switch,
+                  std::shared_ptr<device::LimitSwitch> rear_switch,
+                  EventBus& event_bus);
     ~SafetyMonitor();
 
     /// 启动安全监控（启动 GPIO 监控线程 SCHED_FIFO 95，monitor_loop SCHED_FIFO 94）
@@ -43,7 +61,7 @@ public:
     /// 手动复位急停（上层确认安全后调用）
     void reset_estop();
 
-private:
+   private:
     /// LimitSwitch 触发回调（在 GPIO 监控线程中被调用，必须极短）
     void on_limit_trigger(device::LimitSide side);
 
@@ -51,13 +69,16 @@ private:
     void monitor_loop();
 
     std::shared_ptr<device::WalkMotorGroup> walk_group_;
-    std::shared_ptr<device::LimitSwitch>    front_switch_;
-    std::shared_ptr<device::LimitSwitch>    rear_switch_;
-    EventBus&                               event_bus_;
+    std::shared_ptr<device::LimitSwitch> front_switch_;
+    std::shared_ptr<device::LimitSwitch> rear_switch_;
+    EventBus& event_bus_;
 
     std::atomic<bool> running_{false};
     std::atomic<bool> estop_active_{false};
-    std::thread       monitor_thread_;
+    /// 防抖 pending 标志：GPIO 线程触发后置 true，monitor_loop 延迟 180ms 后消费
+    std::atomic<bool> pending_front_{false};
+    std::atomic<bool> pending_rear_{false};
+    std::thread monitor_thread_;
 };
 
-} // namespace robot::middleware
+}  // namespace robot::middleware

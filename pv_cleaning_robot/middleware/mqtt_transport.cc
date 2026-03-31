@@ -56,7 +56,8 @@ MqttTransport::MqttTransport(Config cfg)
     client_ = std::make_unique<mqtt::async_client>(
         cfg_.broker_uri, cfg_.client_id,
         mqtt::create_options(MQTTVERSION_3_1_1));
-    client_->set_callback(*new MqttCallback(this));  // 生命周期由 paho 管理
+    callback_ = std::make_unique<MqttCallback>(this);
+    client_->set_callback(*callback_);
 }
 
 MqttTransport::~MqttTransport()

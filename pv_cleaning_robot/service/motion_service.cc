@@ -2,7 +2,7 @@
  * @Author: UncleDrew
  * @Date: 2026-03-14 16:03:29
  * @LastEditors: UncleDrew
- * @LastEditTime: 2026-03-25 18:39:24
+ * @LastEditTime: 2026-03-30 16:02:45
  * @FilePath: /pv_cleaning_robot/pv_cleaning_robot/service/motion_service.cc
  * @Description: 运动服务——集成 WalkMotorGroup + IMU 航向 PID + 边缘触发覆盖
  *
@@ -28,12 +28,14 @@ MotionService::MotionService(std::shared_ptr<device::WalkMotorGroup> group,
 // ── 运动控制 ──────────────────────────────────────────────────────────────
 
 bool MotionService::start_cleaning() {
-    // 先切换到速度环模式，再使能
-    // M1502E 上电默认模式不确定（可能是开环 0x00），必须显式切换
-    if (group_->set_mode_all(protocol::WalkMotorMode::SPEED) != device::DeviceError::OK)
-        return false;
-    // 使能全部行走电机
+    // 解除可能由 SafetyMonitor::on_limit_trigger() 触发的 emergency_override 锁
+    group_->clear_override();
+
+    // 先使能，再切换速度环模式
+    // M1502E 硬件确认：ENABLE 帧（0x01）会覆盖 SPEED 模式位 → 必须先 ENABLE 再 SPEED
     if (group_->enable_all() != device::DeviceError::OK)
+        return false;
+    if (group_->set_mode_all(protocol::WalkMotorMode::SPEED) != device::DeviceError::OK)
         return false;
 
     // 如果 heading PID 使能，以当前 IMU yaw 为目标航向
@@ -63,18 +65,54 @@ void MotionService::stop_cleaning() {
 }
 
 bool MotionService::start_returning() {
-    brush_->stop();
-    group_->enable_heading_control(false);
+    // 解除可能由 SafetyMonitor 触发的 emergency_override 锁，确保心跳正常恢复
+    group_->clear_override();
 
-    // 先切换速度环，再使能
-    if (group_->set_mode_all(protocol::WalkMotorMode::SPEED) != device::DeviceError::OK)
-        return false;
+    // 返程辊刷反向运行（清洁板面残留，绝对值同 brush_rpm，方向取反）
+    brush_->set_rpm(-static_cast<float>(cfg_.return_brush_rpm));
+    brush_->start();
+
+    // 保持航向 PID：锁定当前 yaw，防止返程漂移
+    if (cfg_.heading_pid_en) {
+        const float cur_yaw = imu_ ? imu_->get_latest().yaw_deg : 0.0f;
+        group_->set_target_heading(cur_yaw);
+        group_->enable_heading_control(true);
+    }
+
+    // 先使能，再切换速度环（M1502E：ENABLE 帧覆盖模式位，Q5 修复）
     if (group_->enable_all() != device::DeviceError::OK)
+        return false;
+    if (group_->set_mode_all(protocol::WalkMotorMode::SPEED) != device::DeviceError::OK)
         return false;
 
     // 物理安装：LT/RT 负转=后退，LB/RB 安装相反正转=后退
     // 车辆后退：LT=-spd, RT=-spd, LB=+spd, RB=+spd
-    const float spd = cfg_.return_speed_rpm;  // 正大小量级
+    const float spd = cfg_.return_speed_rpm;
+    if (group_->set_speeds(-spd, -spd, +spd, +spd) != device::DeviceError::OK)
+        return false;
+
+    return true;
+}
+
+bool MotionService::start_returning_no_brush() {
+    // P1 故障路径：停刷再反向返回（保持航向 PID 防止返程漂移）
+    brush_->stop();
+    group_->clear_override();
+
+    // 保持航向 PID（与 start_returning() 一致；Q9 修复：原来错误地禁用了 PID）
+    if (cfg_.heading_pid_en) {
+        const float cur_yaw = imu_ ? imu_->get_latest().yaw_deg : 0.0f;
+        group_->set_target_heading(cur_yaw);
+        group_->enable_heading_control(true);
+    }
+
+    // 先使能，再切换速度环（M1502E：ENABLE 帧覆盖模式位，Q5 修复）
+    if (group_->enable_all() != device::DeviceError::OK)
+        return false;
+    if (group_->set_mode_all(protocol::WalkMotorMode::SPEED) != device::DeviceError::OK)
+        return false;
+
+    const float spd = cfg_.return_speed_rpm;
     if (group_->set_speeds(-spd, -spd, +spd, +spd) != device::DeviceError::OK)
         return false;
 
@@ -129,14 +167,17 @@ bool MotionService::is_edge_override_active() const {
 
 void MotionService::update() {
     // 读取最新 IMU yaw（已由 ImuDevice 后台线程更新，无阻塞）
-    const float yaw = imu_ ? imu_->get_latest().yaw_deg : 0.0f;
+    const float raw_yaw = imu_ ? imu_->get_latest().yaw_deg : 0.0f;
+    // EMA 低通滤波（α=0.8，τ≈100ms @50ms 周期），抑制 IMU 高频噪声对 PID 的扰动
+    static float filtered_yaw = raw_yaw;
+    filtered_yaw = 0.8f * filtered_yaw + 0.2f * raw_yaw;
 
     // 传入 yaw，由 WalkMotorGroup::update() 完成：
     //   1. 更新 online 超时状态
-    //   2. override 激活时跳过重发（不干扰紧急停车帧）
-    //   3. 若 heading_ctrl_en_，计算 PID 差速修正并发帧
-    //   4. 每 1000ms 发一次温度查询帧（主动上报不含温度）
-    group_->update(yaw);
+    //   2. 排干命令队列（消费 set_speeds/clear_override 投递的 Cmd）
+    //   3. override 激活时跳过重发（不干扰紧急停车帧）
+    //   4. 若 heading_ctrl_en_，计算 PID 差速修正并发帧
+    group_->update(filtered_yaw);
 
     // 注意：brush_->update() 已移到 bms_exec 线程（SCHED_OTHER, 500ms）
     // 原因：Modbus RTU 读取寄存器需 5~10ms阶塞 I/O，放在 walk_ctrl(FIFO 80, 20ms)

@@ -14,15 +14,15 @@
   },
 
   "serial": {
-    "imu":   { "port": "/dev/ttyS1", "baudrate": 921600 },
+    "imu":   { "port": "/dev/ttyS1", "baudrate": 9600 },
     "gps":   { "port": "/dev/ttyS2", "baudrate": 9600   },
     "brush": { "port": "/dev/ttyS3", "baudrate": 9600, "slave_id": 1 },
-    "bms":   { "port": "/dev/ttyS4", "baudrate": 9600   }
+    "bms":   { "port": "/dev/ttyS8", "baudrate": 9600   }
   },
 
   "gpio": {
-    "front_limit": { "chip": "gpiochip0", "line": 10 },
-    "rear_limit":  { "chip": "gpiochip0", "line": 11 }
+    "front_limit": { "chip": "gpiochip5", "line": 0 },
+    "rear_limit":  { "chip": "gpiochip5", "line": 1 }
   },
 
   "network": {
@@ -51,12 +51,20 @@
     "hw_watchdog": "/dev/watchdog"
   },
 
+  "scheduler": {
+    "windows": [
+      { "hour": 8,  "minute": 0  },
+      { "hour": 14, "minute": 30 }
+    ]
+  },
+
   "robot": {
     "track_length_m":   1000.0,
-    "passes":           1,
+    "passes":           1.0,
     "clean_speed_rpm":  300.0,
-    "return_speed_rpm": 500.0,
-    "brush_rpm":        1200,
+    "return_speed_rpm": 300.0,
+    "return_brush_rpm": 1000,
+    "brush_rpm":        1000,
     "edge_reverse_rpm": 0.0,
     "heading_pid_en":   true,
     "battery_full_soc": 95.0,

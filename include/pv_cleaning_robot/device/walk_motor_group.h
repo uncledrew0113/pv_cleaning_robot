@@ -162,13 +162,29 @@ class WalkMotorGroup {
     GroupStatus get_group_status() const;
     GroupDiagnostics get_group_diagnostics() const;
 
-    // ── 周期心跳（建议由控制线程调用，10 ms）─────────────────────────
+    // ── 周期心跳（建议由控制线程调用，50 ms）─────────────────────────
     /// 重发当前设定值（含 PID 差速补偿）；轮询 online 超时状态；
-    /// 定期发温度查询帧；override 激活时跳过心跳重发
     /// @param yaw_deg  当前航向角（来自 IMU），仅在 PID 使能时有效
     void update(float yaw_deg = 0.0f);
 
    private:
+    // ── 命令队列（Command Queue）─────────────────────────────────────────
+    /// set_speeds/set_currents/set_open_loops/set_positions/clear_override
+    /// 全部异步投递此队列，update()（walk_ctrl 线程）作为唯一消费者，
+    /// 序列化所有控制帧状态变更，彻底消除多核竞态（Q7/Q8 修复）
+    struct Cmd {
+        enum class Type : uint8_t { SET_CTRL_FRAME, CLEAR_OVERRIDE } type{};
+        hal::CanFrame frame{};    ///< 预编码 CAN 帧（SET_CTRL_FRAME 时有效）
+        float base_lt_rpm{0.0f};  ///< PID 基础速度（速度帧填，其余为 0）
+        float base_rt_rpm{0.0f};
+        std::array<float, 4> target_rpms{};  ///< diag[i].target_value 对应值
+    };
+    static constexpr int kCmdQueueSize = 8;  ///< 环形缓冲深度（正常最多 3 条/周期）
+    std::array<Cmd, kCmdQueueSize> cmd_buf_{};
+    int cmd_head_{0};       ///< 写指针（生产者写入，cmd_mtx_ 保护）
+    int cmd_tail_{0};       ///< 读指针（update() 消费，cmd_mtx_ 保护）
+    hal::PiMutex cmd_mtx_;  ///< 独立于 mtx_，保护 cmd_buf_/cmd_head_/cmd_tail_
+
     std::shared_ptr<hal::ICanBus> can_;
     uint8_t id_base_;           ///< 1 或 5
     uint32_t ctrl_id_;          ///< 0x32 或 0x33
@@ -201,15 +217,20 @@ class WalkMotorGroup {
 
     // ── 边缘紧急覆盖 ──────────────────────────────────────────────────
     std::atomic<bool> override_active_{false};
+    /// CAN TX 串行化锁：emergency_override() 与 update() PID 发帧路径共享。
+    /// 保证 stop 帧永远是总线上最后一帧（两条防线之二，详见 CONCURRENCY.md）。
+    /// 注意：仅保护 update() PID 控制帧路径；
+    ///       配置帧（enable_all / set_mode_all 等）不经此锁，避免 start_returning()
+    ///       在 CLEAR_OVERRIDE 入队但未消费期间错误丢帧。
+    hal::PiMutex send_mtx_;
 
-    // ── 温度定期查询 ──────────────────────────────────────────────────
-    static constexpr int kTempQueryIntervalMs = 1000;  ///< 温度查询周期 1s
-    std::chrono::steady_clock::time_point last_temp_query_time_{};
-    float temperature_deg_{0.0f};  ///< 最近一次查询得到的温度（℃）
+    // ── 温度（被动接收，由 recv_loop 解析累积）──────────────────────────
+    float temperature_deg_{0.0f};  ///< recv_loop 被动解析得到的最新温度（℃）
 
     static constexpr auto kOnlineTimeout = std::chrono::milliseconds(500);
 
     DeviceError send_ctrl(const hal::CanFrame& frame);
+    void enqueue_cmd(const Cmd& cmd);  ///< 投入环形缓冲，满时丢弃最旧并 warn
     void recv_loop();
     /// 根据当前 yaw_deg 计算 PID 差速，返回左右修正量（左+=correction, 右-=correction）
     float calc_pid_correction(float yaw_deg, float dt_s);

@@ -99,6 +99,9 @@ void WalkMotorGroup::close() {
 // ── 内部发帧 ─────────────────────────────────────────────────────────────────
 
 DeviceError WalkMotorGroup::send_ctrl(const hal::CanFrame& frame) {
+    // 通用发帧（无 override 检查）：供配置命令路径调用
+    // （enable_all / set_mode_all / set_feedback_mode_all 等）。
+    // PID 控制帧的 override 保护由 update() step4 内联的 send_mtx_ 负责。
     if (!can_->is_open())
         return DeviceError::NOT_OPEN;
     if (can_->send(frame)) {
@@ -109,6 +112,20 @@ DeviceError WalkMotorGroup::send_ctrl(const hal::CanFrame& frame) {
     std::lock_guard<hal::PiMutex> lk(mtx_);
     ++ctrl_err_count_;
     return DeviceError::COMM_TIMEOUT;
+}
+
+// ── 命令队列内部实现 ──────────────────────────────────────────────────────────
+
+void WalkMotorGroup::enqueue_cmd(const Cmd& cmd) {
+    std::lock_guard<hal::PiMutex> lk(cmd_mtx_);
+    int next_head = (cmd_head_ + 1) % kCmdQueueSize;
+    if (next_head == cmd_tail_) {
+        // 队列满：丢弃最旧命令，不阻塞调用方线程
+        spdlog::warn("[WalkMotorGroup] cmd_queue full, oldest command dropped");
+        cmd_tail_ = (cmd_tail_ + 1) % kCmdQueueSize;
+    }
+    cmd_buf_[static_cast<size_t>(cmd_head_)] = cmd;
+    cmd_head_ = next_head;
 }
 
 // ── 模式控制 ─────────────────────────────────────────────────────────────────
@@ -154,19 +171,14 @@ DeviceError WalkMotorGroup::set_speeds(float lt, float rt, float lb, float rb) {
     lb = clamp_rpm(lb);
     rb = clamp_rpm(rb);
 
-    auto frame = protocol::WalkMotorCanCodec::encode_group_speed(id_base_, lt, rt, lb, rb);
-    {
-        std::lock_guard<hal::PiMutex> lk(mtx_);
-        last_ctrl_frame_ = frame;
-        has_ctrl_frame_ = true;
-        base_lt_rpm_ = lt;
-        base_rt_rpm_ = rt;
-        diag_[0].target_value = lt;
-        diag_[1].target_value = rt;
-        diag_[2].target_value = lb;
-        diag_[3].target_value = rb;
-    }
-    return send_ctrl(frame);
+    Cmd cmd;
+    cmd.type = Cmd::Type::SET_CTRL_FRAME;
+    cmd.frame = protocol::WalkMotorCanCodec::encode_group_speed(id_base_, lt, rt, lb, rb);
+    cmd.base_lt_rpm = lt;
+    cmd.base_rt_rpm = rt;
+    cmd.target_rpms = {lt, rt, lb, rb};
+    enqueue_cmd(cmd);
+    return DeviceError::OK;
 }
 
 DeviceError WalkMotorGroup::set_speeds(const SpeedCmd& cmd) {
@@ -180,31 +192,28 @@ DeviceError WalkMotorGroup::set_speed_uniform(float rpm) {
 }
 
 DeviceError WalkMotorGroup::set_currents(float lt, float rt, float lb, float rb) {
-    auto frame = protocol::WalkMotorCanCodec::encode_group_current(id_base_, lt, rt, lb, rb);
-    {
-        std::lock_guard<hal::PiMutex> lk(mtx_);
-        last_ctrl_frame_ = frame;
-        has_ctrl_frame_ = true;
-        diag_[0].target_value = lt;
-        diag_[1].target_value = rt;
-        diag_[2].target_value = lb;
-        diag_[3].target_value = rb;
-    }
-    return send_ctrl(frame);
+    Cmd cmd;
+    cmd.type = Cmd::Type::SET_CTRL_FRAME;
+    cmd.frame = protocol::WalkMotorCanCodec::encode_group_current(id_base_, lt, rt, lb, rb);
+    cmd.base_lt_rpm = 0.0f;
+    cmd.base_rt_rpm = 0.0f;
+    cmd.target_rpms = {lt, rt, lb, rb};
+    enqueue_cmd(cmd);
+    return DeviceError::OK;
 }
 
 DeviceError WalkMotorGroup::set_open_loops(int16_t lt, int16_t rt, int16_t lb, int16_t rb) {
-    auto frame = protocol::WalkMotorCanCodec::encode_group_open_loop(id_base_, lt, rt, lb, rb);
-    {
-        std::lock_guard<hal::PiMutex> lk(mtx_);
-        last_ctrl_frame_ = frame;
-        has_ctrl_frame_ = true;
-        diag_[0].target_value = static_cast<float>(lt);
-        diag_[1].target_value = static_cast<float>(rt);
-        diag_[2].target_value = static_cast<float>(lb);
-        diag_[3].target_value = static_cast<float>(rb);
-    }
-    return send_ctrl(frame);
+    Cmd cmd;
+    cmd.type = Cmd::Type::SET_CTRL_FRAME;
+    cmd.frame = protocol::WalkMotorCanCodec::encode_group_open_loop(id_base_, lt, rt, lb, rb);
+    cmd.base_lt_rpm = 0.0f;
+    cmd.base_rt_rpm = 0.0f;
+    cmd.target_rpms = {static_cast<float>(lt),
+                       static_cast<float>(rt),
+                       static_cast<float>(lb),
+                       static_cast<float>(rb)};
+    enqueue_cmd(cmd);
+    return DeviceError::OK;
 }
 
 DeviceError WalkMotorGroup::set_positions(float lt_deg, float rt_deg, float lb_deg, float rb_deg) {
@@ -213,18 +222,15 @@ DeviceError WalkMotorGroup::set_positions(float lt_deg, float rt_deg, float lb_d
     rt_deg = cp(rt_deg);
     lb_deg = cp(lb_deg);
     rb_deg = cp(rb_deg);
-    auto frame = protocol::WalkMotorCanCodec::encode_group_position(
+    Cmd cmd;
+    cmd.type = Cmd::Type::SET_CTRL_FRAME;
+    cmd.frame = protocol::WalkMotorCanCodec::encode_group_position(
         id_base_, lt_deg, rt_deg, lb_deg, rb_deg);
-    {
-        std::lock_guard<hal::PiMutex> lk(mtx_);
-        last_ctrl_frame_ = frame;
-        has_ctrl_frame_ = true;
-        diag_[0].target_value = lt_deg;
-        diag_[1].target_value = rt_deg;
-        diag_[2].target_value = lb_deg;
-        diag_[3].target_value = rb_deg;
-    }
-    return send_ctrl(frame);
+    cmd.base_lt_rpm = 0.0f;
+    cmd.base_rt_rpm = 0.0f;
+    cmd.target_rpms = {lt_deg, rt_deg, lb_deg, rb_deg};
+    enqueue_cmd(cmd);
+    return DeviceError::OK;
 }
 
 DeviceError WalkMotorGroup::set_feedback_mode_all(uint8_t period_ms) {
@@ -310,35 +316,50 @@ float WalkMotorGroup::calc_pid_correction(float yaw_deg, float dt_s) {
 // ── 边缘紧急覆盖 ──────────────────────────────────────────────────────────────
 
 DeviceError WalkMotorGroup::emergency_override(float reverse_rpm) {
-    // 1. 立即标记覆盖（抑制 update() 心跳）
-    override_active_.store(true);
+    // 防线一：立即置位（seq_cst），在持锁之前操作。
+    // 即使后续等待 send_mtx_，update() 的 step3 无锁检查也能立即感知并提前退出，
+    // 不必等到 send_mtx_ 释放后才被拦截。
+    override_active_.store(true, std::memory_order_seq_cst);
 
-    // 2. 直接发送停止或反转帧（不走 last_ctrl_frame_ 缓存）
     // 物理安装：LT/RT 正转=前进，LB/RB 因安装方向相反，负转=前进。
     // reverse_rpm > 0 = 车辆后退 → LT/RT=-rpm，LB/RB=+rpm（与前进方向相反）
     float lt, rt, lb, rb;
     if (reverse_rpm > 0.0f) {
         float rpm = clamp_rpm(reverse_rpm);
-        lt = -rpm;  rt = -rpm;  // 上轮后退
-        lb = +rpm;  rb = +rpm;  // 下轮后退（安装反向，正值=后退）
+        lt = -rpm;
+        rt = -rpm;  // 上轮后退
+        lb = +rpm;
+        rb = +rpm;  // 下轮后退（安装反向，正值=后退）
     } else {
         lt = rt = lb = rb = 0.0f;
     }
     auto frame = protocol::WalkMotorCanCodec::encode_group_speed(id_base_, lt, rt, lb, rb);
 
-    auto ret = send_ctrl(frame);
+    // 防线二：持锁后直接发帧，不经过 send_ctrl() 的 override 检查门。
+    // 与 send_ctrl() 的 lock(send_mtx_) 互斥，保证 stop 帧严格在任何
+    // 并发 PID 帧之后写入内核 TX ring（总线上的最后一条控制语义帧）。
+    DeviceError ret;
+    {
+        std::lock_guard<hal::PiMutex> lg(send_mtx_);
+        ret = can_->send(frame) ? DeviceError::OK : DeviceError::COMM_TIMEOUT;
+        std::lock_guard<hal::PiMutex> lk(mtx_);
+        if (ret == DeviceError::OK)
+            ++ctrl_frame_count_;
+        else
+            ++ctrl_err_count_;
+    }
 
     spdlog::warn("[WalkMotorGroup] emergency_override: vehicle_reverse_rpm={:.1f}", reverse_rpm);
     return ret;
 }
 
 void WalkMotorGroup::clear_override() {
-    override_active_.store(false);
-    // 重置 PID 积分，防止解除后突然积分饱和
-    std::lock_guard<hal::PiMutex> lk(mtx_);
-    pid_integral_ = 0.0f;
-    pid_prev_err_ = 0.0f;
-    spdlog::info("[WalkMotorGroup] override cleared");
+    // 投递 CLEAR_OVERRIDE 命令：update() 消费时原子清除 override_active_ + 重置 PID +
+    // has_ctrl_frame_=false（Q8 修复：防止下一个 update() 重发旧的运动帧）
+    Cmd cmd;
+    cmd.type = Cmd::Type::CLEAR_OVERRIDE;
+    enqueue_cmd(cmd);
+    spdlog::info("[WalkMotorGroup] clear_override enqueued");
 }
 
 bool WalkMotorGroup::is_override_active() const {
@@ -398,6 +419,9 @@ void WalkMotorGroup::update(float yaw_deg) {
     last_update_time = now;
 
     // ── 1. 更新各轮 online 状态 ──
+    // 日志推迟到锁外：spdlog::warn 可能触发堆分配和 spdlog 内部锁，
+    // 在 SCHED_FIFO-80 线程内调用会引入不可预知抖动。
+    uint8_t offline_mask = 0u;  // bit i = motor i 本轮刚掉线
     {
         std::lock_guard<hal::PiMutex> lk(mtx_);
         for (int i = 0; i < kWheelCount; ++i) {
@@ -407,17 +431,59 @@ void WalkMotorGroup::update(float yaw_deg) {
                 if (!online && diag_[i].online) {
                     diag_[i].online = false;
                     ++diag_[i].feedback_lost_count;
-                    spdlog::warn("[WalkMotorGroup] motor {} offline", id_base_ + i);
+                    offline_mask |= static_cast<uint8_t>(1u << i);
                 }
             }
         }
     }
+    // 锁外打印：不在 RT 临界路径上
+    for (int i = 0; i < kWheelCount; ++i) {
+        if (offline_mask & (1u << i))
+            spdlog::warn("[WalkMotorGroup] motor {} offline", id_base_ + i);
+    }
 
-    // ── 2. 若在 override 状态，跳过心跳重发 ──
+    // ── 2. 排干命令队列（update() 是唯一消费者，walk_ctrl 线程）────────────────────
+    // SET_CTRL_FRAME: 更新控制帧 + PID 基础值，不触碰 override_active_
+    // CLEAR_OVERRIDE: has_ctrl_frame_=false + 重置 PID + override_active_=false（Q8 修复）
+    while (true) {
+        Cmd c;
+        {
+            std::lock_guard<hal::PiMutex> lk_cmd(cmd_mtx_);
+            if (cmd_tail_ == cmd_head_)
+                break;
+            c = cmd_buf_[static_cast<size_t>(cmd_tail_)];
+            cmd_tail_ = (cmd_tail_ + 1) % kCmdQueueSize;
+        }  // 释放 cmd_mtx_，避免与 mtx_ 嵌套持锁
+
+        if (c.type == Cmd::Type::SET_CTRL_FRAME) {
+            std::lock_guard<hal::PiMutex> lk(mtx_);
+            last_ctrl_frame_ = c.frame;
+            has_ctrl_frame_ = true;
+            base_lt_rpm_ = c.base_lt_rpm;
+            base_rt_rpm_ = c.base_rt_rpm;
+            for (int i = 0; i < kWheelCount; ++i)
+                diag_[i].target_value = c.target_rpms[static_cast<size_t>(i)];
+            // 不改 override_active_：emergency_override() 的 store(true) 保持有效直到
+            // CLEAR_OVERRIDE
+        } else {  // CLEAR_OVERRIDE
+            {
+                std::lock_guard<hal::PiMutex> lk(mtx_);
+                has_ctrl_frame_ = false;
+                pid_integral_ = 0.0f;
+                pid_prev_err_ = 0.0f;
+                heading_initialized_ = false;
+            }
+            // memory_order_release：保证上方 mtx_ 锁内的写对其他核可见后再清 override
+            // 与 emergency_override() 的默认 seq_cst store(true) 形成 release-acquire 对
+            override_active_.store(false, std::memory_order_release);
+        }
+    }
+
+    // ── 3. 若在 override 状态，跳过心跳重发 ──
     if (override_active_.load())
         return;
 
-    // ── 3. 计算 PID 差速（如果使能） ──
+    // ── 4. 计算 PID 差速（如果使能） ──
     hal::CanFrame ctrl;
     bool has;
 
@@ -438,26 +504,22 @@ void WalkMotorGroup::update(float yaw_deg) {
         }
     }
 
-    if (has)
-        send_ctrl(ctrl);
-
-    // ── 4. 定期查询温度（主动上报不含温度，需显式查询 0x107） ──
-    bool need_temp_query = false;
-    {
-        std::lock_guard<hal::PiMutex> lk(mtx_);
-        if (last_temp_query_time_ == std::chrono::steady_clock::time_point{} ||
-            std::chrono::duration_cast<std::chrono::milliseconds>(now - last_temp_query_time_)
-                    .count() >= kTempQueryIntervalMs) {
-            last_temp_query_time_ = now;
-            need_temp_query = true;
+    if (has) {
+        // 防线二（仅 PID 路径）：持 send_mtx_ 后双重检查 override。
+        // 处理 update 通过 step3 无锁检查后被 emergency 抢占的残余窗口：
+        //   emergency: store(true) → lock(send_mtx_) → send(stop) → unlock [release]
+        //   update:                                              lock(send_mtx_) [acquire]
+        //   happens-before 保证此处 load 必然读到 true → 丢弃 PID 帧。
+        std::lock_guard<hal::PiMutex> lg(send_mtx_);
+        if (!override_active_.load(std::memory_order_acquire)) {
+            if (can_->send(ctrl)) {
+                std::lock_guard<hal::PiMutex> lk(mtx_);
+                ++ctrl_frame_count_;
+            } else {
+                std::lock_guard<hal::PiMutex> lk(mtx_);
+                ++ctrl_err_count_;
+            }
         }
-    }
-    if (need_temp_query) {
-        // 查询组内第一台电机的温度（代表性）
-        auto qframe = codecs_[0].encode_query(protocol::WalkMotorQueryTarget::TEMP,
-                                              protocol::WalkMotorQueryTarget::SPEED,
-                                              protocol::WalkMotorQueryTarget::MODE);
-        can_->send(qframe);  // 发送失败不视为错误（温度非关键）
     }
 }
 

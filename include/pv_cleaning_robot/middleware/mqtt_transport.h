@@ -11,6 +11,8 @@ namespace mqtt { class async_client; }
 
 namespace robot::middleware {
 
+class MqttCallback;  // 定义在 mqtt_transport.cc，此处仅供 unique_ptr 成员声明使用
+
 /// @brief MQTT 传输层（paho-mqtt-cpp，QoS=1，持久会话）
 class MqttTransport : public INetworkTransport {
 public:
@@ -43,6 +45,7 @@ private:
 
     Config cfg_;
     std::unique_ptr<mqtt::async_client> client_;
+    std::unique_ptr<MqttCallback> callback_;  ///< 替代 raw new，持有 MqttCallback 对象
     std::unordered_map<std::string, MessageCallback> subscriptions_;
     mutable std::mutex sub_mtx_;
     std::atomic<bool> connected_{false};

@@ -2,7 +2,7 @@
  * @Author: UncleDrew
  * @Date: 2026-03-11 23:38:44
  * @LastEditors: UncleDrew
- * @LastEditTime: 2026-03-19 11:16:10
+ * @LastEditTime: 2026-03-30 23:39:36
  * @FilePath: /pv_cleaning_robot/test/test_base.cc
  * @Description:
  *
@@ -12,6 +12,8 @@
 #define CATCH_CONFIG_MAIN
 
 #include <atomic>
+#include <boost/lockfree/spsc_queue.hpp>
+#include <cassert>
 #include <catch2/catch.hpp>
 #include <chrono>
 #include <csignal>
@@ -188,4 +190,22 @@ TEST_CASE("driver serial驱动", "[driver][serial]") {
             line_accumulator.clear();
         }
     }
+}
+
+TEST_CASE("无锁队列", "[driver][nonlock]") {
+    boost::lockfree::spsc_queue<int, boost::lockfree::capacity<1024>> q;
+
+    assert(q.empty());
+
+    for (int i = 0; i < 100; ++i) {
+        assert(q.push(i));
+    }
+
+    int v;
+    for (int i = 0; i < 100; ++i) {
+        assert(q.pop(v));
+        assert(v == i);
+    }
+
+    assert(q.empty());
 }

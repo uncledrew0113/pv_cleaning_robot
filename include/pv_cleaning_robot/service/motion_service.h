@@ -28,11 +28,12 @@ namespace robot::service {
 class MotionService : public middleware::IRunnable {
    public:
     struct Config {
-        float clean_speed_rpm{300.0f};   ///< 清扫行进速度（RPM）
-        float return_speed_rpm{500.0f};  ///< 返回速度（RPM，快速）
-        int brush_rpm{1200};             ///< 辊刷转速
-        float edge_reverse_rpm{150.0f};  ///< 边缘触发后反转速度（RPM，0=原地停）
-        bool heading_pid_en{true};       ///< 是否使能航向 PID
+        float clean_speed_rpm{30.0f};   ///< 清扫行进速度（RPM）
+        float return_speed_rpm{30.0f};  ///< 返回速度（RPM，快速）
+        int brush_rpm{1200};            ///< 辊刷正向转速
+        int return_brush_rpm{1200};     ///< 辊刷返程转速（绝对值，实际方向取反）
+        float edge_reverse_rpm{30.0f};  ///< 边缘触发后反转速度（RPM，0=原地停）
+        bool heading_pid_en{true};      ///< 是否使能航向 PID
         device::WalkMotorGroup::HeadingPidParams pid{};  ///< PID 参数
     };
 
@@ -54,8 +55,11 @@ class MotionService : public middleware::IRunnable {
     /// 停止清扫（停辊刷，行走归零，禁用 PID）
     void stop_cleaning();
 
-    /// 以返回速度反向行进
+    /// 以返回速度反向行进（辊刷反向运行，保持航向 PID）
     bool start_returning();
+
+    /// 以返回速度反向行进，不启动辊刷（P1 故障路径，辊刷已停）
+    bool start_returning_no_brush();
 
     /// 原地急停（失能行走，停辊刷）
     void emergency_stop();
