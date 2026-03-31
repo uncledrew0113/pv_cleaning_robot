@@ -37,6 +37,7 @@ set(COMMON_SRCS
   ${PROJ}/service/scheduler_service.cc
   ${PROJ}/service/nav_service.cc
   ${PROJ}/service/motion_service.cc
+  ${PROJ}/service/heading_pid_controller.cc
 
   # App 层
   ${PROJ}/app/robot_fsm.cc
@@ -82,6 +83,7 @@ add_executable(unit_tests
   service/fault_service_test.cc
   service/scheduler_service_test.cc
   service/motion_service_test.cc
+  service/heading_pid_test.cc
 
   # App 层
   app/robot_fsm_test.cc

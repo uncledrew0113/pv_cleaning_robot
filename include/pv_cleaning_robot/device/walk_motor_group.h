@@ -12,6 +12,7 @@
 #include "pv_cleaning_robot/hal/i_can_bus.h"
 #include "pv_cleaning_robot/hal/pi_mutex.h"
 #include "pv_cleaning_robot/protocol/walk_motor_can_codec.h"
+#include "pv_cleaning_robot/service/heading_pid_controller.h"
 
 namespace robot::device {
 
@@ -75,14 +76,8 @@ class WalkMotorGroup {
         float temperature_deg{0.0f};    ///< 最近温度查询结果（℃）
     };
 
-    /// 航向 PID 参数
-    struct HeadingPidParams {
-        float kp{0.5f};               ///< 比例系数
-        float ki{0.05f};              ///< 积分系数
-        float kd{0.1f};               ///< 微分系数
-        float max_output{30.0f};      ///< 最大差速输出（RPM），防止饱和
-        float integral_limit{20.0f};  ///< 积分限幅（RPM）
-    };
+    /// 航向 PID 参数（等价于 service::HeadingPidController::Params，向后兼容别名）
+    using HeadingPidParams = service::HeadingPidController::Params;
 
     /// @param can      与4台电机共用的 CAN 总线实例
     /// @param id_base  组内首台电机的 motor_id（必须为 1 或 5）
@@ -207,13 +202,9 @@ class WalkMotorGroup {
     uint32_t ctrl_frame_count_{0};
     uint32_t ctrl_err_count_{0};
 
-    // ── 航向 PID 状态 ─────────────────────────────────────────────────
-    HeadingPidParams pid_params_;
-    bool heading_ctrl_en_{false};
-    float target_heading_{0.0f};
-    bool heading_initialized_{false};
-    float pid_integral_{0.0f};
-    float pid_prev_err_{0.0f};
+    // ── 航向 PID 控制器 ─────────────────────────────────────────────────
+    /// 在 mtx_ 锁保护下访问；不含硬件依赖，便于独立单元测试。
+    service::HeadingPidController pid_ctrl_;
 
     // ── 边缘紧急覆盖 ──────────────────────────────────────────────────
     std::atomic<bool> override_active_{false};
@@ -232,8 +223,6 @@ class WalkMotorGroup {
     DeviceError send_ctrl(const hal::CanFrame& frame);
     void enqueue_cmd(const Cmd& cmd);  ///< 投入环形缓冲，满时丢弃最旧并 warn
     void recv_loop();
-    /// 根据当前 yaw_deg 计算 PID 差速，返回左右修正量（左+=correction, 右-=correction）
-    float calc_pid_correction(float yaw_deg, float dt_s);
 };
 
 }  // namespace robot::device

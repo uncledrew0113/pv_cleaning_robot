@@ -20,15 +20,6 @@ static float clamp(float v, float lo, float hi) {
     return v < lo ? lo : (v > hi ? hi : v);
 }
 
-/// 将角度差规范化到 [-180, +180]
-static float norm_angle(float deg) {
-    while (deg > 180.0f)
-        deg -= 360.0f;
-    while (deg < -180.0f)
-        deg += 360.0f;
-    return deg;
-}
-
 // ── 构造 / 析构 ─────────────────────────────────────────────────────────────
 
 WalkMotorGroup::WalkMotorGroup(std::shared_ptr<hal::ICanBus> can,
@@ -269,48 +260,17 @@ DeviceError WalkMotorGroup::query_firmware() {
 
 void WalkMotorGroup::set_heading_pid_params(const HeadingPidParams& p) {
     std::lock_guard<hal::PiMutex> lk(mtx_);
-    pid_params_ = p;
+    pid_ctrl_.set_params(p);
 }
 
 void WalkMotorGroup::enable_heading_control(bool en) {
     std::lock_guard<hal::PiMutex> lk(mtx_);
-    heading_ctrl_en_ = en;
-    if (!en) {
-        pid_integral_ = 0.0f;
-        pid_prev_err_ = 0.0f;
-        heading_initialized_ = false;
-    }
+    pid_ctrl_.enable(en);
 }
 
 void WalkMotorGroup::set_target_heading(float yaw_deg) {
     std::lock_guard<hal::PiMutex> lk(mtx_);
-    target_heading_ = yaw_deg;
-    heading_initialized_ = true;
-    pid_integral_ = 0.0f;
-    pid_prev_err_ = 0.0f;
-}
-
-float WalkMotorGroup::calc_pid_correction(float yaw_deg, float dt_s) {
-    // 已持锁调用（mtx_）
-    if (!heading_initialized_) {
-        target_heading_ = yaw_deg;
-        heading_initialized_ = true;
-    }
-
-    float err = norm_angle(target_heading_ - yaw_deg);
-
-    // 积分（带限幅）
-    pid_integral_ += err * dt_s;
-    pid_integral_ = clamp(pid_integral_, -pid_params_.integral_limit, pid_params_.integral_limit);
-
-    // 微分
-    float derivative = (dt_s > 0.0f) ? (err - pid_prev_err_) / dt_s : 0.0f;
-    pid_prev_err_ = err;
-
-    float output =
-        pid_params_.kp * err + pid_params_.ki * pid_integral_ + pid_params_.kd * derivative;
-
-    return clamp(output, -pid_params_.max_output, pid_params_.max_output);
+    pid_ctrl_.set_target(yaw_deg);
 }
 
 // ── 边缘紧急覆盖 ──────────────────────────────────────────────────────────────
@@ -469,9 +429,7 @@ void WalkMotorGroup::update(float yaw_deg) {
             {
                 std::lock_guard<hal::PiMutex> lk(mtx_);
                 has_ctrl_frame_ = false;
-                pid_integral_ = 0.0f;
-                pid_prev_err_ = 0.0f;
-                heading_initialized_ = false;
+                pid_ctrl_.reset();
             }
             // memory_order_release：保证上方 mtx_ 锁内的写对其他核可见后再清 override
             // 与 emergency_override() 的默认 seq_cst store(true) 形成 release-acquire 对
@@ -492,8 +450,8 @@ void WalkMotorGroup::update(float yaw_deg) {
         ctrl = last_ctrl_frame_;
         has = has_ctrl_frame_;
 
-        if (has && heading_ctrl_en_) {
-            float correction = calc_pid_correction(yaw_deg, dt_s);
+        if (has && pid_ctrl_.is_enabled()) {
+            float correction = pid_ctrl_.compute(yaw_deg, dt_s);
             // correction > 0 → 偏右（yaw < target），加大左侧速度
             float lt = clamp_rpm(base_lt_rpm_ + correction);
             float rt = clamp_rpm(base_rt_rpm_ - correction);

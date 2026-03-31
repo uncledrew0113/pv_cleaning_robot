@@ -114,35 +114,34 @@ void SafetyMonitor::monitor_loop()
         pthread_setname_np(pthread_self(), "safety_mon");
     }
 
-    // pending 防抖处理：on_limit_trigger() 置位，此处延迟后通知 FSM。
-    // 运行在 SCHED_FIFO 94，nanosleep 主动出让 CPU，不干扰 GPIO 线程（FIFO 95）。
-    // ── 前端 pending ──────────────────────────────────────────────────
-    if (pending_front_.exchange(false, std::memory_order_acquire)) {
-        struct timespec ts{0, 180'000'000L};  // 180ms，total ~200ms（+~20ms GPIO 至此）
-        nanosleep(&ts, nullptr);
-        // 注意：前端不设 estop_active_，无需 reset_estop()，
-        // start_returning() 内 group_->clear_override() 会解除 override 锁。
-        event_bus_.publish(LimitSettledEvent{device::LimitSide::FRONT});
-    }
-    // ── 尾端 pending ──────────────────────────────────────────────────
-    if (pending_rear_.exchange(false, std::memory_order_acquire)) {
-        struct timespec ts{0, 180'000'000L};
-        nanosleep(&ts, nullptr);
-        // 解除急停锁：清 estop_active_ + override_active_，
-        // 允许后续 start_cleaning()/start_returning() 正常驱动电机。
-        reset_estop();
-        event_bus_.publish(LimitSettledEvent{device::LimitSide::REAR});
-    }
-
-    // 备用轮询路径：以防 GPIO 边沿回调丢失（双保险）。
-    // 注意：on_limit_trigger() 内部已调用 clear_trigger()，
-    // 因此重复触发被抑制，无需额外去重计数器。
+    // 主循环：pending 防抖处理 + 备用轮询兜底，每轮 5 ms 心跳。
+    // 修复：pending 检查移入 while 循环，支持多次限位触发（不止启动时一次）。
+    // 运行在 SCHED_FIFO 94，180ms nanosleep 主动出让 CPU，不干扰 GPIO 线程（FIFO 95）。
     while (running_.load()) {
-        // 前端备用：FRONT 触发不置 estop，独立检查
+        // ── 前端 pending 防抖 ─────────────────────────────────────────
+        // on_limit_trigger(FRONT) 置位，此处延迟 180ms 后通知 FSM。
+        // 注意：前端不设 estop_active_，start_returning() 内 clear_override() 解除 override 锁。
+        if (pending_front_.exchange(false, std::memory_order_acquire)) {
+            struct timespec ts{0, 180'000'000L};  // 180ms，total ~200ms（+~20ms GPIO 至此）
+            nanosleep(&ts, nullptr);
+            event_bus_.publish(LimitSettledEvent{device::LimitSide::FRONT});
+        }
+        // ── 尾端 pending 防抖 ─────────────────────────────────────────
+        // on_limit_trigger(REAR) 置位，180ms 后通知 FSM 并解除急停锁。
+        if (pending_rear_.exchange(false, std::memory_order_acquire)) {
+            struct timespec ts{0, 180'000'000L};
+            nanosleep(&ts, nullptr);
+            // 解除急停锁：清 estop_active_ + override_active_，
+            // 允许后续 start_cleaning()/start_returning() 正常驱动电机。
+            event_bus_.publish(LimitSettledEvent{device::LimitSide::REAR});
+            reset_estop();
+        }
+        // ── 备用轮询路径：以防 GPIO 边沿回调丢失（双保险）────────────
+        // 注意：on_limit_trigger() 内部已调用 clear_trigger()，
+        // 因此重复触发被抑制，无需额外去重计数器。
         if (front_switch_->is_triggered()) {
             on_limit_trigger(device::LimitSide::FRONT);
         }
-        // 尾端备用：estop 已激活则跳过（主路径已处理）
         if (rear_switch_->is_triggered() &&
             !estop_active_.load(std::memory_order_acquire)) {
             on_limit_trigger(device::LimitSide::REAR);
