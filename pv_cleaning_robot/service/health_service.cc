@@ -99,7 +99,7 @@ std::string HealthService::build_payload() const {
             j_["walk"][kWn[i]]["fault_code"] = static_cast<int>(wd.fault);
             j_["walk"][kWn[i]]["online"]     = wd.online;
         }
-        j_["walk"]["temp"]        = gd.temperature_deg;
+        j_["walk"]["temp"]        = 0.0f;  // 温度查询尚未实现，占位
         j_["walk"]["ctrl_frames"] = gd.ctrl_frame_count;
         j_["walk"]["ctrl_err"]    = gd.ctrl_err_count;
 
@@ -163,7 +163,7 @@ std::string HealthService::build_payload() const {
         j_["walk"]["rpm"]     = avg_rpm;
         j_["walk"]["current"] = avg_torque;
         j_["walk"]["fault"]   = any_fault;
-        j_["walk"]["temp"]    = gs.temperature_deg;
+        j_["walk"]["temp"]    = 0.0f;  // 温度查询尚未实现，占位
 
         j_["brush"]["running"] = bs.running;
         j_["brush"]["fault"]   = bs.fault;

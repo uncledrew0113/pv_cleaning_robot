@@ -2,7 +2,7 @@
  * @Author: UncleDrew
  * @Date: 2026-03-11 23:38:44
  * @LastEditors: UncleDrew
- * @LastEditTime: 2026-03-30 23:39:36
+ * @LastEditTime: 2026-03-31 11:09:19
  * @FilePath: /pv_cleaning_robot/test/test_base.cc
  * @Description:
  *
@@ -117,6 +117,10 @@ TEST_CASE("driver can驱动", "[driver][can]") {
     frame_set_velocity.is_rtr = false;
     CHECK(can_bus.send(frame_set_velocity) == true);
     can_bus.close();
+}
+
+TEST_CASE("drivercan_continue", "[driver][can]") {
+    
 }
 
 static constexpr const char* TARGET_CHIP = "gpiochip5";

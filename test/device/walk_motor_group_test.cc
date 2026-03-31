@@ -267,3 +267,72 @@ TEST_CASE("设备层WalkMotorGroup - recv_loop: 4个电机各自独立更新", "
     }
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+//  HeadingPidController 集成测试
+// ════════════════════════════════════════════════════════════════════════════
+
+TEST_CASE("设备层WalkMotorGroup - HeadingPidParams 是 HeadingPidController::Params 的类型别名",
+          "[device][walk_motor_group]") {
+    // 编译期断言，运行期无条件通过
+    static_assert(
+        std::is_same_v<device::WalkMotorGroup::HeadingPidParams,
+                       service::HeadingPidController::Params>,
+        "HeadingPidParams must be an alias for HeadingPidController::Params");
+    SUCCEED("编译期类型别名验证通过");
+}
+
+TEST_CASE("设备层WalkMotorGroup - update() PID 使能时差速（yaw=10°→LT<RT）",
+          "[device][walk_motor_group]") {
+    auto bus = std::make_shared<MockCanBus>();
+    device::WalkMotorGroup group(bus, 1u);
+    group.open();
+
+    // 建立基础匀速（前进 100 RPM），enqueue 到命令队列
+    group.set_speed_uniform(100.0f);
+    group.enable_heading_control(true);
+    group.set_target_heading(0.0f);  // 目标航向 0°
+
+    // 第一次 update：消费队列，建立 base_lt/rt=100，yaw=0 无偏差 → 无差速
+    group.update(0.0f);
+    bus->sent_frames.clear();
+
+    // 第二次 update：yaw=10°，err=-10 → correction<0 → LT 降速，RT 升速
+    group.update(10.0f);
+
+    REQUIRE_FALSE(bus->sent_frames.empty());
+    const auto& f = bus->sent_frames.back();
+    REQUIRE(f.id == 0x032u);
+    int16_t lt = be16s(f.data[0], f.data[1]);
+    int16_t rt = be16s(f.data[2], f.data[3]);
+    // 航向偏右（yaw>target）时 correction<0，左轮减速，右轮加速
+    REQUIRE(lt < rt);
+
+    group.close();
+}
+
+TEST_CASE("设备层WalkMotorGroup - update() PID 禁用时无差速（yaw=30°，LT==RT）",
+          "[device][walk_motor_group]") {
+    auto bus = std::make_shared<MockCanBus>();
+    device::WalkMotorGroup group(bus, 1u);
+    group.open();
+
+    group.set_speed_uniform(100.0f);
+    group.enable_heading_control(false);  // 明确禁用 PID（默认亦禁用）
+
+    // 消费队列，建立 base_lt/rt=100，last_ctrl_frame_ 为匀速帧
+    group.update(0.0f);
+    bus->sent_frames.clear();
+
+    // yaw=30°，但 PID 禁用 → last_ctrl_frame_ 原样重发，LT==RT
+    group.update(30.0f);
+
+    REQUIRE_FALSE(bus->sent_frames.empty());
+    const auto& f = bus->sent_frames.back();
+    REQUIRE(f.id == 0x032u);
+    int16_t lt = be16s(f.data[0], f.data[1]);
+    int16_t rt = be16s(f.data[2], f.data[3]);
+    REQUIRE(lt == rt);  // 无差速修正
+
+    group.close();
+}
+

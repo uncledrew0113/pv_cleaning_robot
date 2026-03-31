@@ -65,7 +65,6 @@ class WalkMotorGroup {
     /// 各轮精简状态
     struct GroupStatus {
         std::array<WalkMotor::Status, kWheelCount> wheel{};
-        float temperature_deg{0.0f};  ///< 最近一次查询得到的电机温度（℃）
     };
 
     /// 完整诊断数据（含发帧统计）
@@ -73,7 +72,6 @@ class WalkMotorGroup {
         std::array<WalkMotor::Diagnostics, kWheelCount> wheel{};
         uint32_t ctrl_frame_count = 0;  ///< 已发出的组合控制帧总数
         uint32_t ctrl_err_count = 0;    ///< 控制帧发送失败次数
-        float temperature_deg{0.0f};    ///< 最近温度查询结果（℃）
     };
 
     /// 航向 PID 参数（等价于 service::HeadingPidController::Params，向后兼容别名）
@@ -168,7 +166,7 @@ class WalkMotorGroup {
     /// 全部异步投递此队列，update()（walk_ctrl 线程）作为唯一消费者，
     /// 序列化所有控制帧状态变更，彻底消除多核竞态（Q7/Q8 修复）
     struct Cmd {
-        enum class Type : uint8_t { SET_CTRL_FRAME, CLEAR_OVERRIDE } type{};
+        enum class Type : uint8_t { SET_CTRL_FRAME } type{Type::SET_CTRL_FRAME};
         hal::CanFrame frame{};    ///< 预编码 CAN 帧（SET_CTRL_FRAME 时有效）
         float base_lt_rpm{0.0f};  ///< PID 基础速度（速度帧填，其余为 0）
         float base_rt_rpm{0.0f};
@@ -208,15 +206,17 @@ class WalkMotorGroup {
 
     // ── 边缘紧急覆盖 ──────────────────────────────────────────────────
     std::atomic<bool> override_active_{false};
+    /// CLEAR_OVERRIDE 原子标志：clear_override() 直写，update() step2 优先检查，
+    /// 不占命令队列位置，任意满载下均不可丢失。
+    std::atomic<bool> pending_clear_override_{false};
     /// CAN TX 串行化锁：emergency_override() 与 update() PID 发帧路径共享。
     /// 保证 stop 帧永远是总线上最后一帧（两条防线之二，详见 CONCURRENCY.md）。
     /// 注意：仅保护 update() PID 控制帧路径；
     ///       配置帧（enable_all / set_mode_all 等）不经此锁，避免 start_returning()
     ///       在 CLEAR_OVERRIDE 入队但未消费期间错误丢帧。
     hal::PiMutex send_mtx_;
-
-    // ── 温度（被动接收，由 recv_loop 解析累积）──────────────────────────
-    float temperature_deg_{0.0f};  ///< recv_loop 被动解析得到的最新温度（℃）
+    /// update() 调用间隔计算基准（替代 static 局部变量，支持多实例和 close/open 重启重置）
+    std::chrono::steady_clock::time_point last_update_time_{};
 
     static constexpr auto kOnlineTimeout = std::chrono::milliseconds(500);
 

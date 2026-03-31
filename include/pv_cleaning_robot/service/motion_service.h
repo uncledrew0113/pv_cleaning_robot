@@ -86,6 +86,10 @@ class MotionService : public middleware::IRunnable {
     std::shared_ptr<device::ImuDevice> imu_;
     middleware::EventBus& bus_;
     Config cfg_;
+
+    /// EMA 滤波后的 yaw（替代 update() 中的 static 局部变量，解决多实例共享和重启污染）
+    float filtered_yaw_{0.0f};
+    bool  filtered_yaw_inited_{false};
 };
 
 }  // namespace robot::service

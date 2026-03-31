@@ -85,6 +85,7 @@ void WalkMotorGroup::close() {
         recv_thread_.join();
     if (can_->is_open())
         can_->close();
+    last_update_time_ = {};  // close/open 重启时 dt_s 使用默认 20ms
 }
 
 // ── 内部发帧 ─────────────────────────────────────────────────────────────────
@@ -280,6 +281,9 @@ DeviceError WalkMotorGroup::emergency_override(float reverse_rpm) {
     // 即使后续等待 send_mtx_，update() 的 step3 无锁检查也能立即感知并提前退出，
     // 不必等到 send_mtx_ 释放后才被拦截。
     override_active_.store(true, std::memory_order_seq_cst);
+    // 取消任何待消费的 clear_override 标志：若 update() 尚未消费该标志，
+    // 让它悄悄把本次 override 清掉会导致安全停止失效。
+    pending_clear_override_.store(false, std::memory_order_seq_cst);
 
     // 物理安装：LT/RT 正转=前进，LB/RB 因安装方向相反，负转=前进。
     // reverse_rpm > 0 = 车辆后退 → LT/RT=-rpm，LB/RB=+rpm（与前进方向相反）
@@ -314,12 +318,10 @@ DeviceError WalkMotorGroup::emergency_override(float reverse_rpm) {
 }
 
 void WalkMotorGroup::clear_override() {
-    // 投递 CLEAR_OVERRIDE 命令：update() 消费时原子清除 override_active_ + 重置 PID +
-    // has_ctrl_frame_=false（Q8 修复：防止下一个 update() 重发旧的运动帧）
-    Cmd cmd;
-    cmd.type = Cmd::Type::CLEAR_OVERRIDE;
-    enqueue_cmd(cmd);
-    spdlog::info("[WalkMotorGroup] clear_override enqueued");
+    // 原子标志绕过命令队列：clear_override() 直写 pending_clear_override_，
+    // update() step2-pre 优先 exchange——任意满载下均不业失
+    pending_clear_override_.store(true, std::memory_order_seq_cst);
+    spdlog::info("[WalkMotorGroup] clear_override requested");
 }
 
 bool WalkMotorGroup::is_override_active() const {
@@ -343,7 +345,6 @@ WalkMotorGroup::GroupStatus WalkMotorGroup::get_group_status() const {
     GroupStatus gs;
     for (int i = 0; i < kWheelCount; ++i)
         gs.wheel[i] = static_cast<WalkMotor::Status>(diag_[i]);
-    gs.temperature_deg = temperature_deg_;
     return gs;
 }
 
@@ -354,7 +355,6 @@ WalkMotorGroup::GroupDiagnostics WalkMotorGroup::get_group_diagnostics() const {
         gd.wheel[i] = diag_[i];
     gd.ctrl_frame_count = ctrl_frame_count_;
     gd.ctrl_err_count = ctrl_err_count_;
-    gd.temperature_deg = temperature_deg_;
     return gd;
 }
 
@@ -368,15 +368,14 @@ void WalkMotorGroup::update(float yaw_deg) {
 
     // 计算距上次 update() 的实际时间（秒），用于 PID 微积分计算
     // 使用实测时间而非硬编码常量，适应线程执行器周期变更
-    static std::chrono::steady_clock::time_point last_update_time{};
-    float dt_s = 0.020f;  // 合理默认值（20ms），首次调用或异常大值时使用
-    if (last_update_time != std::chrono::steady_clock::time_point{}) {
-        float measured = std::chrono::duration<float>(now - last_update_time).count();
+    float dt_s = 0.020f;  // 合理默认値（20ms），首次调用或异常大値时使用
+    if (last_update_time_ != std::chrono::steady_clock::time_point{}) {
+        float measured = std::chrono::duration<float>(now - last_update_time_).count();
         // 限幅至 10ms~500ms，防止系统暂停/调试断点导致积分爆炸
         if (measured >= 0.010f && measured <= 0.500f)
             dt_s = measured;
     }
-    last_update_time = now;
+    last_update_time_ = now;
 
     // ── 1. 更新各轮 online 状态 ──
     // 日志推迟到锁外：spdlog::warn 可能触发堆分配和 spdlog 内部锁，
@@ -402,9 +401,20 @@ void WalkMotorGroup::update(float yaw_deg) {
             spdlog::warn("[WalkMotorGroup] motor {} offline", id_base_ + i);
     }
 
+    // ── 2-pre. CLEAR_OVERRIDE 原子检查（优先于命令队列，任意满载下不可丢失）──────────
+    if (pending_clear_override_.exchange(false, std::memory_order_acquire)) {
+        {
+            std::lock_guard<hal::PiMutex> lk(mtx_);
+            has_ctrl_frame_ = false;
+            pid_ctrl_.reset();
+        }
+        // release：保证上方 mtx_ 内写对其他核可见后再清 override
+        override_active_.store(false, std::memory_order_release);
+        spdlog::info("[WalkMotorGroup] clear_override applied");
+    }
+
     // ── 2. 排干命令队列（update() 是唯一消费者，walk_ctrl 线程）────────────────────
     // SET_CTRL_FRAME: 更新控制帧 + PID 基础值，不触碰 override_active_
-    // CLEAR_OVERRIDE: has_ctrl_frame_=false + 重置 PID + override_active_=false（Q8 修复）
     while (true) {
         Cmd c;
         {
@@ -415,30 +425,17 @@ void WalkMotorGroup::update(float yaw_deg) {
             cmd_tail_ = (cmd_tail_ + 1) % kCmdQueueSize;
         }  // 释放 cmd_mtx_，避免与 mtx_ 嵌套持锁
 
-        if (c.type == Cmd::Type::SET_CTRL_FRAME) {
-            std::lock_guard<hal::PiMutex> lk(mtx_);
-            last_ctrl_frame_ = c.frame;
-            has_ctrl_frame_ = true;
-            base_lt_rpm_ = c.base_lt_rpm;
-            base_rt_rpm_ = c.base_rt_rpm;
-            for (int i = 0; i < kWheelCount; ++i)
-                diag_[i].target_value = c.target_rpms[static_cast<size_t>(i)];
-            // 不改 override_active_：emergency_override() 的 store(true) 保持有效直到
-            // CLEAR_OVERRIDE
-        } else {  // CLEAR_OVERRIDE
-            {
-                std::lock_guard<hal::PiMutex> lk(mtx_);
-                has_ctrl_frame_ = false;
-                pid_ctrl_.reset();
-            }
-            // memory_order_release：保证上方 mtx_ 锁内的写对其他核可见后再清 override
-            // 与 emergency_override() 的默认 seq_cst store(true) 形成 release-acquire 对
-            override_active_.store(false, std::memory_order_release);
-        }
+        std::lock_guard<hal::PiMutex> lk(mtx_);
+        last_ctrl_frame_ = c.frame;
+        has_ctrl_frame_ = true;
+        base_lt_rpm_ = c.base_lt_rpm;
+        base_rt_rpm_ = c.base_rt_rpm;
+        for (int i = 0; i < kWheelCount; ++i)
+            diag_[i].target_value = c.target_rpms[static_cast<size_t>(i)];
     }
 
     // ── 3. 若在 override 状态，跳过心跳重发 ──
-    if (override_active_.load())
+    if (override_active_.load(std::memory_order_acquire))
         return;
 
     // ── 4. 计算 PID 差速（如果使能） ──
@@ -532,27 +529,6 @@ void WalkMotorGroup::recv_loop() {
                 last_fb_time_[i] = ts;
             }
             break;
-        }
-
-        // ── 温度查询应答（0x96+motor_id，DATA[2~3] 为温度 int16 big-endian）──
-        // 协议：查询应答与主动上报共用同一 CAN ID 和帧格式，
-        // 当查询目标为 TEMP(0x03) 时，DATA[0~1] 为 target1 值（温度），单位 0.1°C
-        // 实际此处利用 decode_status() 已解析的 torque_a/position_deg 字段判断；
-        // M1502E 查询模式下应答帧 DATA[2~3] 为 target1（高8位|低8位），大端
-        // 简化处理：接收到 0x96+id 帧时，若 DATA[6]==0（无故障）视温度数据有效
-        for (int i = 0; i < kWheelCount; ++i) {
-            if (frame.id == codecs_[i].status_can_id() && frame.len >= 4) {
-                // DATA[2~3]: 温度原始值（int16，单位0.1℃，量程-3276.7~3276.7℃）
-                // 仅模式为查询时有效；此处作为补充采集，接收到就更新
-                int16_t temp_raw = static_cast<int16_t>(
-                    (static_cast<uint16_t>(frame.data[2]) << 8) | frame.data[3]);
-                float temp_c = temp_raw * 0.1f;
-                // 合理性校验（-40℃ ~ 150℃ 为电机常见温度量程）
-                if (temp_c >= -40.0f && temp_c <= 150.0f) {
-                    std::lock_guard<hal::PiMutex> lk(mtx_);
-                    temperature_deg_ = temp_c;
-                }
-            }
         }
     }
 }

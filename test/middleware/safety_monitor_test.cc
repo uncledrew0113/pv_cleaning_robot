@@ -166,3 +166,52 @@ TEST_CASE("SafetyMonitor: 短时间内多次触发只发一次 LimitSettledEvent
     REQUIRE(settled_count == 1);
     f.monitor.stop();
 }
+
+// ────────────────────────────────────────────────────────────────
+// Phase G 回归：pending 标志在循环内检查，第二次触发也能发布事件
+// ────────────────────────────────────────────────────────────────
+TEST_CASE("SafetyMonitor: 第二次触发（间隔 >180ms）也能发布 LimitSettledEvent",
+          "[middleware][safety_monitor]") {
+    // FRONT 触发不置 estop_active_，因此可多次触发
+    SafetyMonitorFixture f;
+    int settled_count = 0;
+    f.bus.subscribe<SafetyMonitor::LimitSettledEvent>(
+        [&](const SafetyMonitor::LimitSettledEvent& e) {
+            if (e.side == LimitSide::FRONT) ++settled_count;
+        });
+
+    f.monitor.start();
+
+    // 第一次触发
+    if (f.front_pin->registered_cb) f.front_pin->simulate_edge();
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    REQUIRE(settled_count == 1);
+
+    // 第二次触发（pending 已被 monitor_loop 消费，可再次置位）
+    if (f.front_pin->registered_cb) f.front_pin->simulate_edge();
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    REQUIRE(settled_count == 2);
+
+    f.monitor.stop();
+}
+
+// ────────────────────────────────────────────────────────────────
+// 同步路径验证：simulate_edge() 返回后立即有急停 CAN 帧
+// ────────────────────────────────────────────────────────────────
+TEST_CASE("SafetyMonitor: 限位触发后立即发出急停 CAN 帧（ID=0x032）",
+          "[middleware][safety_monitor]") {
+    SafetyMonitorFixture f;
+    f.can->sent_frames.clear();
+    f.monitor.start();
+
+    // on_limit_trigger → emergency_override → can_->send()
+    // 整条路径为同步调用，simulate_edge() 返回后帧已在 sent_frames
+    if (f.front_pin->registered_cb) f.front_pin->simulate_edge();
+
+    bool has_stop_frame = false;
+    for (const auto& frm : f.can->sent_frames)
+        if (frm.id == 0x032u) { has_stop_frame = true; break; }
+    REQUIRE(has_stop_frame);
+
+    f.monitor.stop();
+}

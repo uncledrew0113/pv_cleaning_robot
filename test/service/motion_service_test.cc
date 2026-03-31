@@ -223,3 +223,49 @@ TEST_CASE("MotionService: CAN send 失败时 start_cleaning() 返回 false", "[s
     bool ok = f.motion.start_cleaning();
     REQUIRE_FALSE(ok);
 }
+
+// ────────────────────────────────────────────────────────────────
+// heading_pid_en = true：与 PID 相关路径验证
+// ────────────────────────────────────────────────────────────────
+TEST_CASE("MotionService: heading_pid_en=true + null IMU 时 start_cleaning() 发出 CAN 帧",
+          "[service][motion]") {
+    MotionFixture f;
+    // 直接设置 opened=true，模拟 CAN 已就绪（跳过 recv 线程），送 send_ctrl() 检查
+    f.can->opened = true;
+    MotionService::Config cfg_pid = f.cfg;
+    cfg_pid.heading_pid_en = true;
+    MotionService motion_pid(f.group, f.brush, nullptr, f.bus, cfg_pid);
+
+    bool ok = motion_pid.start_cleaning();
+    REQUIRE(ok);
+    // null IMU → cur_yaw 回落 0.0f（无崩溃），CAN 帧正常发出
+    REQUIRE_FALSE(f.can->sent_frames.empty());
+}
+
+TEST_CASE("MotionService: heading_pid_en=true 时 update(20°) 输出差速帧（LT<RT）",
+          "[service][motion]") {
+    MotionFixture f;
+    f.can->opened = true;
+    MotionService::Config cfg_pid = f.cfg;
+    cfg_pid.heading_pid_en = true;
+    MotionService motion_pid(f.group, f.brush, nullptr, f.bus, cfg_pid);
+
+    // start_cleaning：enqueue CLEAR_OVERRIDE + SET_CTRL_FRAME，enable_heading=true，target=0°
+    motion_pid.start_cleaning();
+
+    // 消费命令队列（含 CLEAR_OVERRIDE 和 SET_CTRL_FRAME），base_lt/rt = clean_speed_rpm
+    f.group->update(0.0f);
+    f.can->sent_frames.clear();
+
+    // yaw=20°（偏右）→ err=-20 → correction<0 → LT 降速，RT 升速
+    f.group->update(20.0f);
+
+    REQUIRE_FALSE(f.can->sent_frames.empty());
+    const auto& frm = f.can->sent_frames.back();
+    REQUIRE(frm.id == 0x032u);
+    int16_t lt = static_cast<int16_t>(
+        (static_cast<uint16_t>(frm.data[0]) << 8) | frm.data[1]);
+    int16_t rt = static_cast<int16_t>(
+        (static_cast<uint16_t>(frm.data[2]) << 8) | frm.data[3]);
+    REQUIRE(lt < rt);
+}

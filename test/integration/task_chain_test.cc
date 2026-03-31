@@ -15,6 +15,7 @@
  */
 #include <catch2/catch.hpp>
 #include <chrono>
+#include <filesystem>
 #include <thread>
 
 #include "../mock/mock_can_bus.h"
@@ -34,6 +35,7 @@
 #include "pv_cleaning_robot/service/motion_service.h"
 #include "pv_cleaning_robot/service/nav_service.h"
 #include "pv_cleaning_robot/service/scheduler_service.h"
+#include "pv_cleaning_robot/middleware/data_cache.h"
 
 using namespace robot::app;
 using robot::device::BrushMotor;
@@ -245,4 +247,114 @@ TEST_CASE("TaskChain: N=2 完整 4 趟任务链", "[integration][task_chain]") {
     REQUIRE(f.fsm.current_state() == "CleanReturn");
     f.fsm.dispatch(EvRearLimitSettled{});  // 半趟4 → Charging
     REQUIRE(f.fsm.current_state() == "Charging");
+}
+
+// ────────────────────────────────────────────────────────────────
+// 场景 7：P1 故障发生在 CleanFwd 阶段（未到前端）
+// ────────────────────────────────────────────────────────────────
+TEST_CASE("TaskChain: P1 故障发生在 CleanFwd → Returning → Charging",
+          "[integration][task_chain]") {
+    TaskChainFixture f;
+    f.fsm.dispatch(EvScheduleStart{.at_home = true, .passes = 2.0f});
+    REQUIRE(f.fsm.current_state() == "CleanFwd");
+
+    // P1 故障在正向清扫期间触发（尚未到达前端限位）
+    f.fault_svc->report(FaultLevel::P1, 0x2002, "slope_too_steep");
+    REQUIRE(f.fsm.current_state() == "Returning");
+
+    // 返回停机位
+    f.fsm.dispatch(EvRearLimitSettled{});
+    REQUIRE(f.fsm.current_state() == "Charging");
+}
+
+// ────────────────────────────────────────────────────────────────
+// 场景 8：P0 故障复位后可重新启动清扫
+// ────────────────────────────────────────────────────────────────
+TEST_CASE("TaskChain: P0 故障复位后重新启动清扫 → CleanFwd",
+          "[integration][task_chain]") {
+    TaskChainFixture f;
+    f.fsm.dispatch(EvScheduleStart{.at_home = true, .passes = 1.0f});
+    REQUIRE(f.fsm.current_state() == "CleanFwd");
+
+    // P0 故障 → Fault
+    f.fault_svc->report(FaultLevel::P0, 0x1001, "comm_lost");
+    REQUIRE(f.fsm.current_state() == "Fault");
+
+    // 复位 → Idle
+    f.fsm.dispatch(EvFaultReset{});
+    REQUIRE(f.fsm.current_state() == "Idle");
+
+    // 重新下发任务 → CleanFwd
+    f.fsm.dispatch(EvScheduleStart{.at_home = true, .passes = 1.0f});
+    REQUIRE(f.fsm.current_state() == "CleanFwd");
+}
+
+// ────────────────────────────────────────────────────────────────
+// 场景 9：heading_pid_en=true 完整 N=1 任务链（FSM 路径不受 PID 影响）
+// ────────────────────────────────────────────────────────────────
+TEST_CASE("TaskChain: heading_pid_en=true 完整 N=1 任务链", "[integration][task_chain][pid]") {
+    TaskChainFixture f;
+    // 临时用 PID 使能的 MotionService 替换 Fixture 内的 motion
+    f.can->opened = true;  // 允许 send_ctrl() 通过 is_open() 检查
+    MotionService::Config cfg_pid{
+        .clean_speed_rpm  = 300.0f,
+        .return_speed_rpm = 300.0f,
+        .brush_rpm        = 1000,
+        .return_brush_rpm = 1000,
+        .heading_pid_en   = true
+    };
+    auto motion_pid =
+        std::make_shared<MotionService>(f.group, f.brush, nullptr, f.bus, cfg_pid);
+    RobotFsm fsm_pid(motion_pid, f.nav, f.fault_svc, f.bus);
+    fsm_pid.dispatch(EvInitDone{});
+    REQUIRE(fsm_pid.current_state() == "Idle");
+
+    fsm_pid.dispatch(EvScheduleStart{.at_home = true, .passes = 1.0f});
+    REQUIRE(fsm_pid.current_state() == "CleanFwd");
+    REQUIRE_FALSE(f.can->sent_frames.empty());  // PID 路径仍发出 CAN 帧
+
+    fsm_pid.dispatch(EvFrontLimitSettled{});
+    REQUIRE(fsm_pid.current_state() == "CleanReturn");
+
+    fsm_pid.dispatch(EvRearLimitSettled{});
+    REQUIRE(fsm_pid.current_state() == "Charging");
+}
+
+// ────────────────────────────────────────────────────────────────
+// 场景 10：DataCache 遥测本地 JSONL 持久化
+// ────────────────────────────────────────────────────────────────
+TEST_CASE("DataCache: 遥测写入本地 JSONL、confirm_sent 后断电可恢复",
+          "[integration][task_chain][data_cache]") {
+    const std::string path = "/tmp/pv_test_cache_tc.jsonl";
+    std::filesystem::remove(path);
+
+    // 写入 2 条记录，确认 1 条，销毁
+    {
+        robot::middleware::DataCache cache{path};
+        REQUIRE(cache.open());
+        REQUIRE(cache.push("telemetry/status", R"({"rpm":300,"state":"CleanFwd"})"));
+        REQUIRE(cache.push("telemetry/imu",    R"({"yaw":5.1,"pitch":2.0})"));
+        REQUIRE(cache.size() == 2);
+
+        auto batch = cache.pop_batch(10);
+        REQUIRE(batch.size() == 2);
+        REQUIRE(batch[0].topic == "telemetry/status");
+        REQUIRE(batch[1].topic == "telemetry/imu");
+
+        // 确认第一条已发送
+        cache.confirm_sent({batch[0].id});
+        REQUIRE(cache.size() == 1);
+    }
+
+    // 重新加载：未确认的第二条应持久化
+    {
+        robot::middleware::DataCache cache2{path};
+        REQUIRE(cache2.open());
+        REQUIRE(cache2.size() == 1);
+        auto b = cache2.pop_batch(1);
+        REQUIRE(b.size() == 1);
+        REQUIRE(b[0].topic == "telemetry/imu");
+    }
+
+    std::filesystem::remove(path);
 }

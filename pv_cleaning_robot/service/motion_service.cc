@@ -126,7 +126,8 @@ void MotionService::emergency_stop() {
 }
 
 bool MotionService::set_walk_speed(float rpm) {
-    return group_->set_speeds(rpm, rpm, rpm, rpm) == device::DeviceError::OK;
+    // 物理安装：LB/RB 安装方向与 LT/RT 相反，需取反才能同向运动
+    return group_->set_speeds(rpm, rpm, -rpm, -rpm) == device::DeviceError::OK;
 }
 
 // ── 边缘触发接口 ──────────────────────────────────────────────────────────
@@ -169,15 +170,21 @@ void MotionService::update() {
     // 读取最新 IMU yaw（已由 ImuDevice 后台线程更新，无阻塞）
     const float raw_yaw = imu_ ? imu_->get_latest().yaw_deg : 0.0f;
     // EMA 低通滤波（α=0.8，τ≈100ms @50ms 周期），抑制 IMU 高频噪声对 PID 的扰动
-    static float filtered_yaw = raw_yaw;
-    filtered_yaw = 0.8f * filtered_yaw + 0.2f * raw_yaw;
+    // 首次调用硬初始化（直接赋值 raw_yaw），避免从 0 缓慢收敛引发 PID 初始抖动；
+    // 使用成员变量（非 static）解决多实例共享和 IMU 重启后的污染问题。
+    if (!filtered_yaw_inited_) {
+        filtered_yaw_ = raw_yaw;
+        filtered_yaw_inited_ = true;
+    } else {
+        filtered_yaw_ = 0.8f * filtered_yaw_ + 0.2f * raw_yaw;
+    }
 
     // 传入 yaw，由 WalkMotorGroup::update() 完成：
     //   1. 更新 online 超时状态
     //   2. 排干命令队列（消费 set_speeds/clear_override 投递的 Cmd）
     //   3. override 激活时跳过重发（不干扰紧急停车帧）
     //   4. 若 heading_ctrl_en_，计算 PID 差速修正并发帧
-    group_->update(filtered_yaw);
+    group_->update(filtered_yaw_);
 
     // 注意：brush_->update() 已移到 bms_exec 线程（SCHED_OTHER, 500ms）
     // 原因：Modbus RTU 读取寄存器需 5~10ms阶塞 I/O，放在 walk_ctrl(FIFO 80, 20ms)
