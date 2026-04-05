@@ -75,9 +75,11 @@ class SafetyMonitor {
 
     std::atomic<bool> running_{false};
     std::atomic<bool> estop_active_{false};
-    /// 防抖 pending 标志：GPIO 线程触发后置 true，monitor_loop 延迟 180ms 后消费
-    std::atomic<bool> pending_front_{false};
-    std::atomic<bool> pending_rear_{false};
+    /// 防抖 pending 时间戳（ms）：GPIO 线程触发后记录触发时刻，0 = 未触发。
+    /// monitor_loop 每 5ms 非阻塞检查，距触发 ≥180ms 后发布 LimitSettledEvent。
+    /// 使用时间戳替代 bool，支持前后端并行防抖（各自独立计时，互不阻塞）。
+    std::atomic<uint64_t> pending_front_ts_{0};
+    std::atomic<uint64_t> pending_rear_ts_{0};
     std::thread monitor_thread_;
 };
 

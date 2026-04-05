@@ -4,6 +4,16 @@
 #include <sched.h>
 #include <spdlog/spdlog.h>
 
+namespace {
+/// 返回单调时钟毫秒时间戳（用于防抖计时）
+inline uint64_t now_ms() {
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch())
+        .count());
+}
+}  // namespace
+
 namespace robot::middleware {
 
 SafetyMonitor::SafetyMonitor(
@@ -81,16 +91,16 @@ void SafetyMonitor::on_limit_trigger(device::LimitSide side)
         front_switch_->clear_trigger();
         // 1. 立即停全部4轮（直写 CAN 帧，< 1ms）
         walk_group_->emergency_override(0.0f);
-        // 2. 置 pending 标志（原子，monitor_loop 内防抖后发布 LimitSettledEvent）
-        pending_front_.store(true, std::memory_order_release);
+        // 2. 记录触发时间戳（monitor_loop 非阻塞计时，≥180ms 后发布 LimitSettledEvent）
+        pending_front_ts_.store(now_ms(), std::memory_order_release);
     } else {
         // 1. 置急停标志（防止 monitor_loop 5ms 心跳重复触发）
         estop_active_.store(true, std::memory_order_release);
         rear_switch_->clear_trigger();
         // 2. 立即停全部4轮
         walk_group_->emergency_override(0.0f);
-        // 3. 置 pending 标志
-        pending_rear_.store(true, std::memory_order_release);
+        // 3. 记录触发时间戳
+        pending_rear_ts_.store(now_ms(), std::memory_order_release);
     }
 }
 
@@ -114,28 +124,24 @@ void SafetyMonitor::monitor_loop()
         pthread_setname_np(pthread_self(), "safety_mon");
     }
 
-    // 主循环：pending 防抖处理 + 备用轮询兜底，每轮 5 ms 心跳。
-    // 修复：pending 检查移入 while 循环，支持多次限位触发（不止启动时一次）。
-    // 运行在 SCHED_FIFO 94，180ms nanosleep 主动出让 CPU，不干扰 GPIO 线程（FIFO 95）。
+    // 非阻塞并行防抖：前后端各自独立计时，互不阻塞。
+    // check_settled 每 5ms 被调用一次，距触发 ≥180ms 后发布事件。
+    // 前后端同时触发时，均在 ~185ms（180ms+5ms误差）内响应，消除串行 nanosleep 的 ~360ms 延迟。
+    auto check_settled = [&](std::atomic<uint64_t>& ts_atom, device::LimitSide side) {
+        uint64_t t = ts_atom.load(std::memory_order_acquire);
+        if (t == 0) return;
+        if (now_ms() - t >= 180u) {
+            ts_atom.store(0, std::memory_order_release);  // 清除，防止重复触发
+            event_bus_.publish(LimitSettledEvent{side});
+            if (side == device::LimitSide::REAR) reset_estop();
+        }
+    };
+
     while (running_.load()) {
-        // ── 前端 pending 防抖 ─────────────────────────────────────────
-        // on_limit_trigger(FRONT) 置位，此处延迟 180ms 后通知 FSM。
-        // 注意：前端不设 estop_active_，start_returning() 内 clear_override() 解除 override 锁。
-        if (pending_front_.exchange(false, std::memory_order_acquire)) {
-            struct timespec ts{0, 180'000'000L};  // 180ms，total ~200ms（+~20ms GPIO 至此）
-            nanosleep(&ts, nullptr);
-            event_bus_.publish(LimitSettledEvent{device::LimitSide::FRONT});
-        }
-        // ── 尾端 pending 防抖 ─────────────────────────────────────────
-        // on_limit_trigger(REAR) 置位，180ms 后通知 FSM 并解除急停锁。
-        if (pending_rear_.exchange(false, std::memory_order_acquire)) {
-            struct timespec ts{0, 180'000'000L};
-            nanosleep(&ts, nullptr);
-            // 解除急停锁：清 estop_active_ + override_active_，
-            // 允许后续 start_cleaning()/start_returning() 正常驱动电机。
-            event_bus_.publish(LimitSettledEvent{device::LimitSide::REAR});
-            reset_estop();
-        }
+        // ── 非阻塞并行防抖检查（前后端独立计时）──────────────────────
+        check_settled(pending_front_ts_, device::LimitSide::FRONT);
+        check_settled(pending_rear_ts_,  device::LimitSide::REAR);
+
         // ── 备用轮询路径：以防 GPIO 边沿回调丢失（双保险）────────────
         // 注意：on_limit_trigger() 内部已调用 clear_trigger()，
         // 因此重复触发被抑制，无需额外去重计数器。
@@ -147,8 +153,8 @@ void SafetyMonitor::monitor_loop()
             on_limit_trigger(device::LimitSide::REAR);
         }
         // 5 ms 轮询（SCHED_FIFO 94，低于 GPIO 95，避免兜底轮询反向压制边沿线程）
-        struct timespec ts{0, 5 * 1000 * 1000};
-        nanosleep(&ts, nullptr);
+        struct timespec poll_ts{0, 5 * 1000 * 1000};
+        nanosleep(&poll_ts, nullptr);
     }
 }
 
