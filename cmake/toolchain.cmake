@@ -4,9 +4,14 @@
 set(CMAKE_SYSTEM_NAME Linux)
 set(CMAKE_SYSTEM_PROCESSOR aarch64)
 
-# 定义 Sysroot 路径 (根据你的 environment 脚本推断)
-# 这一步非常关键，它告诉 CMake 去哪里找目标板的头文件和库文件
-set(CMAKE_SYSROOT "/home/tronlong/RK3576/sysroots/armv8a-linux")
+# 定义 Sysroot 路径
+# 优先从环境变量 RK3576_SDK_PATH 读取，回退到默认路径
+if(DEFINED ENV{RK3576_SDK_PATH})
+  set(CMAKE_SYSROOT "$ENV{RK3576_SDK_PATH}/sysroots/armv8a-linux")
+else()
+  set(CMAKE_SYSROOT "/home/tronlong/RK3576/sysroots/armv8a-linux")
+  message(WARNING "RK3576_SDK_PATH not set; using fallback sysroot ${CMAKE_SYSROOT}")
+endif()
 
 # 指定交叉编译器 (因为后面我们会让 VS Code source 环境变量，所以直接写命令即可，系统能通过 PATH 找到)
 set(CMAKE_C_COMPILER "aarch64-linux-gnu-gcc")

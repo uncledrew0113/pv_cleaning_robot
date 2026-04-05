@@ -28,9 +28,10 @@
   "network": {
     "transport_mode": "mqtt_only",
     "mqtt": {
-      "broker_uri":   "tcp://tb.example.com:1883",
+      "broker_uri":   "ssl://tb.example.com:8883",
       "client_id":    "pv_robot_001",
-      "tls_enabled":  false,
+      "tls_enabled":  true,
+      "ca_cert_path": "/etc/pv_robot/certs/ca.crt",
       "keep_alive_s": 60,
       "qos":          1
     },

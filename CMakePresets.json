@@ -9,9 +9,8 @@
 
       "toolchainFile": "${sourceDir}/cmake/toolchain.cmake",
       "environment": {
-
-        "PATH": "/home/tronlong/RK3576/sysroots/x86_64-linux/bin:$penv{PATH}",
-        "SDK_QMAKE_SYSROOT": "/home/tronlong/RK3576/sysroots/armv8a-linux"
+        "PATH": "$env{RK3576_SDK_PATH}/sysroots/x86_64-linux/bin:$penv{PATH}",
+        "SDK_QMAKE_SYSROOT": "$env{RK3576_SDK_PATH}/sysroots/armv8a-linux"
       },
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug"
