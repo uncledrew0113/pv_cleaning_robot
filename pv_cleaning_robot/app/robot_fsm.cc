@@ -109,7 +109,7 @@ void RobotFsm::dispatch<EvRearLimitSettled>(EvRearLimitSettled e) {
     {
         std::lock_guard<hal::PiMutex> lk(mtx_);
 
-        if (state_name_ == "CleanReturn") {
+        if (sm_->is(sml::state<StateCleanReturn>)) {
             completed_half_passes_++;
             spdlog::info("[FSM] 尾端限位已稳定（已完成半趟 {}/{}）",
                          completed_half_passes_, target_half_passes_);
@@ -125,7 +125,7 @@ void RobotFsm::dispatch<EvRearLimitSettled>(EvRearLimitSettled e) {
                 spdlog::info("[FSM] → CleanFwd（回到停机位，继续正向清扫）");
                 action = [this]() { motion_->start_cleaning(); };
             }
-        } else if (state_name_ == "Returning") {
+        } else if (sm_->is(sml::state<StateReturning>)) {
             sm_->process_event(e);
             state_name_ = "Charging";
             spdlog::info("[FSM] → Charging（故障/低电返回停机位完成）");

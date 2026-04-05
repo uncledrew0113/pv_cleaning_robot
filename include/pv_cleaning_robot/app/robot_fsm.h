@@ -120,6 +120,8 @@ private:
     middleware::EventBus&                   bus_;
 
     mutable hal::PiMutex          mtx_;
+    /// 仅用于日志输出，不参与任何业务判断。
+    /// 状态判断请使用 sm_->is(sml::state<StateXxx>)。
     std::string                   state_name_{"Init"};
     std::unique_ptr<sml::sm<Fsm>> sm_;
 
