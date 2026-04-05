@@ -2,7 +2,8 @@
 #include <iomanip>
 #include <linux/reboot.h>
 #include <mutex>
-#include <openssl/md5.h>
+#include <openssl/evp.h>
+#include <spdlog/spdlog.h>
 #include <sstream>
 #include <sys/syscall.h>
 #include <unistd.h>
@@ -14,18 +15,19 @@ namespace robot::middleware {
 OtaManager::OtaManager(std::string partition_b_path, std::string flag_path)
     : partition_b_path_(std::move(partition_b_path)), flag_path_(std::move(flag_path)) {}
 
-bool OtaManager::start(const std::string& firmware_data, const std::string& expected_md5) {
+bool OtaManager::start_stream(std::istream& firmware_stream,
+                               uint64_t expected_bytes,
+                               const std::string& expected_sha256) {
     {
         std::lock_guard<std::mutex> lk(mtx_);
         progress_.state = State::DOWNLOADING;
-        progress_.total_bytes = static_cast<uint32_t>(firmware_data.size());
+        progress_.total_bytes = static_cast<uint32_t>(expected_bytes);
         progress_.bytes_written = 0;
         progress_.error_msg.clear();
     }
-    if (on_progress_)
-        on_progress_(get_progress());
+    if (on_progress_) on_progress_(get_progress());
 
-    // 写入 B 分区
+    // 流式写入 B 分区（峰值内存 ~4KB）
     {
         std::ofstream ofs(partition_b_path_, std::ios::binary | std::ios::trunc);
         if (!ofs) {
@@ -33,52 +35,63 @@ bool OtaManager::start(const std::string& firmware_data, const std::string& expe
             return false;
         }
         constexpr size_t kChunk = 4096;
-        size_t offset = 0;
-        while (offset < firmware_data.size()) {
-            size_t to_write = std::min(kChunk, firmware_data.size() - offset);
-            ofs.write(firmware_data.data() + offset, static_cast<std::streamsize>(to_write));
-            offset += to_write;
+        char buf[kChunk];
+        while (firmware_stream.read(buf, kChunk) || firmware_stream.gcount() > 0) {
+            auto n = static_cast<std::streamsize>(firmware_stream.gcount());
+            ofs.write(buf, n);
             {
                 std::lock_guard<std::mutex> lk(mtx_);
-                progress_.bytes_written = static_cast<uint32_t>(offset);
+                progress_.bytes_written += static_cast<uint32_t>(n);
             }
-            if (on_progress_)
-                on_progress_(get_progress());
+            if (on_progress_) on_progress_(get_progress());
         }
         ofs.flush();
     }
 
-    // MD5 校验
+    // SHA-256 校验（使用 EVP API，兼容 OpenSSL 1.x/3.x，MD5 已废弃）
     set_state(State::VERIFYING);
-    if (on_progress_)
-        on_progress_(get_progress());
+    if (on_progress_) on_progress_(get_progress());
 
-    if (!verify_md5(firmware_data, expected_md5)) {
-        set_state(State::FAILED, "MD5 mismatch");
+    // 重置流位置以便校验
+    firmware_stream.clear();
+    firmware_stream.seekg(0);
+    if (!verify_sha256(firmware_stream, expected_sha256)) {
+        set_state(State::FAILED, "SHA-256 mismatch");
         return false;
     }
 
     set_state(State::WRITING_FLAG);
-    if (on_progress_)
-        on_progress_(get_progress());
+    if (on_progress_) on_progress_(get_progress());
 
     set_state(State::PENDING_REBOOT);
-    if (on_progress_)
-        on_progress_(get_progress());
+    if (on_progress_) on_progress_(get_progress());
 
     return true;
 }
 
+bool OtaManager::start(const std::string& firmware_data,
+                        const std::string& expected_sha256) {
+    std::istringstream iss(firmware_data);
+    return start_stream(iss, firmware_data.size(), expected_sha256);
+}
+
 bool OtaManager::apply_and_reboot() {
+    // 安全门卫：机器人必须处于 Idle 或 Charging 状态才允许重启
+    if (safety_check_ && !safety_check_()) {
+        spdlog::error("[OTA] Reboot blocked: robot not in safe state (Idle/Charging required)");
+        set_state(State::FAILED, "blocked by safety check");
+        return false;
+    }
+
     // 写入分区切换标志（简单标志文件：写入 "B\n"）
     {
         std::ofstream ofs(flag_path_, std::ios::trunc);
-        if (!ofs)
-            return false;
+        if (!ofs) return false;
         ofs << "B\n";
     }
     sync();  // 确保写入落盘
 
+    spdlog::info("[OTA] Rebooting to apply firmware update...");
     // 触发系统重启（需 root 权限）
     syscall(
         SYS_reboot, LINUX_REBOOT_MAGIC1, LINUX_REBOOT_MAGIC2, LINUX_REBOOT_CMD_RESTART, nullptr);
@@ -99,15 +112,30 @@ void OtaManager::set_progress_callback(ProgressCallback cb) {
     on_progress_ = std::move(cb);
 }
 
-bool OtaManager::verify_md5(const std::string& data, const std::string& expected_md5) {
-    unsigned char digest[MD5_DIGEST_LENGTH];
-    MD5(reinterpret_cast<const unsigned char*>(data.data()), data.size(), digest);
+void OtaManager::set_safety_check(SafetyCheckFn fn) {
+    safety_check_ = std::move(fn);
+}
 
+bool OtaManager::verify_sha256(std::istream& data, const std::string& expected_hex) {
+    EVP_MD_CTX* ctx = EVP_MD_CTX_new();
+    if (!ctx) return false;
+
+    EVP_DigestInit_ex(ctx, EVP_sha256(), nullptr);
+    char buf[4096];
+    while (data.read(buf, sizeof(buf)) || data.gcount() > 0) {
+        EVP_DigestUpdate(ctx, buf, static_cast<size_t>(data.gcount()));
+    }
+    unsigned char digest[32];
+    unsigned int len = 0;
+    EVP_DigestFinal_ex(ctx, digest, &len);
+    EVP_MD_CTX_free(ctx);
+
+    // 转为小写十六进制
     std::ostringstream oss;
-    for (auto b : digest)
-        oss << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(b);
+    for (unsigned int i = 0; i < len; ++i)
+        oss << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(digest[i]);
 
-    return oss.str() == expected_md5;
+    return oss.str() == expected_hex;
 }
 
 void OtaManager::set_state(State s, const std::string& err) {
