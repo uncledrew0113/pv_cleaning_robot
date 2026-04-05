@@ -14,6 +14,8 @@ namespace robot::middleware {
 ///   - confirm_sent() 删除已发记录后同样重写；open() 从文件恢复未发数据
 ///   - 断电重启后能自动加载积压遥测并在网络恢复后补发
 ///   - 文件格式：每行一个 JSON：{"id":1,"topic":"...","payload":"...","ts_ms":...}
+///
+/// 线程安全：所有公开方法均通过 mtx_ 保护，可从多个线程并发调用。
 class DataCache {
 public:
     static constexpr size_t kDefaultMaxRows = 500;  ///< 超出则丢弃最旧记录

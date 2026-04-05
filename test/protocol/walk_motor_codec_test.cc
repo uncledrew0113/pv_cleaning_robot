@@ -34,7 +34,7 @@
 #include <thread>
 
 #include "mock/mock_can_bus.h"
-#include "pv_cleaning_robot/device/walk_motor.h"
+#include "pv_cleaning_robot/device/walk_motor_types.h"
 #include "pv_cleaning_robot/device/walk_motor_group.h"
 #include "pv_cleaning_robot/driver/linux_can_socket.h"
 #include "pv_cleaning_robot/protocol/walk_motor_can_codec.h"

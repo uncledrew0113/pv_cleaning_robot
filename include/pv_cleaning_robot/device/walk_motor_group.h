@@ -8,7 +8,7 @@
 #include <thread>
 
 #include "pv_cleaning_robot/device/device_error.h"
-#include "pv_cleaning_robot/device/walk_motor.h"
+#include "pv_cleaning_robot/device/walk_motor_types.h"
 #include "pv_cleaning_robot/hal/i_can_bus.h"
 #include "pv_cleaning_robot/hal/pi_mutex.h"
 #include "pv_cleaning_robot/protocol/walk_motor_can_codec.h"
@@ -122,6 +122,7 @@ class WalkMotorGroup {
     /// 速度环给定：一帧同步设定4台电机（-210 ~ +210 RPM）
     DeviceError set_speeds(float lt, float rt, float lb, float rb);
     DeviceError set_speeds(const SpeedCmd& cmd);
+    DeviceError set_speeds_extra(float lt, float rt, float lb, float rb);
     /// 全部相同速度（正=前进，负=后退）
     DeviceError set_speed_uniform(float rpm);
 

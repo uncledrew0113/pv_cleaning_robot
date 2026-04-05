@@ -65,7 +65,7 @@ class EventBus {
     ///
     /// publish() 持锁期间仅拷贝 std::function 指针到固定栈数组，不堆分配。
     /// 回调在锁外执行，事件对象生命期由 publish() 栈帧保证（const EventT& event）。
-    /// 订阅者上限 kMaxHandlers=16；超出时截断并记录（不崩溃）。
+    /// 订阅者上限 kMaxHandlers=32；超出时截断并记录（不崩溃）。
     template <typename EventT>
     void publish(const EventT& event) {
         // 固定大小栈数组，消除 SCHED_FIFO 95 路径上 std::vector::reserve() 触发的 malloc()

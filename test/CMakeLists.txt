@@ -16,7 +16,6 @@ set(COMMON_SRCS
   ${PROJ}/device/bms.cc
   ${PROJ}/device/imu_device.cc
   ${PROJ}/device/gps_device.cc
-  ${PROJ}/device/walk_motor.cc
   ${PROJ}/device/walk_motor_group.cc
   ${PROJ}/device/brush_motor.cc
   ${PROJ}/device/limit_switch.cc
@@ -30,6 +29,9 @@ set(COMMON_SRCS
   # 中间件层
   ${PROJ}/middleware/data_cache.cc
   ${PROJ}/middleware/safety_monitor.cc
+  ${PROJ}/middleware/network_manager.cc
+  ${PROJ}/middleware/logger.cc
+  ${PROJ}/middleware/thread_executor.cc
 
   # 服务层
   ${PROJ}/service/config_service.cc
@@ -38,6 +40,8 @@ set(COMMON_SRCS
   ${PROJ}/service/nav_service.cc
   ${PROJ}/service/motion_service.cc
   ${PROJ}/service/heading_pid_controller.cc
+  ${PROJ}/service/health_service.cc
+  ${PROJ}/service/cloud_service.cc
 
   # App 层
   ${PROJ}/app/robot_fsm.cc
@@ -49,7 +53,7 @@ set(COMMON_SRCS
 # ── 单元测试可执行文件（纯软件路径，无需真实硬件） ──────────────────────
 add_executable(unit_tests
   test_main.cc
-
+  test_base.cc
   # 协议层
   protocol/bms_protocol_test.cc
   protocol/bms2_protocol_test.cc
@@ -60,7 +64,6 @@ add_executable(unit_tests
   # 设备层
   device/bms_device_test.cc
   device/imu_device_test.cc
-  device/walk_motor_test.cc
   device/walk_motor_group_test.cc
   device/brush_motor_test.cc
   device/limit_switch_test.cc
@@ -92,6 +95,7 @@ add_executable(unit_tests
 
   # 集成测试（非硬件，可在 QEMU 中运行）
   integration/task_chain_test.cc
+  integration/system_integration_test.cc
 
   ${COMMON_SRCS}
 )
@@ -115,7 +119,6 @@ add_executable(hw_tests
   integration/hardware/driver_hw_test.cc
   integration/hardware/bms_hw_test.cc
   integration/hardware/imu_hw_test.cc
-  integration/hardware/walk_motor_hw_test.cc
   integration/hardware/full_sweep_hw_test.cc
 
   ${COMMON_SRCS}
