@@ -1,5 +1,6 @@
 #include "pv_cleaning_robot/service/cloud_service.h"
 #include <nlohmann/json.hpp>
+#include <spdlog/spdlog.h>
 
 namespace robot::service {
 
@@ -90,6 +91,13 @@ void CloudService::on_rpc_message(const std::string& topic,
     if (pos != std::string::npos)
         request_id = topic.substr(pos + 1);
 
+    // params 大小防御：超大 payload 拒绝，防止栈耗尽
+    if (payload.size() > kMaxRpcParamsBytes) {
+        spdlog::warn("[CloudService] RPC payload too large: {} bytes (max {})",
+                     payload.size(), kMaxRpcParamsBytes);
+        return;
+    }
+
     std::string method;
     std::string params;
     try {
@@ -103,10 +111,13 @@ void CloudService::on_rpc_message(const std::string& topic,
     std::string response{"false"};
     {
         std::lock_guard<std::mutex> lk(rpc_mtx_);
+        // method 白名单：只允许已注册的 handler（防止未知方法名路由）
         auto it = rpc_handlers_.find(method);
-        if (it != rpc_handlers_.end()) {
-            try { response = it->second(params); } catch (...) {}
+        if (it == rpc_handlers_.end()) {
+            spdlog::warn("[CloudService] Rejected unknown RPC method: {}", method);
+            return;
         }
+        try { response = it->second(params); } catch (...) {}
     }
 
     // 回复

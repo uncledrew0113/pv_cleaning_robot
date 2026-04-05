@@ -62,6 +62,9 @@ class CloudService : public middleware::IRunnable {
    private:
     void on_rpc_message(const std::string& topic, const std::string& payload);
 
+    /// RPC params 大小上限（防止超大 payload 耗尽栈空间）
+    static constexpr size_t kMaxRpcParamsBytes = 4096;
+
     std::shared_ptr<middleware::NetworkManager> network_;
     std::shared_ptr<middleware::DataCache> cache_;
     Topics topics_;
