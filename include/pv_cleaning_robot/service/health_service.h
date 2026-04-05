@@ -46,7 +46,10 @@ private:
     std::shared_ptr<device::GpsDevice>  gps_;
     std::shared_ptr<CloudService>       cloud_;
     Mode                                mode_;
-    mutable nlohmann::json              j_;              ///< 预分配 JSON 键树，build_payload() 中复用
+    /// 预分配 JSON 键树，build_payload() 中复用以减少内存分配。
+    /// 线程约束：update()/build_payload() 必须由单一线程（ThreadExecutor）调用，
+    /// 不支持并发 build_payload()。若需多线程访问，须在调用方加锁。
+    mutable nlohmann::json              j_;
     std::ofstream                       local_log_file_; ///< 本地 JSONL 落盘文件（local_log_path 非空时打开）
 };
 

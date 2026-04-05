@@ -10,6 +10,7 @@
  */
 #include <filesystem>
 #include <nlohmann/json.hpp>
+#include <spdlog/spdlog.h>
 
 #include "pv_cleaning_robot/service/health_service.h"
 
@@ -70,11 +71,15 @@ HealthService::HealthService(std::shared_ptr<device::WalkMotorGroup> walk,
 
 void HealthService::update() {
     const std::string payload = build_payload();
-    cloud_->publish_telemetry(payload);
+    if (cloud_) cloud_->publish_telemetry(payload);  // cloud_ 为 nullptr 时（单元测试场景）跳过
     // 本地 JSONL 落盘：每条记录一行，独立于网络，离线测试直接 cat 查看
     if (local_log_file_.is_open()) {
         local_log_file_ << payload << '\n';
-        local_log_file_.flush();
+        if (!local_log_file_.flush()) {
+            // flush 失败通常意味着磁盘满或 I/O 错误；关闭文件停止反复写失败
+            spdlog::error("[HealthService] local log flush failed (disk full?), closing file");
+            local_log_file_.close();
+        }
     }
 }
 
