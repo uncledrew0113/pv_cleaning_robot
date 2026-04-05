@@ -95,7 +95,8 @@ void WatchdogMgr::monitor_loop()
         // 喂硬件看门狗
         feed_hw_watchdog();
 
-        // 检查所有票据
+        // 锁内仅收集到期名称，锁外触发回调（防止回调内调用 heartbeat/register_thread 死锁）
+        std::vector<std::string> expired_names;
         {
             std::lock_guard<hal::PiMutex> lk(tickets_mtx_);
             auto now = std::chrono::steady_clock::now();
@@ -105,9 +106,12 @@ void WatchdogMgr::monitor_loop()
                     now - ticket.last_beat).count();
                 if (elapsed > ticket.timeout_ms) {
                     ticket.expired = true;
-                    if (on_timeout_) on_timeout_(ticket.name);
+                    expired_names.push_back(ticket.name);
                 }
             }
+        }
+        for (auto& name : expired_names) {
+            if (on_timeout_) on_timeout_(name);
         }
 
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
