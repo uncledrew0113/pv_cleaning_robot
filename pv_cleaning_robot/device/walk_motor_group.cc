@@ -177,6 +177,17 @@ DeviceError WalkMotorGroup::set_speeds(const SpeedCmd& cmd) {
     return set_speeds(cmd.lt_rpm, cmd.rt_rpm, cmd.lb_rpm, cmd.rb_rpm);
 }
 
+DeviceError WalkMotorGroup::set_speeds_extra(float lt, float rt, float lb, float rb) {
+    if (override_active_.load(std::memory_order_acquire))
+        return DeviceError::OK;  // emergency override 激活期间静默丢弃
+    lt = clamp_rpm(lt);
+    rt = clamp_rpm(rt);
+    lb = clamp_rpm(lb);
+    rb = clamp_rpm(rb);
+
+    return send_ctrl(protocol::WalkMotorCanCodec::encode_group_speed(id_base_, lt, rt, lb, rb));
+}
+
 DeviceError WalkMotorGroup::set_speed_uniform(float rpm) {
     // 物理安装：LT/RT 正转=前进，LB/RB 因安装方向相反，负转=前进
     // rpm > 0 = 车辆前进，rpm < 0 = 车辆后退
@@ -363,7 +374,6 @@ WalkMotorGroup::GroupDiagnostics WalkMotorGroup::get_group_diagnostics() const {
 void WalkMotorGroup::update(float yaw_deg) {
     if (!can_->is_open())
         return;
-
     auto now = std::chrono::steady_clock::now();
 
     // 计算距上次 update() 的实际时间（秒），用于 PID 微积分计算
@@ -516,6 +526,8 @@ void WalkMotorGroup::recv_loop() {
 
             const auto& s = *maybe;
             auto ts = std::chrono::steady_clock::now();
+            float log_rpm, log_torque, log_pos;
+            int log_fault, log_mode;
             {
                 std::lock_guard<hal::PiMutex> lk(mtx_);
                 auto& d = diag_[i];
@@ -527,7 +539,15 @@ void WalkMotorGroup::recv_loop() {
                 d.online = true;
                 ++d.feedback_frame_count;
                 last_fb_time_[i] = ts;
+                // 在锁内复制打印字段，避免锁外无保护读取（data race / UB）
+                log_rpm    = d.speed_rpm;
+                log_torque = d.torque_a;
+                log_pos    = d.position_deg;
+                log_fault  = static_cast<int>(d.fault);
+                log_mode   = static_cast<int>(d.mode);
             }
+            spdlog::info("id:{} rpm:{} current:{} position_deg:{} fault:{} mode:{}",
+                         i + 1, log_rpm, log_torque, log_pos, log_fault, log_mode);
             break;
         }
     }
