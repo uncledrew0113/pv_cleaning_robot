@@ -60,10 +60,12 @@ class PiMutex {
         }
 
         if (rc == EOWNERDEAD) {
-            // 前任持有者已死亡，内核将锁的所有权转交。
-            // 标记为 consistent 防止后续永远 ENOTRECOVERABLE，
-            // 并通过异常强制打断 lock_guard，防止操作可能已损坏的共享状态。
+            // 前任持有者已死亡，内核将锁的所有权转交给当前线程。
+            // 必须先 consistent() 再 unlock()：
+            //   1. consistent() 将锁标记为一致，使后续 unlock() 不返回 ENOTRECOVERABLE
+            //   2. unlock() 释放所有权，防止 throw 后 lock_guard 析构缺失导致永久死锁
             pthread_mutex_consistent(&mutex_);
+            pthread_mutex_unlock(&mutex_);  // 先释放，再抛出
             throw std::runtime_error(
                 "[PiMutex] lock acquired but previous owner died. State inconsistent!");
         }
@@ -87,6 +89,7 @@ class PiMutex {
 
         if (rc == EOWNERDEAD) {
             pthread_mutex_consistent(&mutex_);
+            pthread_mutex_unlock(&mutex_);  // 先释放，再抛出
             throw std::runtime_error(
                 "[PiMutex] trylock acquired but previous owner died. State inconsistent!");
         }
