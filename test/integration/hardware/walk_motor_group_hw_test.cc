@@ -282,7 +282,14 @@ TEST_CASE("WalkMotorGroup 反转", "[hw_walk][rev_speed]") {
     auto gd = grp.get_group_diagnostics();
     for (int w = 0; w < device::WalkMotorGroup::kWheelCount; ++w) {
         spdlog::info("[hw_walk][rev_speed] wheel[{}] speed={:.2f}rpm", w, gd.wheel[w].speed_rpm);
-        CHECK(gd.wheel[w].speed_rpm < 0.0f);  // 反转时速度为负
+        // set_speed_uniform(rpm) → set_speeds(rpm, rpm, -rpm, -rpm)
+        // LT(0)/RT(1): 正转=前进，反转(rpm<0) → speed < 0
+        // LB(2)/RB(3): 安装方向相反，负转=前进，反转(rpm>0) → speed > 0
+        if (w < 2) {
+            CHECK(gd.wheel[w].speed_rpm < 0.0f);
+        } else {
+            CHECK(gd.wheel[w].speed_rpm > 0.0f);
+        }
     }
 
     grp.set_speed_uniform(0.0f);
@@ -310,10 +317,11 @@ TEST_CASE("WalkMotorGroup 急停（emergency_override）", "[hw_walk][emergency_
     grp.update();
     std::this_thread::sleep_for(500ms);
 
-    // 急停
-    const uint32_t frames_before = grp.get_group_diagnostics().ctrl_frame_count;
+    // 急停：emergency_override 本身会发一帧 stop 帧（ctrl_frame_count+1），
+    // frames_before 需在其之后抓取，以便验证后续 update() 不再发帧
     CHECK(grp.emergency_override(0.0f) == device::DeviceError::OK);
     CHECK(grp.is_override_active());
+    const uint32_t frames_before = grp.get_group_diagnostics().ctrl_frame_count;
 
     // 调 update：override 激活时不应再发运动帧，帧计数不增加
     grp.update();
@@ -379,6 +387,9 @@ TEST_CASE("WalkMotorGroup 解除急停后恢复驱动", "[hw_walk][clear_overrid
     spdlog::info("[hw_walk][clear_override] override 已激活");
 
     grp.clear_override();
+    // clear_override() 通过 pending_clear_override_ 延迟生效：
+    // 必须调一次 update() 让 step2-pre 清除标志并重置 has_ctrl_frame_/PID
+    grp.update();
     CHECK(!grp.is_override_active());
     spdlog::info("[hw_walk][clear_override] override 已解除");
 

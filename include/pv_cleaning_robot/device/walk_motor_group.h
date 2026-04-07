@@ -143,10 +143,13 @@ class WalkMotorGroup {
     void set_target_heading(float yaw_deg);
 
     // ── 边缘紧急覆盖（优先级最高，立即生效）────────────────────────────
-    /// 立即发送停止或反转帧，并暂停心跳重发直到 clear_override()
+    /// 立即发送停止或反转帧，并暂停心跳重发直到 clear_override() + update()
     /// @param reverse_rpm  反转速度（>0 表示反转，0 表示原地停止）
     DeviceError emergency_override(float reverse_rpm = 0.0f);
-    /// 解除紧急覆盖，恢复心跳重发和 PID
+    /// 解除紧急覆盖，下次 update() 调用时生效（清除 has_ctrl_frame_ 并重置 PID）。
+    /// @note 调用本函数后须调用一次 update() 才能令 is_override_active() 返回 false；
+    ///       这一设计保证 has_ctrl_frame_（旧速度帧）被原子清除后才恢复发帧，
+    ///       避免解除急停后立即发送过期速度命令。
     void clear_override();
     bool is_override_active() const;
 
