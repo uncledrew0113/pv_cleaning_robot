@@ -540,14 +540,14 @@ void WalkMotorGroup::recv_loop() {
                 ++d.feedback_frame_count;
                 last_fb_time_[i] = ts;
                 // 在锁内复制打印字段，避免锁外无保护读取（data race / UB）
-                log_rpm    = d.speed_rpm;
+                log_rpm = d.speed_rpm;
                 log_torque = d.torque_a;
-                log_pos    = d.position_deg;
-                log_fault  = static_cast<int>(d.fault);
-                log_mode   = static_cast<int>(d.mode);
+                log_pos = d.position_deg;
+                log_fault = static_cast<int>(d.fault);
+                log_mode = static_cast<int>(d.mode);
             }
-            spdlog::info("id:{} rpm:{} current:{} position_deg:{} fault:{} mode:{}",
-                         i + 1, log_rpm, log_torque, log_pos, log_fault, log_mode);
+            // spdlog::info("id:{} rpm:{} current:{} position_deg:{} fault:{} mode:{}",
+            //              i + 1, log_rpm, log_torque, log_pos, log_fault, log_mode);
             break;
         }
     }
