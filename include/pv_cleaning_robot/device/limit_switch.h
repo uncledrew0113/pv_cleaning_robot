@@ -37,7 +37,8 @@ class LimitSwitch {
     /// @param rt_priority 实时调度优先级（默认95，确保极限响应）
     /// @param debounce_ms 软件消抖时间
     /// @param cpu_affinity CPU 亲和性掩码（0=不绑定，1<<N=绑定到核心N）
-    bool open(int rt_priority = 95, int debounce_ms = 2, int cpu_affinity = 0);
+    bool open(int rt_priority = 95, int debounce_ms = 2, int cpu_affinity = 0,
+              bool use_irq = true);
     void close();
 
     // ── 监控 ─────────────────────────────────────────────────

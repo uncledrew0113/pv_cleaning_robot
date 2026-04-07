@@ -60,13 +60,13 @@ static constexpr unsigned kFrontLine = 0u;  ///< 前限位 GPIO 线号（gpiochi
 static constexpr unsigned kRearLine = 1u;   ///< 后限位 GPIO 线号（gpiochip5 line1）
 
 /// 清扫序列测试速度（RPM），保守值，物理安装 LT/RT 正转=前进
-static constexpr float kSweepRpm = 60.0f;
+static constexpr float kSweepRpm = 20.0f;
 /// 限位测试速度（RPM），更低以便安全演示，不需要快速移动
-static constexpr float kLimitTestRpm = 30.0f;
+static constexpr float kLimitTestRpm = 10.0f;
 /// update() 周期（ms），与生产配置 walk_ctrl 50ms 对齐
 static constexpr int kLoopPeriodMs = 50;
 /// 清扫序列总时长（ms）：60 次 × 50ms = 3 秒
-static constexpr int kSweepDurationMs = 3000;
+static constexpr int kSweepDurationMs = 5000;
 static constexpr int kSweepLoops = kSweepDurationMs / kLoopPeriodMs;  // = 60
 /// 等待操作员手动触发限位的超时（ms）
 static constexpr int kLimitWaitMs = 10000;

@@ -48,21 +48,21 @@ TEST_CASE("限位传感器 GPIO 初始化", "[hw_limit][open]") {
 
     SECTION("前限位 GPIO open 成功") {
         // rt_priority=0(SCHED_OTHER), debounce_ms=2, cpu_affinity=0(不绑定)
-        REQUIRE(front_sw->open(0, 2, 0));
+        REQUIRE(front_sw->open(0, 2, 0, false));
         spdlog::info("[hw_limit][open] 前限位 GPIO open 成功");
         front_sw->close();
     }
 
     SECTION("后限位 GPIO open 成功") {
-        REQUIRE(rear_sw->open(0, 2, 0));
+        REQUIRE(rear_sw->open(0, 2, 0, false));
         spdlog::info("[hw_limit][open] 后限位 GPIO open 成功");
         rear_sw->close();
     }
 
     SECTION("重复 open/close 不崩溃") {
-        REQUIRE(front_sw->open(0, 2, 0));
+        REQUIRE(front_sw->open(0, 2, 0, false));
         front_sw->close();
-        REQUIRE(front_sw->open(0, 2, 0));  // 第二次 open 也应成功
+        REQUIRE(front_sw->open(0, 2, 0, false));  // 第二次 open 也应成功
         front_sw->close();
     }
 }
@@ -83,8 +83,8 @@ TEST_CASE("停机位 GPIO 电平自检", "[hw_limit][read_level_home]") {
     auto rear_sw = std::make_shared<device::LimitSwitch>(
         rear_gpio, device::LimitSide::REAR);
 
-    REQUIRE(front_sw->open(0, 2, 0));
-    REQUIRE(rear_sw->open(0, 2, 0));
+    REQUIRE(front_sw->open(0, 2, 0, false));
+    REQUIRE(rear_sw->open(0, 2, 0, false));
 
     const bool front_level = front_sw->read_current_level();
     const bool rear_level  = rear_sw->read_current_level();
@@ -120,7 +120,7 @@ TEST_CASE("前限位传感器回调链路（手动触发）", "[hw_limit][callba
                      (side == device::LimitSide::FRONT ? "FRONT" : "REAR"));
     });
 
-    REQUIRE(front_sw->open(0, 2, 0));
+    REQUIRE(front_sw->open(0, 2, 0, false));
     front_sw->start_monitoring();
 
     spdlog::warn("[hw_limit][callback_front] ★ 请在 5 秒内手动触发【前限位】传感器 ★");
@@ -158,7 +158,7 @@ TEST_CASE("后限位传感器回调链路（手动触发）", "[hw_limit][callba
                      (side == device::LimitSide::FRONT ? "FRONT" : "REAR"));
     });
 
-    REQUIRE(rear_sw->open(0, 2, 0));
+    REQUIRE(rear_sw->open(0, 2, 0, false));
     rear_sw->start_monitoring();
 
     spdlog::warn("[hw_limit][callback_rear] ★ 请在 5 秒内手动触发【后限位】传感器 ★");
@@ -190,7 +190,7 @@ TEST_CASE("限位传感器触发状态管理", "[hw_limit][is_triggered]") {
         triggered.store(true);
     });
 
-    REQUIRE(front_sw->open(0, 2, 0));
+    REQUIRE(front_sw->open(0, 2, 0, false));
     front_sw->start_monitoring();
 
     // 初始未触发
@@ -226,7 +226,7 @@ TEST_CASE("限位传感器触发标志清除", "[hw_limit][clear_trigger]") {
     auto rear_sw = std::make_shared<device::LimitSwitch>(
         rear_gpio, device::LimitSide::REAR);
 
-    REQUIRE(rear_sw->open(0, 2, 0));
+    REQUIRE(rear_sw->open(0, 2, 0, false));
     rear_sw->start_monitoring();
 
     spdlog::warn("[hw_limit][clear_trigger] ★ 请在 5 秒内手动触发【后限位】★");
@@ -266,8 +266,8 @@ TEST_CASE("限位传感器 side 枚举传递正确", "[hw_limit][side_enum]") {
     front_sw->set_trigger_callback(cb);
     rear_sw->set_trigger_callback(cb);
 
-    REQUIRE(front_sw->open(0, 2, 0));
-    REQUIRE(rear_sw->open(0, 2, 0));
+    REQUIRE(front_sw->open(0, 2, 0, false));
+    REQUIRE(rear_sw->open(0, 2, 0, false));
     front_sw->start_monitoring();
     rear_sw->start_monitoring();
 
@@ -308,7 +308,7 @@ TEST_CASE("限位传感器多次触发稳定性", "[hw_limit][repeated_trigger]"
         cb_count.fetch_add(1);
     });
 
-    REQUIRE(front_sw->open(0, 2, 0));
+    REQUIRE(front_sw->open(0, 2, 0, false));
     front_sw->start_monitoring();
 
     spdlog::warn("[hw_limit][repeated_trigger] ★ 请在 15 秒内触发【前限位】3 次（每次间隔 >500ms）★");

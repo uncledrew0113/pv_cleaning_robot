@@ -200,10 +200,10 @@ struct FullSystemFixture : DeviceFixture {
         if (bms->open() != DeviceError::OK)
             spdlog::warn("[FullSystemFixture] BMS open 失败（非致命）");
 
-        // 限位开关：测试中不设 RT 优先级，无 CPU 绑定
-        if (!front_sw->open(0, 2, 0))
+        // 限位开关：gpiochip5 不支持 IRQ，使用 1ms 软件轮询；测试中不设 RT 优先级，无 CPU 绑定
+        if (!front_sw->open(0, 2, 0, false))
             spdlog::warn("[FullSystemFixture] front_sw open 失败");
-        if (!rear_sw->open(0, 2, 0))
+        if (!rear_sw->open(0, 2, 0, false))
             spdlog::warn("[FullSystemFixture] rear_sw open 失败");
 
         if (!safety->start()) {

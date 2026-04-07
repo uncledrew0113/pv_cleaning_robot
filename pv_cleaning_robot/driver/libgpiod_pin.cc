@@ -193,6 +193,29 @@ void LibGpiodPin::start_monitoring() {
         return;
     }
 
+    // ── 轮询模式（use_irq=false）──────────────────────────────────────────────
+    // 直接以 1ms 周期软件轮询，不尝试硬件 IRQ 申请。
+    // 适用于不支持 IRQ 的 GPIO 控制器（如 RK3576 gpiochip5）。
+    if (!config_.use_irq) {
+        // 线已在 INPUT 模式（open() 已 request_line_as_input），无需重新申请
+        cancel_fd_ = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+        if (cancel_fd_ < 0) {
+            spdlog::error("[LibGpiodPin] Failed to create eventfd for {}/{}: {}",
+                          chip_name_,
+                          line_num_,
+                          std::strerror(errno));
+            running_.store(false);
+            return;
+        }
+        last_event_time_ = std::chrono::steady_clock::now();
+        monitor_thread_ = std::thread(&LibGpiodPin::poll_loop, this);
+        spdlog::info("[LibGpiodPin] polling-mode started: {}/{} (1ms period)",
+                     chip_name_,
+                     line_num_);
+        return;
+    }
+
+    // ── IRQ 模式（use_irq=true）───────────────────────────────────────────────
     gpiod_line_release(line_);
 
     hal::GpioEdge snapshot_edge;
@@ -246,7 +269,7 @@ void LibGpiodPin::start_monitoring() {
 
     last_event_time_ = std::chrono::steady_clock::now();
     monitor_thread_ = std::thread(&LibGpiodPin::monitor_loop, this);
-    spdlog::debug("[LibGpiodPin] monitoring started: {}/{}", chip_name_, line_num_);
+    spdlog::debug("[LibGpiodPin] IRQ-mode started: {}/{}", chip_name_, line_num_);
 }
 
 void LibGpiodPin::stop_monitoring() {
@@ -255,36 +278,7 @@ void LibGpiodPin::stop_monitoring() {
 }
 
 void LibGpiodPin::monitor_loop() {
-    // ── 线程自身完成 RT 提权 + CPU 绑定 ──
-    // 确保后续所有代码和硬件响应均在 RT 级别
-    if (config_.rt_priority > 0) {
-        sched_param sp{};
-        sp.sched_priority = config_.rt_priority;
-        int rc = pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp);
-        if (rc != 0) {
-            spdlog::warn("[LibGpiodPin] RT priority elevation failed for {}/{}: {}",
-                         chip_name_,
-                         line_num_,
-                         strerror(rc));
-        } else {
-            spdlog::info("[LibGpiodPin] {}/{} thread elevated to RT SCHED_FIFO priority {}",
-                         chip_name_,
-                         line_num_,
-                         config_.rt_priority);
-        }
-    }
-    if (config_.cpu_affinity != 0) {
-        cpu_set_t cpuset;
-        CPU_ZERO(&cpuset);
-        for (int i = 0; i < 64; ++i) {
-            if (config_.cpu_affinity & (1 << i))
-                CPU_SET(i, &cpuset);
-        }
-        if (pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset) != 0) {
-            spdlog::warn("[LibGpiodPin] CPU affinity set failed for {}/{}: {}",
-                         chip_name_, line_num_, strerror(errno));
-        }
-    }
+    setup_thread_rt_();
 
     // 取到底层的 GPIO 中断描述符
     int gpio_fd = gpiod_line_event_get_fd(line_);
@@ -340,6 +334,102 @@ void LibGpiodPin::monitor_loop() {
                     e.what());
             }
         }
+    }
+}
+
+// ── RT 提权 + CPU 绑定（monitor_loop / poll_loop 共用）────────────────────────
+void LibGpiodPin::setup_thread_rt_() {
+    if (config_.rt_priority > 0) {
+        sched_param sp{};
+        sp.sched_priority = config_.rt_priority;
+        int rc = pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp);
+        if (rc != 0) {
+            spdlog::warn("[LibGpiodPin] RT priority elevation failed for {}/{}: {}",
+                         chip_name_,
+                         line_num_,
+                         strerror(rc));
+        } else {
+            spdlog::info("[LibGpiodPin] {}/{} thread elevated to RT SCHED_FIFO priority {}",
+                         chip_name_,
+                         line_num_,
+                         config_.rt_priority);
+        }
+    }
+    if (config_.cpu_affinity != 0) {
+        cpu_set_t cpuset;
+        CPU_ZERO(&cpuset);
+        for (int i = 0; i < 64; ++i) {
+            if (config_.cpu_affinity & (1 << i))
+                CPU_SET(i, &cpuset);
+        }
+        if (pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset) != 0) {
+            spdlog::warn("[LibGpiodPin] CPU affinity set failed for {}/{}: {}",
+                         chip_name_,
+                         line_num_,
+                         strerror(errno));
+        }
+    }
+}
+
+// ── 1ms 软件轮询循环（use_irq=false 时使用）──────────────────────────────────
+// 通过定期读取 gpiod_line_get_value() 检测电平变化并触发回调；
+// 消抖逻辑与 monitor_loop() 完全一致。
+void LibGpiodPin::poll_loop() {
+    setup_thread_rt_();
+    int prev_value = -1;
+    while (running_.load()) {
+        // cancel_fd_ 可用时用 poll() 睡眠 1ms，这样 stop_monitoring() 写
+        // EventFD 后可立即唤醒，否则退化为 sleep_for(1ms)
+        if (cancel_fd_ >= 0) {
+            pollfd pfd{cancel_fd_, POLLIN, 0};
+            ::poll(&pfd, 1, 1);
+            if (pfd.revents & POLLIN)
+                break;
+        } else {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+
+        if (!line_)
+            break;
+
+        int val = gpiod_line_get_value(line_);
+        if (val < 0)
+            continue;
+
+        if (prev_value >= 0 && val != prev_value) {
+            hal::GpioEdge snap_edge;
+            {
+                std::lock_guard<hal::PiMutex> lk(cb_mutex_);
+                snap_edge = edge_;
+            }
+            const bool is_rising = (val == 1);
+            const bool should_fire =
+                (snap_edge == hal::GpioEdge::BOTH) ||
+                (snap_edge == hal::GpioEdge::RISING && is_rising) ||
+                (snap_edge == hal::GpioEdge::FALLING && !is_rising);
+
+            if (should_fire) {
+                auto now = std::chrono::steady_clock::now();
+                auto ms =
+                    std::chrono::duration_cast<std::chrono::milliseconds>(now - last_event_time_)
+                        .count();
+                if (config_.debounce_ms == 0 || ms >= config_.debounce_ms) {
+                    last_event_time_ = now;
+                    try {
+                        std::lock_guard<hal::PiMutex> lock(cb_mutex_);
+                        if (callback_)
+                            callback_();
+                    } catch (const std::exception& e) {
+                        spdlog::error(
+                            "[LibGpiodPin] Callback error (poll) on {}/{}: {}",
+                            chip_name_,
+                            line_num_,
+                            e.what());
+                    }
+                }
+            }
+        }
+        prev_value = val;
     }
 }
 

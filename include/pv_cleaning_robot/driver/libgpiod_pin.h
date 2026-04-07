@@ -46,9 +46,11 @@ class LibGpiodPin final : public hal::IGpioPin {
     void stop_monitoring() override;
 
    private:
-    void monitor_loop();
-    bool request_line_as_input();  // 内部复用：申请普通输入模式（用于初始化和回滚）
-    void stop_monitoring_locked();  // 内部无锁停止方法，防止递归死锁
+    void monitor_loop();     ///< 中断驱动循环（硬件 IRQ 可用时）
+    void poll_loop();        ///< 轮询循环（IRQ 不可用时自动回退，1ms 检测周期）
+    void setup_thread_rt_(); ///< RT 提权 + CPU 绑定（两个循环共用）
+    bool request_line_as_input();
+    void stop_monitoring_locked();
 
     std::string chip_name_;
     unsigned int line_num_;

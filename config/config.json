@@ -22,7 +22,8 @@
 
   "gpio": {
     "front_limit": { "chip": "gpiochip5", "line": 0 },
-    "rear_limit":  { "chip": "gpiochip5", "line": 1 }
+    "rear_limit":  { "chip": "gpiochip5", "line": 1 },
+    "use_irq": false
   },
 
   "network": {

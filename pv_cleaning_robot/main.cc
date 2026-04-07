@@ -188,13 +188,17 @@ int main() {
     }
     if (!gps->open())
         log->warn("[Main] GPS 初始化失败");
+    // gpio.use_irq: 若 GPIO 控制器不支持硬件 IRQ（如 RK3576 gpiochip5），配置为 false 使用 1ms 软件轮询
+    const bool gpio_use_irq = cfg.get<bool>("gpio.use_irq", false);
     const bool front_open_ok = front_switch->open(95,  // SCHED_FIFO 95: GPIO 边缘最高硬件响应优先级
-                                                  2,        // 2ms 软件消抖
-                                                  1 << 4);  // 绑定大核 CPU 4（安全关键专用）
+                                                  2,           // 2ms 软件消抖
+                                                  1 << 4,      // 绑定大核 CPU 4（安全关键专用）
+                                                  gpio_use_irq);
     const bool rear_open_ok =
         rear_switch->open(95,
                           2,
-                          1 << 4);  // 绑定大核 CPU 4（与 safety_monitor 同核，减少跨核缓存失效）
+                          1 << 4,      // 绑定大核 CPU 4（与 safety_monitor 同核，减少跨核缓存失效）
+                          gpio_use_irq);
     if (!front_open_ok)
         log->warn("[Main] 前限位开关初始化失败");
     if (!rear_open_ok)
