@@ -123,6 +123,7 @@ add_executable(hw_tests
   integration/hardware/limit_switch_hw_test.cc
   integration/hardware/walk_motor_group_hw_test.cc
   integration/hardware/clean_cycle_hw_test.cc
+  integration/hardware/system_hw_test.cc
 
   ${COMMON_SRCS}
 )

@@ -188,11 +188,10 @@ struct SystemFixture {
                   .edge_reverse_rpm = 0.0f,
                   .heading_pid_en   = false}))
         , nav(std::make_shared<NavService>(group, imu, gps))
-        , health(std::make_shared<HealthService>(
-              group, brush, bms, imu, gps,
-              cloud,
-              HealthService::Mode::DIAGNOSTICS,
-              kHealthPath))
+        // 注意：health 不在此处初始化，延迟到构造体内，
+        // 必须在 std::filesystem::remove(kHealthPath) 之后创建，
+        // 否则 HealthService 打开文件后被 remove 删掉目录项，
+        // 写入将走未链接的 inode，exists() 永远返回 false
         , safety_mon(group, front_sw, rear_sw, bus)
         , fsm(motion, nav, fault_svc, bus)
         , fault_handler(motion, bus, [this](FaultEvent e) {
@@ -218,9 +217,16 @@ struct SystemFixture {
         front_sw->open();
         rear_sw->open();
 
-        // 预先清空落盘文件
+        // 预先清空落盘文件（必须在 HealthService 构造之前执行！）
         std::filesystem::remove(kHealthPath);
         std::filesystem::remove(kCachePath);
+
+        // HealthService 在文件清理之后才构造，保证打开的是新文件
+        health = std::make_shared<HealthService>(
+            group, brush, bms, imu, gps,
+            cloud,
+            HealthService::Mode::DIAGNOSTICS,
+            kHealthPath);
 
         fault_handler.start_listening();
         fsm.dispatch(EvInitDone{});

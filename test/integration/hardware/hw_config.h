@@ -15,6 +15,7 @@
  */
 #include <atomic>
 #include <chrono>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <thread>
@@ -39,7 +40,9 @@
 #include "pv_cleaning_robot/middleware/safety_monitor.h"
 
 // Service
+#include "pv_cleaning_robot/service/cloud_service.h"
 #include "pv_cleaning_robot/service/fault_service.h"
+#include "pv_cleaning_robot/service/health_service.h"
 #include "pv_cleaning_robot/service/motion_service.h"
 #include "pv_cleaning_robot/service/nav_service.h"
 
@@ -56,8 +59,8 @@ namespace hw {
 constexpr char     kCanIface[]    = "can0";
 constexpr uint8_t  kMotorIdBase   = 1u;
 constexpr uint16_t kCommTimeoutMs = 500u;   ///< update 50ms × 10 倍余量
-constexpr float    kTestSpeedRpm  = 30.0f;  ///< 安全低速（测试专用）
-constexpr float    kTestReturnRpm = 30.0f;
+constexpr float    kTestSpeedRpm  = 20.0f;  ///< 安全低速（测试专用）
+constexpr float    kTestReturnRpm = 20.0f;
 
 constexpr char kImuPort[] = "/dev/ttyS1";
 constexpr int  kImuBaud   = 9600;
@@ -71,6 +74,8 @@ constexpr unsigned kRearLine   = 1u;
 
 constexpr int kLimitTimeoutSec = 60;   ///< 等待限位最大秒数（全流程）
 constexpr int kOnlineTimeoutMs = 600;  ///< 等待电机上线最大毫秒数
+
+constexpr char kHealthJsonlPath[] = "/tmp/hw_system_test_health.jsonl"; ///< HealthService JSONL 落盘路径
 
 // ── DeviceFixture：Driver + Device 层（限位 / 电机单元测试使用）────────────
 struct DeviceFixture {
@@ -121,10 +126,12 @@ struct FullSystemFixture : DeviceFixture {
     robot::middleware::EventBus                       event_bus;
     std::shared_ptr<MockModbusMaster>                 mock_modbus;
     std::shared_ptr<robot::device::BrushMotor>        brush;
+    std::shared_ptr<robot::device::GpsDevice>         gps_dummy;
     std::unique_ptr<robot::middleware::SafetyMonitor> safety;
     std::shared_ptr<robot::service::NavService>       nav;
     std::shared_ptr<robot::service::MotionService>    motion;
     std::shared_ptr<robot::service::FaultService>     fault;
+    std::shared_ptr<robot::service::HealthService>    health;  ///< null cloud，本地 JSONL 落盘
     std::unique_ptr<robot::app::WatchdogMgr>          watchdog;
     std::shared_ptr<robot::app::RobotFsm>             fsm;
 
@@ -142,7 +149,7 @@ struct FullSystemFixture : DeviceFixture {
         // GPS 未安装：创建占位对象，不 open，NavService 会跳过 GPS 校正
         auto gps_serial_dummy = std::make_shared<driver::LibSerialPort>(
             "/dev/null", hal::UartConfig{9600});
-        auto gps_dummy = std::make_shared<device::GpsDevice>(gps_serial_dummy);
+        gps_dummy = std::make_shared<device::GpsDevice>(gps_serial_dummy);
 
         nav = std::make_shared<service::NavService>(
             walk_group, imu, gps_dummy, 0.3f);
@@ -185,8 +192,9 @@ struct FullSystemFixture : DeviceFixture {
     }
 
     /// 初始化所有硬件并启动后台线程，dispatch EvInitDone → FSM = "Idle"
+    /// @param health_jsonl_path  HealthService JSONL 落盘路径（空字符串=不落盘）
     /// @return false 表示关键硬件（walk_group）初始化失败
-    bool init() {
+    bool init(const std::string& health_jsonl_path = "") {
         using robot::device::DeviceError;
         if (walk_group->open() != DeviceError::OK) {
             spdlog::error("[FullSystemFixture] walk_group open 失败");
@@ -212,6 +220,17 @@ struct FullSystemFixture : DeviceFixture {
         }
         watchdog->start();
         start_loops_();
+
+        // HealthService 在硬件 open 之后构造，保证传感器缓存已就绪
+        if (!health_jsonl_path.empty()) {
+            std::filesystem::remove(health_jsonl_path);  // 清旧文件，open() 创建新文件
+            health = std::make_shared<robot::service::HealthService>(
+                walk_group, brush, bms, imu, gps_dummy,
+                nullptr,   // cloud = null，不需要 MQTT/LoRaWAN
+                robot::service::HealthService::Mode::DIAGNOSTICS,
+                health_jsonl_path);
+            spdlog::info("[FullSystemFixture] HealthService 已创建: {}", health_jsonl_path);
+        }
 
         // FSM: StateInit → Idle
         fsm->dispatch(robot::app::EvInitDone{});

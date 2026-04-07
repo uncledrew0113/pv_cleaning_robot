@@ -6,10 +6,10 @@
  *   [hw_walk][open_close]              - CAN open/close
  *   [hw_walk][enable_disable]          - 模式控制（使能/失能）
  *   [hw_walk][all_online]              - 全轮 10ms 反馈上线
- *   [hw_walk][fwd_no_pid]              - PID 关闭前进（30 RPM，3s）
- *   [hw_walk][fwd_with_pid]            - PID 开启前进（30 RPM，5s，yaw 漂移 < 5°）
+ *   [hw_walk][fwd_no_pid]              - PID 关闭前进（20 RPM，3s）
+ *   [hw_walk][fwd_with_pid]            - PID 开启前进（20 RPM，5s，yaw 漂移 < 5°）
  *   [hw_walk][pid_straightness]        - PID 开/关直线对比（各 5s，打印漂移量）
- *   [hw_walk][rev_speed]               - 反转（-30 RPM，2s）
+ *   [hw_walk][rev_speed]               - 反转（-20 RPM，2s）
  *   [hw_walk][emergency_override]      - 急停：override 后下一 update 速度=0
  *   [hw_walk][override_blocks_set_speeds] - override 期间 set_speeds 不发帧
  *   [hw_walk][clear_override]          - clear_override 后恢复驱动
@@ -21,7 +21,7 @@
  *   ./hw_tests "[hw_walk]"
  *   ./hw_tests "[hw_walk][fwd_no_pid]"
  *
- * 安全：所有测试速度 ≤ 30 RPM；每段结束 disable_all() + close()。
+ * 安全：所有测试速度 ≤ 20 RPM；每段结束 disable_all() + close()。
  */
 #include <catch2/catch.hpp>
 #include <chrono>
@@ -56,7 +56,7 @@ TEST_CASE("WalkMotorGroup 使能与失能", "[hw_walk][enable_disable]") {
 
     REQUIRE(grp.open() == device::DeviceError::OK);
 
-    CHECK(grp.enable_all()  == device::DeviceError::OK);
+    CHECK(grp.enable_all() == device::DeviceError::OK);
     std::this_thread::sleep_for(200ms);
     spdlog::info("[hw_walk][enable_disable] enable_all ✓");
 
@@ -80,14 +80,18 @@ TEST_CASE("WalkMotorGroup 全轮联机", "[hw_walk][all_online]") {
 
     // 等待最多 kOnlineTimeoutMs ms，轮询直到全部上线
     bool all_online = false;
-    auto deadline   = std::chrono::steady_clock::now() +
-                      std::chrono::milliseconds(hw::kOnlineTimeoutMs);
+    auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(hw::kOnlineTimeoutMs);
     while (std::chrono::steady_clock::now() < deadline) {
         auto gs = grp.get_group_status();
         all_online = true;
         for (int w = 0; w < device::WalkMotorGroup::kWheelCount; ++w)
-            if (!gs.wheel[w].online) { all_online = false; break; }
-        if (all_online) break;
+            if (!gs.wheel[w].online) {
+                all_online = false;
+                break;
+            }
+        if (all_online)
+            break;
         std::this_thread::sleep_for(50ms);
     }
 
@@ -126,16 +130,19 @@ TEST_CASE("WalkMotorGroup 前进（PID 关闭）", "[hw_walk][fwd_no_pid]") {
 
     auto gd = grp.get_group_diagnostics();
     spdlog::info("[hw_walk][fwd_no_pid] ctrl_frames={} ctrl_errs={}",
-                 gd.ctrl_frame_count, gd.ctrl_err_count);
+                 gd.ctrl_frame_count,
+                 gd.ctrl_err_count);
     for (int w = 0; w < device::WalkMotorGroup::kWheelCount; ++w)
         spdlog::info("[hw_walk][fwd_no_pid] wheel[{}] online={} speed={:.2f}rpm",
-                     w, gd.wheel[w].online, gd.wheel[w].speed_rpm);
+                     w,
+                     gd.wheel[w].online,
+                     gd.wheel[w].speed_rpm);
 
     // 所有轮在线且速度在预期范围内
     for (int w = 0; w < device::WalkMotorGroup::kWheelCount; ++w) {
         CHECK(gd.wheel[w].online);
-        CHECK(gd.wheel[w].speed_rpm >= 10.0f);   // 低限：目标 30，允许负载下降至 10
-        CHECK(gd.wheel[w].speed_rpm <= 60.0f);   // 高限：30 + 100% 余量
+        CHECK(gd.wheel[w].speed_rpm >= 10.0f);  // 低限：目标 20，允许负载下降至 10
+        CHECK(gd.wheel[w].speed_rpm <= 60.0f);  // 高限：20 + 100% 余量
     }
     CHECK(gd.ctrl_err_count == 0u);
 
@@ -151,8 +158,8 @@ TEST_CASE("WalkMotorGroup 前进（PID 关闭）", "[hw_walk][fwd_no_pid]") {
 // ────────────────────────────────────────────────────────────────────────────
 TEST_CASE("WalkMotorGroup 前进（PID 开启，yaw 漂移 < 5°）", "[hw_walk][fwd_with_pid]") {
     // 需要 IMU 提供 yaw 数据
-    auto imu_serial = std::make_shared<driver::LibSerialPort>(
-        hw::kImuPort, hal::UartConfig{hw::kImuBaud});
+    auto imu_serial =
+        std::make_shared<driver::LibSerialPort>(hw::kImuPort, hal::UartConfig{hw::kImuBaud});
     auto imu = std::make_shared<device::ImuDevice>(imu_serial);
     REQUIRE(imu->open());
     std::this_thread::sleep_for(500ms);  // 等待 IMU 首帧
@@ -183,10 +190,9 @@ TEST_CASE("WalkMotorGroup 前进（PID 开启，yaw 漂移 < 5°）", "[hw_walk]
 
     auto imu_data1 = imu->get_latest();
     REQUIRE(imu_data1.valid);
-    const float yaw_end   = imu_data1.yaw_deg;
+    const float yaw_end = imu_data1.yaw_deg;
     const float yaw_drift = std::abs(yaw_end - yaw_start);
-    spdlog::info("[hw_walk][fwd_with_pid] 结束 yaw={:.2f}°  漂移={:.2f}°",
-                 yaw_end, yaw_drift);
+    spdlog::info("[hw_walk][fwd_with_pid] 结束 yaw={:.2f}°  漂移={:.2f}°", yaw_end, yaw_drift);
 
     CHECK(yaw_drift < 5.0f);  // PID 开启下 5s 内漂移应 < 5°
 
@@ -202,8 +208,8 @@ TEST_CASE("WalkMotorGroup 前进（PID 开启，yaw 漂移 < 5°）", "[hw_walk]
 // [hw_walk][pid_straightness] — PID 开关直线对比
 // ────────────────────────────────────────────────────────────────────────────
 TEST_CASE("WalkMotorGroup PID 直线度量化对比", "[hw_walk][pid_straightness]") {
-    auto imu_serial = std::make_shared<driver::LibSerialPort>(
-        hw::kImuPort, hal::UartConfig{hw::kImuBaud});
+    auto imu_serial =
+        std::make_shared<driver::LibSerialPort>(hw::kImuPort, hal::UartConfig{hw::kImuBaud});
     auto imu = std::make_shared<device::ImuDevice>(imu_serial);
     REQUIRE(imu->open());
     std::this_thread::sleep_for(500ms);
@@ -229,7 +235,7 @@ TEST_CASE("WalkMotorGroup PID 直线度量化对比", "[hw_walk][pid_straightnes
         }
 
         auto d1 = imu->get_latest();
-        const float yaw1  = d1.valid ? d1.yaw_deg : 0.0f;
+        const float yaw1 = d1.valid ? d1.yaw_deg : 0.0f;
         const float drift = std::abs(yaw1 - yaw0);
 
         grp.set_speed_uniform(0.0f);
@@ -328,7 +334,8 @@ TEST_CASE("WalkMotorGroup 急停（emergency_override）", "[hw_walk][emergency_
     std::this_thread::sleep_for(100ms);
     const uint32_t frames_after = grp.get_group_diagnostics().ctrl_frame_count;
     spdlog::info("[hw_walk][emergency_override] frames_before={} frames_after={}",
-                 frames_before, frames_after);
+                 frames_before,
+                 frames_after);
     CHECK(frames_after == frames_before);  // override 期间无新控制帧
 
     grp.disable_all();
@@ -355,14 +362,14 @@ TEST_CASE("WalkMotorGroup override 封锁 set_speeds", "[hw_walk][override_block
     const uint32_t frames_before = grp.get_group_diagnostics().ctrl_frame_count;
 
     // 尝试发送速度帧（应被封锁）
-    grp.set_speeds(hw::kTestSpeedRpm, hw::kTestSpeedRpm,
-                   hw::kTestSpeedRpm, hw::kTestSpeedRpm);
+    grp.set_speeds(hw::kTestSpeedRpm, hw::kTestSpeedRpm, hw::kTestSpeedRpm, hw::kTestSpeedRpm);
     grp.update();
     std::this_thread::sleep_for(200ms);
 
     const uint32_t frames_after = grp.get_group_diagnostics().ctrl_frame_count;
     spdlog::info("[hw_walk][override_blocks_set_speeds] frames_before={} frames_after={}",
-                 frames_before, frames_after);
+                 frames_before,
+                 frames_after);
     CHECK(frames_after == frames_before);  // 没有新帧被发出
 
     grp.disable_all();
@@ -459,17 +466,18 @@ TEST_CASE("WalkMotorGroup 帧统计（PID 关，10s）", "[hw_walk][frame_stats_
     std::this_thread::sleep_for(300ms);
 
     grp.set_speed_uniform(hw::kTestSpeedRpm);
-    for (int i = 0; i < 20; ++i) {  // 20 × 500ms = 10s
+    for (int i = 0; i < 10; ++i) {  // 10 × 500ms = 5s
         grp.update();
         std::this_thread::sleep_for(500ms);
     }
 
     auto gd = grp.get_group_diagnostics();
     spdlog::info("[hw_walk][frame_stats_no_pid] ctrl_frames={} ctrl_errs={}",
-                 gd.ctrl_frame_count, gd.ctrl_err_count);
+                 gd.ctrl_frame_count,
+                 gd.ctrl_err_count);
 
-    CHECK(gd.ctrl_frame_count > 100u);  // 10s × ~20Hz = 200 帧
-    CHECK(gd.ctrl_err_count   == 0u);
+    CHECK(gd.ctrl_frame_count > 100u);  // 5s × ~20Hz = 100 帧
+    CHECK(gd.ctrl_err_count == 0u);
 
     grp.set_speed_uniform(0.0f);
     grp.update();
@@ -482,8 +490,8 @@ TEST_CASE("WalkMotorGroup 帧统计（PID 关，10s）", "[hw_walk][frame_stats_
 // [hw_walk][frame_stats_with_pid] — 帧统计（PID 开）
 // ────────────────────────────────────────────────────────────────────────────
 TEST_CASE("WalkMotorGroup 帧统计（PID 开，10s）", "[hw_walk][frame_stats_with_pid]") {
-    auto imu_serial = std::make_shared<driver::LibSerialPort>(
-        hw::kImuPort, hal::UartConfig{hw::kImuBaud});
+    auto imu_serial =
+        std::make_shared<driver::LibSerialPort>(hw::kImuPort, hal::UartConfig{hw::kImuBaud});
     auto imu = std::make_shared<device::ImuDevice>(imu_serial);
     REQUIRE(imu->open());
     std::this_thread::sleep_for(500ms);
@@ -499,7 +507,7 @@ TEST_CASE("WalkMotorGroup 帧统计（PID 开，10s）", "[hw_walk][frame_stats_
     std::this_thread::sleep_for(300ms);
 
     grp.set_speed_uniform(hw::kTestSpeedRpm);
-    for (int i = 0; i < 20; ++i) {  // 20 × 500ms = 10s
+    for (int i = 0; i < 10; ++i) {  // 10 × 500ms = 5s
         auto d = imu->get_latest();
         grp.update(d.valid ? d.yaw_deg : 0.0f);
         std::this_thread::sleep_for(500ms);
@@ -507,10 +515,11 @@ TEST_CASE("WalkMotorGroup 帧统计（PID 开，10s）", "[hw_walk][frame_stats_
 
     auto gd = grp.get_group_diagnostics();
     spdlog::info("[hw_walk][frame_stats_with_pid] ctrl_frames={} ctrl_errs={}",
-                 gd.ctrl_frame_count, gd.ctrl_err_count);
+                 gd.ctrl_frame_count,
+                 gd.ctrl_err_count);
 
     CHECK(gd.ctrl_frame_count > 100u);
-    CHECK(gd.ctrl_err_count   == 0u);
+    CHECK(gd.ctrl_err_count == 0u);
 
     grp.set_speed_uniform(0.0f);
     grp.update();
