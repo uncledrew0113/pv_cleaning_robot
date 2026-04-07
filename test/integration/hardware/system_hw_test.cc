@@ -236,8 +236,288 @@ TEST_CASE("System（真实硬件）运动 1s 后 emergency_override 急停",
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// [hw_system][watchdog_heartbeat] — WatchdogMgr 正常心跳不触发超时
+// [hw_system][watchdog_timeout] — WatchdogMgr 漏心跳超时（纯软件）
 // ────────────────────────────────────────────────────────────────────────────
+TEST_CASE("System（真实硬件）WatchdogMgr 漏心跳后超时回调触发",
+          "[hw_system][watchdog_timeout]") {
+    robot::app::WatchdogMgr watchdog{""};  // 不操作 /dev/watchdog
+
+    std::string fired_name;
+    watchdog.set_timeout_callback([&](const std::string& name) {
+        fired_name = name;
+    });
+
+    REQUIRE(watchdog.start());
+    // 注册 50ms 超时，从不喂狗
+    watchdog.register_thread("dead_thread", 50);
+
+    // 等待 350ms（远超 50ms 超时 + 200ms 监控周期）
+    std::this_thread::sleep_for(350ms);
+    watchdog.stop();
+
+    REQUIRE(fired_name == "dead_thread");
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// [hw_system][p0_fault_chain] — P0 故障链（真实电机停止 + FSM Fault → Idle）
+// ────────────────────────────────────────────────────────────────────────────
+TEST_CASE("System（真实硬件）P0 故障链：电机急停 + FSM Fault → 复位 → Idle",
+          "[hw_system][p0_fault_chain]") {
+    spdlog::warn("[hw_system][p0_fault_chain] ⚠ 此测试将短暂启动行走电机（{:.0f}rpm），确保安全！",
+                 hw::kTestSpeedRpm);
+
+    hw::FullSystemFixture f;
+    REQUIRE(f.init());
+    REQUIRE(f.fsm->current_state() == "Idle");
+
+    // 启动任务 → CleanFwd，电机开始运动
+    f.fsm->dispatch(robot::app::EvScheduleStart{.at_home = true, .passes = 1.0f});
+    REQUIRE(f.fsm->current_state() == "CleanFwd");
+
+    // 等待 300ms 让电机加速
+    std::this_thread::sleep_for(300ms);
+    {
+        auto gd = f.walk_group->get_group_diagnostics();
+        spdlog::info("[hw_system][p0_fault_chain] 运动中: LT={:.1f} RT={:.1f}rpm",
+                     gd.wheel[0].speed_rpm, gd.wheel[1].speed_rpm);
+    }
+
+    // 注入 P0 故障 → FaultHandler: emergency_stop + dispatch EvFaultP0 → Fault
+    f.fault->report(robot::service::FaultService::FaultEvent::Level::P0,
+                    0x1001, "CAN_comm_lost [hw_test]");
+
+    REQUIRE(f.fsm->current_state() == "Fault");
+    REQUIRE(!f.dispatched_faults.empty());
+    CHECK(f.dispatched_faults[0].level ==
+          robot::service::FaultService::FaultEvent::Level::P0);
+    CHECK(f.dispatched_faults[0].code == 0x1001u);
+
+    // 等待电机减速到 0
+    std::this_thread::sleep_for(600ms);
+    auto gd = f.walk_group->get_group_diagnostics();
+    spdlog::info("[hw_system][p0_fault_chain] 故障后: LT={:.1f} RT={:.1f}rpm",
+                 gd.wheel[0].speed_rpm, gd.wheel[1].speed_rpm);
+    CHECK(std::abs(gd.wheel[0].speed_rpm) < 5.0f);
+    CHECK(std::abs(gd.wheel[1].speed_rpm) < 5.0f);
+
+    // 人工复位 → Idle
+    f.fsm->dispatch(robot::app::EvFaultReset{});
+    REQUIRE(f.fsm->current_state() == "Idle");
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// [hw_system][p1_fault_chain] — P1 故障链 → Returning → Charging
+// ────────────────────────────────────────────────────────────────────────────
+TEST_CASE("System（真实硬件）P1 故障链：FSM Returning → EvRearLimitSettled → Charging",
+          "[hw_system][p1_fault_chain]") {
+    spdlog::warn("[hw_system][p1_fault_chain] ⚠ 此测试将短暂启动电机，确保安全！");
+
+    hw::FullSystemFixture f;
+    REQUIRE(f.init());
+
+    f.fsm->dispatch(robot::app::EvScheduleStart{.at_home = true, .passes = 2.0f});
+    REQUIRE(f.fsm->current_state() == "CleanFwd");
+
+    // 等待 200ms 让电机建立速度
+    std::this_thread::sleep_for(200ms);
+    {
+        auto gd = f.walk_group->get_group_diagnostics();
+        spdlog::info("[hw_system][p1_fault_chain] 运动中: LT={:.1f} RT={:.1f}rpm",
+                     gd.wheel[0].speed_rpm, gd.wheel[1].speed_rpm);
+    }
+
+    // 注入 P1 → FaultHandler: stop_cleaning + start_returning + dispatch EvFaultP1
+    f.fault->report(robot::service::FaultService::FaultEvent::Level::P1,
+                    0x2001, "slope_too_steep [hw_test]");
+
+    REQUIRE(f.fsm->current_state() == "Returning");
+    REQUIRE(!f.dispatched_faults.empty());
+    CHECK(f.dispatched_faults[0].level ==
+          robot::service::FaultService::FaultEvent::Level::P1);
+
+    // P1 测试重点在故障链逻辑，直接 dispatch 尾端事件（不等真实物理运动）
+    f.fsm->dispatch(robot::app::EvRearLimitSettled{});
+    REQUIRE(f.fsm->current_state() == "Charging");
+
+    spdlog::info("[hw_system][p1_fault_chain] PASS: CleanFwd→Returning→Charging");
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// [hw_system][low_battery] — EvLowBattery → Returning → Charging
+// ────────────────────────────────────────────────────────────────────────────
+TEST_CASE("System（真实硬件）EvLowBattery → Returning → Charging",
+          "[hw_system][low_battery]") {
+    spdlog::warn("[hw_system][low_battery] ⚠ 此测试将短暂启动电机，确保安全！");
+
+    hw::FullSystemFixture f;
+    REQUIRE(f.init());
+
+    f.fsm->dispatch(robot::app::EvScheduleStart{.at_home = true, .passes = 2.0f});
+    REQUIRE(f.fsm->current_state() == "CleanFwd");
+
+    std::this_thread::sleep_for(200ms);
+
+    // 真实 BMS SOC 值（仅记录，不用于控制流）
+    f.bms->update();
+    auto bd = f.bms->get_data();
+    spdlog::info("[hw_system][low_battery] 真实 BMS SOC={:.1f}% voltage={:.2f}V",
+                 bd.soc_pct, bd.voltage_v);
+
+    f.fsm->dispatch(robot::app::EvLowBattery{});
+    REQUIRE(f.fsm->current_state() == "Returning");
+
+    f.fsm->dispatch(robot::app::EvRearLimitSettled{});
+    REQUIRE(f.fsm->current_state() == "Charging");
+
+    spdlog::info("[hw_system][low_battery] PASS: CleanFwd→Returning→Charging");
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// [hw_system][n1_clean_cycle] — N=1 完整任务链（手动触发真实前后限位）
+// ────────────────────────────────────────────────────────────────────────────
+TEST_CASE("System（真实硬件）N=1 完整任务链（真实限位触发）",
+          "[hw_system][n1_clean_cycle]") {
+    spdlog::warn("[hw_system][n1_clean_cycle] ====================================");
+    spdlog::warn("[hw_system][n1_clean_cycle] ⚠ 机器人将完整运动一个来回（N=1）！");
+    spdlog::warn("[hw_system][n1_clean_cycle] 请确保：导轨就位，轨道无人员/障碍物");
+    spdlog::warn("[hw_system][n1_clean_cycle] ====================================");
+
+    hw::FullSystemFixture f;
+    REQUIRE(f.init());
+
+    const uint32_t frames_before = f.walk_group->get_group_diagnostics().ctrl_frame_count;
+
+    // 启动 N=1 任务 → CleanFwd，电机开始正向运动
+    f.fsm->dispatch(robot::app::EvScheduleStart{.at_home = true, .passes = 1.0f});
+    REQUIRE(f.fsm->current_state() == "CleanFwd");
+
+    spdlog::warn("[hw_system][n1_clean_cycle] ★ 机器人正在向前运动，等待【前端限位】触发（最多 {}s）...",
+                 hw::kLimitTimeoutSec);
+
+    // 等待 SafetyMonitor → EventBus → FSM CleanReturn（真实限位触发）
+    const bool front_hit = f.wait_state(
+        "CleanReturn", std::chrono::milliseconds(hw::kLimitTimeoutSec * 1000));
+
+    {
+        INFO("前端限位等待超时，请检查导轨/传感器接线");
+        REQUIRE(front_hit);
+    }
+    spdlog::info("[hw_system][n1_clean_cycle] ✓ 前端限位触发，机器人开始返回");
+
+    spdlog::warn("[hw_system][n1_clean_cycle] ★ 机器人正在返回，等待【尾端限位】触发（最多 {}s）...",
+                 hw::kLimitTimeoutSec);
+
+    // 等待尾端限位触发 → Charging（任务完成）
+    const bool rear_hit = f.wait_state(
+        "Charging", std::chrono::milliseconds(hw::kLimitTimeoutSec * 1000));
+
+    {
+        INFO("尾端限位等待超时，请检查导轨/传感器接线");
+        REQUIRE(rear_hit);
+    }
+    spdlog::info("[hw_system][n1_clean_cycle] ✓ 尾端限位触发，任务完成");
+
+    // 验证任务期间产生了足够的 CAN 控制帧
+    const uint32_t frames_after = f.walk_group->get_group_diagnostics().ctrl_frame_count;
+    spdlog::info("[hw_system][n1_clean_cycle] CAN 控制帧: {} → {} (增量={})",
+                 frames_before, frames_after, frames_after - frames_before);
+    CHECK(frames_after > frames_before + 20u);  // 两段运动至少 20 帧
+
+    // 任务期间无异常故障
+    CHECK(f.dispatched_faults.empty());
+    REQUIRE(f.fsm->current_state() == "Charging");
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// [hw_system][combined] — 全系统联合启动（电机 + HealthService + WatchdogMgr）
+// ────────────────────────────────────────────────────────────────────────────
+TEST_CASE("System（真实硬件）SafetyMonitor + HealthService + WatchdogMgr 联合启动",
+          "[hw_system][combined]") {
+    spdlog::warn("[hw_system][combined] ⚠ 此测试将短暂启动电机，确保安全！");
+
+    hw::FullSystemFixture f;
+    REQUIRE(f.init(hw::kHealthJsonlPath));
+    REQUIRE(f.health != nullptr);
+
+    // 注册看门狗线程（2s 超时，足够测试用）
+    std::atomic<bool> wd_timeout{false};
+    f.watchdog->set_timeout_callback([&](const std::string& n) {
+        spdlog::error("[hw_system][combined] 看门狗超时: {}", n);
+        wd_timeout.store(true);
+    });
+    const int wd_tid = f.watchdog->register_thread("hw_combined", 2000);
+    REQUIRE(wd_tid >= 0);
+
+    // 启动任务（电机开始运动）
+    f.fsm->dispatch(robot::app::EvScheduleStart{.at_home = true, .passes = 1.0f});
+    REQUIRE(f.fsm->current_state() == "CleanFwd");
+
+    const uint32_t frames_snap = f.walk_group->get_group_diagnostics().ctrl_frame_count;
+
+    // 循环 3 次（各 100ms）：刷新 BMS 缓存 + HealthService 落盘 + 喂狗
+    for (int i = 0; i < 3; ++i) {
+        std::this_thread::sleep_for(100ms);
+        f.bms->update();
+        f.health->update();
+        f.watchdog->heartbeat(wd_tid);
+        spdlog::info("[hw_system][combined] iteration #{}", i + 1);
+    }
+
+    // 急停（防止机器人继续运动）
+    f.walk_group->emergency_override(0.0f);
+    std::this_thread::sleep_for(200ms);
+
+    // ── 断言 ───────────────────────────────────────────────────────────────
+
+    // 看门狗无超时
+    CHECK(!wd_timeout.load());
+
+    // CAN 控制帧数增加（说明 MotionService 确实在发帧）
+    const uint32_t frames_after = f.walk_group->get_group_diagnostics().ctrl_frame_count;
+    spdlog::info("[hw_system][combined] CAN 帧: {} → {}", frames_snap, frames_after);
+    CHECK(frames_after > frames_snap);
+
+    // JSONL 文件存在且每行合法 JSON，含真实传感器字段
+    REQUIRE(std::filesystem::exists(hw::kHealthJsonlPath));
+    {
+        std::ifstream ifs(hw::kHealthJsonlPath);
+        REQUIRE(ifs.is_open());
+
+        int line_count = 0;
+        std::string line;
+        while (std::getline(ifs, line)) {
+            if (line.empty()) continue;
+            ++line_count;
+            nlohmann::json j;
+            REQUIRE_NOTHROW(j = nlohmann::json::parse(line));
+            REQUIRE(j.contains("walk"));
+            REQUIRE(j.contains("bms"));
+            REQUIRE(j.contains("imu"));
+            CHECK(j["walk"].contains("ctrl_frames"));
+            CHECK(j["bms"].contains("soc"));
+            CHECK(j["imu"].contains("pitch"));
+
+            spdlog::info("[hw_system][combined] JSONL #{}: soc={:.1f}% volt={:.2f}V "
+                         "ctrl_frames={}",
+                         line_count,
+                         j["bms"]["soc"].get<float>(),
+                         j["bms"]["voltage"].get<float>(),
+                         j["walk"]["ctrl_frames"].get<uint32_t>());
+        }
+        CHECK(line_count == 3);
+    }
+
+    // IMU 数据（记录，不断言有效性，IMU 可能未完全就绪）
+    auto ld = f.imu->get_latest();
+    spdlog::info("[hw_system][combined] IMU valid={} pitch={:.2f}° roll={:.2f}°",
+                 ld.valid, ld.pitch_deg, ld.roll_deg);
+
+    // 任务期间无异常故障
+    CHECK(f.dispatched_faults.empty());
+
+    std::filesystem::remove(hw::kHealthJsonlPath);
+    spdlog::info("[hw_system][combined] PASS");
+}
 TEST_CASE("System（真实硬件）WatchdogMgr 正常心跳 1s 不触发超时",
           "[hw_system][watchdog_heartbeat]") {
     hw::FullSystemFixture f;

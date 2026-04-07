@@ -47,6 +47,7 @@
 #include "pv_cleaning_robot/service/nav_service.h"
 
 // App
+#include "pv_cleaning_robot/app/fault_handler.h"
 #include "pv_cleaning_robot/app/robot_fsm.h"
 #include "pv_cleaning_robot/app/watchdog_mgr.h"
 
@@ -134,6 +135,8 @@ struct FullSystemFixture : DeviceFixture {
     std::shared_ptr<robot::service::HealthService>    health;  ///< null cloud，本地 JSONL 落盘
     std::unique_ptr<robot::app::WatchdogMgr>          watchdog;
     std::shared_ptr<robot::app::RobotFsm>             fsm;
+    std::shared_ptr<robot::app::FaultHandler>         fault_handler;
+    std::vector<robot::service::FaultService::FaultEvent> dispatched_faults;
 
     /// @param pid_enabled 是否开启航向 PID（clean_cycle 测试按场景传入）
     explicit FullSystemFixture(bool pid_enabled = false) : DeviceFixture() {
@@ -180,13 +183,15 @@ struct FullSystemFixture : DeviceFixture {
                     fsm->dispatch(app::EvRearLimitSettled{});
             });
 
-        // FaultEvent → RobotFsm
-        event_bus.subscribe<service::FaultService::FaultEvent>(
-            [this](const service::FaultService::FaultEvent& evt) {
+        // FaultHandler: P0→emergency_stop+EvFaultP0，P1→stop+EvFaultP1；同时记录 dispatched_faults
+        fault_handler = std::make_shared<app::FaultHandler>(
+            motion, event_bus,
+            [this](service::FaultService::FaultEvent e) {
+                dispatched_faults.push_back(e);
                 using Level = service::FaultService::FaultEvent::Level;
-                if (evt.level == Level::P0)
+                if (e.level == Level::P0)
                     fsm->dispatch(app::EvFaultP0{});
-                else if (evt.level == Level::P1)
+                else if (e.level == Level::P1)
                     fsm->dispatch(app::EvFaultP1{});
             });
     }
@@ -219,6 +224,7 @@ struct FullSystemFixture : DeviceFixture {
             return false;
         }
         watchdog->start();
+        fault_handler->start_listening();
         start_loops_();
 
         // HealthService 在硬件 open 之后构造，保证传感器缓存已就绪
