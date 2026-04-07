@@ -8,6 +8,8 @@
  *
  * Copyright (c) 2026 by UncleDrew, All Rights Reserved.
  */
+#include <chrono>
+#include <ctime>
 #include <filesystem>
 #include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
@@ -40,7 +42,8 @@ HealthService::HealthService(std::shared_ptr<device::WalkMotorGroup> walk,
     // 预建 JSON 键树：键名字符串只分配一次，后续 update() 只改数值
     if (mode_ == Mode::HEALTH) {
         // HEALTH 模式：精简字段（avg rpm/current/fault + 温度）
-        j_ = {{"walk",    {{"rpm", 0.0f}, {"current", 0.0f}, {"fault", false}, {"temp", 0.0f}}},
+        j_ = {{"ts",   ""},
+              {"walk",    {{"rpm", 0.0f}, {"current", 0.0f}, {"fault", false}, {"temp", 0.0f}}},
               {"brush",   {{"running", false}, {"fault", false}}},
               {"battery", {{"soc", 0.0f}, {"voltage", 0.0f}, {"charging", false}, {"alarm", false}}},
               {"imu",     {{"pitch", 0.0f}, {"roll", 0.0f}, {"valid", false}}},
@@ -49,7 +52,8 @@ HealthService::HealthService(std::shared_ptr<device::WalkMotorGroup> walk,
         // DIAGNOSTICS 模式：每轮独立诊断字段
         nlohmann::json wdummy = {{"rpm",0.0f},{"target",0.0f},{"current",0.0f},
                                   {"can_err",0},{"fault",false},{"fault_code",0},{"online",false}};
-        j_ = {{"walk",
+        j_ = {{"ts",   ""},
+              {"walk",
                {{"lt", wdummy}, {"rt", wdummy}, {"lb", wdummy}, {"rb", wdummy},
                 {"temp", 0.0f}, {"ctrl_frames", 0u}, {"ctrl_err", 0u}}},
               {"brush",
@@ -84,6 +88,14 @@ void HealthService::update() {
 }
 
 std::string HealthService::build_payload() const {
+    // ISO 8601 UTC 时间戳（build_payload 单线程调用，gmtime 无竞争）
+    {
+        auto tt = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+        char buf[24];
+        std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", std::gmtime(&tt));
+        j_["ts"] = buf;
+    }
+
     if (mode_ == Mode::DIAGNOSTICS) {
         // ── 完整诊断模式：每轮独立字段 ────────────────────────
         auto gd  = walk_->get_group_diagnostics();

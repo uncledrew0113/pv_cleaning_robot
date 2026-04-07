@@ -73,8 +73,9 @@ constexpr char     kGpioChip[] = "gpiochip5";
 constexpr unsigned kFrontLine  = 0u;
 constexpr unsigned kRearLine   = 1u;
 
-constexpr int kLimitTimeoutSec = 60;   ///< 等待限位最大秒数（全流程）
-constexpr int kOnlineTimeoutMs = 600;  ///< 等待电机上线最大毫秒数
+constexpr int kLimitTimeoutSec  = 60;   ///< 每段（单一限位）等待最大秒数
+constexpr int kOnlineTimeoutMs  = 600;  ///< 等待电机上线最大毫秒数
+constexpr float kCombinedPasses = 1.0f; ///< combined 测试趟数（1=一来回，2=两来回…）
 
 constexpr char kHealthJsonlPath[] = "/tmp/hw_system_test_health.jsonl"; ///< HealthService JSONL 落盘路径
 
