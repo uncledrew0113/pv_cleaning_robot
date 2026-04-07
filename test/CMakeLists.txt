@@ -120,6 +120,9 @@ add_executable(hw_tests
   integration/hardware/bms_hw_test.cc
   integration/hardware/imu_hw_test.cc
   integration/hardware/full_sweep_hw_test.cc
+  integration/hardware/limit_switch_hw_test.cc
+  integration/hardware/walk_motor_group_hw_test.cc
+  integration/hardware/clean_cycle_hw_test.cc
 
   ${COMMON_SRCS}
 )
