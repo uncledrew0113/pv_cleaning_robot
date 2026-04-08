@@ -13,7 +13,7 @@ static constexpr uint8_t TYPE_MAG = 0x54;
 static constexpr uint8_t TYPE_QUAT = 0x59;
 
 // 量化因子
-static constexpr float ACCEL_SCALE = 16.0f * 9.8f / 32768.0f;  // mg→m/s²
+static constexpr float ACCEL_SCALE = 16.0f * 9.8f / 32768.0f;  // ±16g 满量程 → m/s²
 static constexpr float GYRO_SCALE = 2000.0f / 32768.0f;        // →deg/s
 static constexpr float ANGLE_SCALE = 180.0f / 32768.0f;        // →deg
 static constexpr float MAG_SCALE = 1.0f;                       // uT (raw)
