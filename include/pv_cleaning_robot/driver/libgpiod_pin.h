@@ -16,7 +16,7 @@
 #include <string>
 #include <thread>
 
-#include "pv_cleaning_robot/driver/pi_mutex.h"
+#include "pv_cleaning_robot/hal/pi_mutex.h"
 #include "pv_cleaning_robot/hal/i_gpio_pin.h"
 
 // 前置声明，避免暴露 libgpiod C 类型
@@ -74,7 +74,7 @@ class LibGpiodPin final : public hal::IGpioPin {
 
     // RT 优先级继承互斥量：防止主线程（低优先级）持锁时，
     // GPIO 监控线程（高 RT 优先级）被阻塞而引发优先级反转。
-    PiMutex cb_mutex_;
+    hal::PiMutex cb_mutex_;
     // 软件消抖状态
     std::chrono::steady_clock::time_point last_event_time_;
 };

@@ -14,7 +14,7 @@
 #include <memory>
 #include <string>
 
-#include "pv_cleaning_robot/driver/pi_mutex.h"
+#include "pv_cleaning_robot/hal/pi_mutex.h"
 #include "pv_cleaning_robot/hal/i_gpio_pin.h"
 
 namespace robot::device {
