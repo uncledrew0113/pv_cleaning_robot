@@ -41,16 +41,16 @@ HealthService::HealthService(std::shared_ptr<device::WalkMotorGroup> walk,
     }
     // 预建 JSON 键树：键名字符串只分配一次，后续 update() 只改数值
     if (mode_ == Mode::HEALTH) {
-        // HEALTH 模式：精简字段（avg rpm/current/fault + 温度）
+        // HEALTH 模式：精简字段（avg rpm/torque_a/fault + 温度）
         j_ = {{"ts",   ""},
-              {"walk",    {{"rpm", 0.0f}, {"current", 0.0f}, {"fault", false}, {"temp", 0.0f}}},
+              {"walk",    {{"rpm", 0.0f}, {"torque_a", 0.0f}, {"fault", false}, {"temp", 0.0f}}},
               {"brush",   {{"running", false}, {"fault", false}}},
               {"battery", {{"soc", 0.0f}, {"voltage", 0.0f}, {"charging", false}, {"alarm", false}}},
               {"imu",     {{"pitch", 0.0f}, {"roll", 0.0f}, {"valid", false}}},
               {"gps",     {{"lat", 0.0}, {"lon", 0.0}, {"fix", 0}, {"valid", false}}}};
     } else {
         // DIAGNOSTICS 模式：每轮独立诊断字段
-        nlohmann::json wdummy = {{"rpm",0.0f},{"target",0.0f},{"current",0.0f},
+        nlohmann::json wdummy = {{"rpm",0.0f},{"target",0.0f},{"torque_a",0.0f},
                                   {"can_err",0},{"fault",false},{"fault_code",0},{"online",false}};
         j_ = {{"ts",   ""},
               {"walk",
@@ -110,7 +110,7 @@ std::string HealthService::build_payload() const {
             auto& wd = gd.wheel[i];
             j_["walk"][kWn[i]]["rpm"]        = wd.speed_rpm;
             j_["walk"][kWn[i]]["target"]     = wd.target_value;
-            j_["walk"][kWn[i]]["current"]    = wd.torque_a;
+            j_["walk"][kWn[i]]["torque_a"]   = wd.torque_a;
             j_["walk"][kWn[i]]["can_err"]    = wd.can_err_count;
             j_["walk"][kWn[i]]["fault"]      = (wd.fault != protocol::WalkMotorFault::NONE);
             j_["walk"][kWn[i]]["fault_code"] = static_cast<int>(wd.fault);
@@ -178,7 +178,7 @@ std::string HealthService::build_payload() const {
         avg_torque /= static_cast<float>(device::WalkMotorGroup::kWheelCount);
 
         j_["walk"]["rpm"]     = avg_rpm;
-        j_["walk"]["current"] = avg_torque;
+        j_["walk"]["torque_a"] = avg_torque;
         j_["walk"]["fault"]   = any_fault;
         j_["walk"]["temp"]    = 0.0f;  // 温度查询尚未实现，占位
 
