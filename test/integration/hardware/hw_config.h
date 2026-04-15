@@ -23,12 +23,14 @@
 
 // Driver
 #include "pv_cleaning_robot/driver/libgpiod_pin.h"
+#include "pv_cleaning_robot/driver/libmodbus_master.h"
 #include "pv_cleaning_robot/driver/libserialport_port.h"
 #include "pv_cleaning_robot/driver/linux_can_socket.h"
 
 // Device
 #include "pv_cleaning_robot/device/bms.h"
 #include "pv_cleaning_robot/device/brush_motor.h"
+#include "pv_cleaning_robot/device/distance_sensor.h"
 #include "pv_cleaning_robot/device/gps_device.h"
 #include "pv_cleaning_robot/device/imu_device.h"
 #include "pv_cleaning_robot/device/limit_switch.h"
@@ -138,6 +140,8 @@ struct FullSystemFixture : DeviceFixture {
     std::shared_ptr<robot::service::MotionService> motion;
     std::shared_ptr<robot::service::FaultService> fault;
     std::shared_ptr<robot::service::HealthService> health;  ///< null cloud，本地 JSONL 落盘
+    std::shared_ptr<robot::driver::LibModbusMaster> dist_modbus;  ///< 距离传感器 Modbus RTU 主站
+    std::shared_ptr<robot::device::DistanceSensor>  dist_sensor;  ///< 距离传感器（可选）
     std::unique_ptr<robot::app::WatchdogMgr> watchdog;
     std::shared_ptr<robot::app::RobotFsm> fsm;
     std::shared_ptr<robot::app::FaultHandler> fault_handler;
@@ -233,6 +237,31 @@ struct FullSystemFixture : DeviceFixture {
         // HealthService 在硬件 open 之后构造，保证传感器缓存已就绪
         if (!health_jsonl_path.empty()) {
             std::filesystem::remove(health_jsonl_path);  // 清旧文件，open() 创建新文件
+
+            // 距离传感器（Modbus RTU 9600-8-N-1，可选，打开失败则 nullptr 传入 HealthService）
+            dist_modbus = std::make_shared<robot::driver::LibModbusMaster>(
+                kDistSensorPort, robot::hal::ModbusConfig{kDistSensorBaud, 'N', 8, 1});
+            if (dist_modbus->open()) {
+                robot::device::DistanceSensorConfig dist_cfg;
+                dist_cfg.slave_id      = kDistSensorSlaveId;
+                dist_cfg.channel_count = kDistSensorChannelCount;
+                dist_sensor = std::make_shared<robot::device::DistanceSensor>(dist_modbus, dist_cfg);
+                if (!dist_sensor->open())
+                    spdlog::warn("[FullSystemFixture] 距离传感器 open 失败，数据不可用");
+                else {
+                    spdlog::info("[FullSystemFixture] 距离传感器已打开: {}", kDistSensorPort);
+                    // 启动 100ms 轮询线程更新距离传感器缓存
+                    dist_update_thread_ = std::thread([this] {
+                        while (loops_running_.load()) {
+                            dist_sensor->update();
+                            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                        }
+                    });
+                }
+            } else {
+                spdlog::warn("[FullSystemFixture] 距离传感器 Modbus 打开失败，传感器不可用");
+            }
+
             health = std::make_shared<robot::service::HealthService>(
                 walk_group,
                 brush,
@@ -241,7 +270,8 @@ struct FullSystemFixture : DeviceFixture {
                 gps_dummy,
                 nullptr,  // cloud = null，不需要 MQTT/LoRaWAN
                 robot::service::HealthService::Mode::DIAGNOSTICS,
-                health_jsonl_path);
+                health_jsonl_path,
+                dist_sensor);  // 距离传感器（可选）
             spdlog::info("[FullSystemFixture] HealthService 已创建: {}", health_jsonl_path);
         }
 
@@ -277,6 +307,7 @@ struct FullSystemFixture : DeviceFixture {
    private:
     std::thread walk_ctrl_thread_;
     std::thread nav_exec_thread_;
+    std::thread dist_update_thread_;  ///< 距离传感器轮询线程（可选）
     std::atomic<bool> loops_running_{false};
 
     void start_loops_() {
@@ -301,6 +332,8 @@ struct FullSystemFixture : DeviceFixture {
             walk_ctrl_thread_.join();
         if (nav_exec_thread_.joinable())
             nav_exec_thread_.join();
+        if (dist_update_thread_.joinable())
+            dist_update_thread_.join();
     }
 };
 

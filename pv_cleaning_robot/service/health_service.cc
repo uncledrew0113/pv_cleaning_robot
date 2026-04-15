@@ -25,12 +25,14 @@ HealthService::HealthService(std::shared_ptr<device::WalkMotorGroup> walk,
                              std::shared_ptr<device::GpsDevice>      gps,
                              std::shared_ptr<CloudService>           cloud,
                              Mode                                    mode,
-                             std::string                             local_log_path)
+                             std::string                             local_log_path,
+                             std::shared_ptr<device::DistanceSensor> dist)
     : walk_(std::move(walk))
     , brush_(std::move(brush))
     , bms_(std::move(bms))
     , imu_(std::move(imu))
     , gps_(std::move(gps))
+    , dist_(std::move(dist))
     , cloud_(std::move(cloud))
     , mode_(mode) {
     // 本地 JSONL 日志文件（仅 local_log_path 非空时开启，独立于 MQTT/LoRaWAN）
@@ -70,6 +72,22 @@ HealthService::HealthService(std::shared_ptr<device::WalkMotorGroup> walk,
               {"gps",
                {{"lat", 0.0}, {"lon", 0.0}, {"alt", 0.0f}, {"speed", 0.0f},
                 {"sats", 0}, {"hdop", 0.0f}, {"fix", 0}, {"sentences", 0}}}};
+    }
+
+    // 距离传感器字段（可选：仅当 dist_ 非空时追加到 j_）
+    if (dist_) {
+        const uint8_t n_ch = dist_->get_data().channel_count;
+        if (mode_ == Mode::HEALTH) {
+            nlohmann::json ch_arr = nlohmann::json::array();
+            for (uint8_t i = 0; i < n_ch; ++i)
+                ch_arr.push_back(0.0f);
+            j_["dist"] = {{"valid", false}, {"ch", std::move(ch_arr)}};
+        } else {
+            nlohmann::json ch_arr = nlohmann::json::array();
+            for (uint8_t i = 0; i < n_ch; ++i)
+                ch_arr.push_back({{"v", 0.0f}, {"ma", 0.0f}, {"ok", false}});
+            j_["dist"] = {{"valid", false}, {"ch", std::move(ch_arr)}, {"comm_errors", 0u}};
+        }
     }
 }
 
@@ -158,6 +176,20 @@ std::string HealthService::build_payload() const {
         j_["gps"]["hdop"]      = gps.hdop;
         j_["gps"]["fix"]       = gps.fix_quality;
         j_["gps"]["sentences"] = gps.sentence_count;
+
+        // 距离传感器（可选）
+        if (dist_) {
+            const auto dd = dist_->get_data();
+            bool any_valid = false;
+            for (uint8_t i = 0; i < dd.channel_count; ++i) {
+                j_["dist"]["ch"][i]["v"]  = dd.channels[i].value_v;
+                j_["dist"]["ch"][i]["ma"] = dd.channels[i].value_ma;
+                j_["dist"]["ch"][i]["ok"] = dd.channels[i].valid;
+                any_valid |= dd.channels[i].valid;
+            }
+            j_["dist"]["valid"]       = any_valid;
+            j_["dist"]["comm_errors"] = dd.error_count;
+        }
     } else {
         // ── 精简健康模式：4轮平均状态 ────────────────────────
         auto gs  = walk_->get_group_status();
@@ -198,6 +230,17 @@ std::string HealthService::build_payload() const {
         j_["gps"]["lon"]   = gps.longitude;
         j_["gps"]["fix"]   = gps.fix_quality;
         j_["gps"]["valid"] = gps.valid;
+
+        // 距离传感器（可选）
+        if (dist_) {
+            const auto dd = dist_->get_data();
+            bool any_valid = false;
+            for (uint8_t i = 0; i < dd.channel_count; ++i) {
+                j_["dist"]["ch"][i] = dd.channels[i].value_v;
+                any_valid |= dd.channels[i].valid;
+            }
+            j_["dist"]["valid"] = any_valid;
+        }
     }
     return j_.dump();
 }

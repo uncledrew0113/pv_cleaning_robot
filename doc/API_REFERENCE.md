@@ -1196,7 +1196,8 @@ public:
                   shared_ptr<BmsDevice>, shared_ptr<ImuDevice>,
                   shared_ptr<GpsDevice>, shared_ptr<CloudService>,
                   Mode        mode            = Mode::HEALTH,
-                  std::string local_log_path  = "");  ///< 本地 JSONL 路径（可选）
+                  std::string local_log_path  = "",
+                  shared_ptr<DistanceSensor>  dist = nullptr);  ///< 距离传感器（可选）
 };
 ```
 
@@ -1218,13 +1219,27 @@ public:
 
 HEALTH 模式（精简）示例：
 ```json
-{"ts":"2026-04-07T10:00:00Z","walk":{"rpm":-28.5,"torque_a":1.2,"fault":false,"temp":0.0},"brush":{"running":true,"fault":false},"battery":{"soc":82.5,"voltage":48.2,"charging":false,"alarm":false},"imu":{"pitch":2.1,"roll":0.3,"valid":true},"gps":{"lat":0.0,"lon":0.0,"fix":0,"valid":false}}
+{"ts":"2026-04-07T10:00:00Z","walk":{"rpm":-28.5,"torque_a":1.2,"fault":false,"temp":0.0},"brush":{"running":true,"fault":false},"battery":{"soc":82.5,"voltage":48.2,"charging":false,"alarm":false},"imu":{"pitch":2.1,"roll":0.3,"valid":true},"gps":{"lat":0.0,"lon":0.0,"fix":0,"valid":false},"dist":{"valid":true,"ch":[12.076,11.952,12.103,11.886]}}
 ```
 
 DIAGNOSTICS 模式（完整）示例（截取 walk 节）：
 ```json
-{"ts":"2026-04-07T10:00:01Z","walk":{"lt":{"rpm":-28.5,"target":-30.0,"torque_a":1.2,"can_err":0,"fault":false,"fault_code":0,"online":true},"rt":{"rpm":-29.1,"target":-30.0,"torque_a":1.1,"can_err":0,"fault":false,"fault_code":0,"online":true},"lb":{"rpm":28.7,"target":30.0,"torque_a":1.3,"can_err":0,"fault":false,"fault_code":0,"online":true},"rb":{"rpm":29.0,"target":30.0,"torque_a":1.2,"can_err":0,"fault":false,"fault_code":0,"online":true},"temp":0.0,"ctrl_frames":1240,"ctrl_err":0},"bms":{"soc":82.5,"voltage":48.2,"current":-2.5,"temp":31.0,...}}
+{"ts":"2026-04-07T10:00:01Z","walk":{"lt":{"rpm":-28.5,"target":-30.0,"torque_a":1.2,"can_err":0,"fault":false,"fault_code":0,"online":true},"rt":{"rpm":-29.1,"target":-30.0,"torque_a":1.1,"can_err":0,"fault":false,"fault_code":0,"online":true},"lb":{"rpm":28.7,"target":30.0,"torque_a":1.3,"can_err":0,"fault":false,"fault_code":0,"online":true},"rb":{"rpm":29.0,"target":30.0,"torque_a":1.2,"can_err":0,"fault":false,"fault_code":0,"online":true},"temp":0.0,"ctrl_frames":1240,"ctrl_err":0},"bms":{"soc":82.5,"voltage":48.2,"current":-2.5,"temp":31.0,...},"dist":{"valid":true,"ch":[{"v":12.076,"ma":48.5,"ok":true},{"v":11.952,"ma":47.998,"ok":true},{"v":12.103,"ma":48.6,"ok":true},{"v":11.886,"ma":47.726,"ok":true}],"comm_errors":0}}
 ```
+
+**`dist` 字段说明**：
+
+| 模式 | 字段 | 类型 | 说明 |
+|------|------|------|------|
+| HEALTH | `dist.valid` | bool | `true`：至少一个通道读取成功 |
+| HEALTH | `dist.ch[N]` | float 数组 | 各通道电压值（V），无效通道输出 0.0 |
+| DIAGNOSTICS | `dist.valid` | bool | 同上 |
+| DIAGNOSTICS | `dist.ch[N].v` | float | 通道电压（V） |
+| DIAGNOSTICS | `dist.ch[N].ma` | float | 换算电流（mA），电流型有效；电压型为 0 |
+| DIAGNOSTICS | `dist.ch[N].ok` | bool | 本帧该通道是否成功读取 |
+| DIAGNOSTICS | `dist.comm_errors` | uint | 累计 Modbus 通信错误次数 |
+
+> **注意**：`dist_sensor` 为 `nullptr`（未连接或串口打开失败）时，JSONL 中**不含**`dist` 字段。
 
 > **重要区别**：`walk.*.torque_a` 是 CAN 状态帧解码的 Q轴转矩相电流（±33 A），
 > 反映电机转矩大小，**不是**直流母线电流，**不可**与 `bms.current`（电池包总电流，A）
