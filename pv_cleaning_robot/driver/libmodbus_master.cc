@@ -180,6 +180,19 @@ int LibModbusMaster::read_registers(int slave_id, int addr, int count, uint16_t*
     });
 }
 
+int LibModbusMaster::read_input_registers(int slave_id, int addr, int count, uint16_t* out) {
+    // FC04 单次最多读取 125 个输入寄存器（Modbus 规范上限）
+    if (!out || addr < 0 || count <= 0 || count > 125) {
+        spdlog::warn(
+            "[LibModbusMaster] read_input_registers invalid args: addr={} count={}", addr, count);
+        last_error_.store(hal::ModbusResult::SYS_ERROR);
+        return -1;
+    }
+    return execute_with_retry(slave_id, "read_input_registers", [&]() {
+        return modbus_read_input_registers(ctx_, addr, count, out);
+    });
+}
+
 int LibModbusMaster::write_register(int slave_id, int addr, uint16_t val) {
     if (addr < 0) {
         spdlog::warn("[LibModbusMaster] write_register invalid addr={}", addr);

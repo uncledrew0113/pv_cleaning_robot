@@ -23,6 +23,7 @@ class LibModbusMaster final : public hal::IModbusMaster {
     bool is_open() const override;
 
     int read_registers(int slave_id, int addr, int count, uint16_t* out) override;
+    int read_input_registers(int slave_id, int addr, int count, uint16_t* out) override;
     int write_register(int slave_id, int addr, uint16_t val) override;
     int write_registers(int slave_id, int addr, int count, const uint16_t* vals) override;
 

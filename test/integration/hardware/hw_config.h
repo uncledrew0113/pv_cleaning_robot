@@ -59,14 +59,19 @@ namespace hw {
 constexpr char kCanIface[] = "can0";
 constexpr uint8_t kMotorIdBase = 1u;
 constexpr uint16_t kCommTimeoutMs = 500u;  ///< update 50ms × 10 倍余量
-constexpr float kTestSpeedRpm = 20.0f;     ///< 安全低速（测试专用）
-constexpr float kTestReturnRpm = 20.0f;
+constexpr float kTestSpeedRpm = 30.0f;     ///< 安全低速（测试专用）
+constexpr float kTestReturnRpm = 30.0f;
 
 constexpr char kImuPort[] = "/dev/ttyS1";
 constexpr int kImuBaud = 9600;
 
 constexpr char kBmsPort[] = "/dev/ttyS8";
 constexpr int kBmsBaud = 9600;
+
+constexpr char kDistSensorPort[]     = "/dev/ttyS4";  ///< 距离传感器 RS485 串口
+constexpr int  kDistSensorBaud       = 9600;
+constexpr int  kDistSensorSlaveId    = 1;
+constexpr uint8_t kDistSensorChannelCount = 4;
 
 constexpr char kGpioChip[] = "gpiochip5";
 constexpr unsigned kFrontLine = 0u;

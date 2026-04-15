@@ -59,6 +59,10 @@ class IModbusMaster {
     /// @return 读取的寄存器数；-1 表示失败
     virtual int read_registers(int slave_id, int addr, int count, uint16_t* out) = 0;
 
+    /// @brief 读取输入寄存器（功能码 0x04）
+    /// @return 读取的寄存器数；-1 表示失败
+    virtual int read_input_registers(int slave_id, int addr, int count, uint16_t* out) = 0;
+
     /// @brief 写单个保持寄存器（功能码 0x06）
     /// @return 0 成功；-1 失败
     virtual int write_register(int slave_id, int addr, uint16_t val) = 0;

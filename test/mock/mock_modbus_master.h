@@ -13,7 +13,8 @@ struct MockModbusMaster : robot::hal::IModbusMaster {
     robot::hal::ModbusResult injected_error{robot::hal::ModbusResult::OK};
 
     // ── 模拟寄存器存储 ─────────────────────────────────────
-    std::map<int, uint16_t> registers;  // addr -> value
+    std::map<int, uint16_t> registers;        // FC03 保持寄存器 addr -> value
+    std::map<int, uint16_t> input_registers;  // FC04 输入寄存器 addr -> value
 
     // ── 调用记录 ───────────────────────────────────────────
     bool opened{false};
@@ -32,6 +33,19 @@ struct MockModbusMaster : robot::hal::IModbusMaster {
         for (int i = 0; i < count; ++i) {
             auto it = registers.find(addr + i);
             out[i] = (it != registers.end()) ? it->second : 0;
+        }
+        injected_error = robot::hal::ModbusResult::OK;
+        return count;
+    }
+
+    int read_input_registers(int /*slave*/, int addr, int count, uint16_t* out) override {
+        if (read_reg_return < 0) {
+            injected_error = robot::hal::ModbusResult::TIMEOUT;
+            return -1;
+        }
+        for (int i = 0; i < count; ++i) {
+            auto it = input_registers.find(addr + i);
+            out[i] = (it != input_registers.end()) ? it->second : 0;
         }
         injected_error = robot::hal::ModbusResult::OK;
         return count;

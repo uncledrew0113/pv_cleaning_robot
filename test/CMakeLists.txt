@@ -11,6 +11,7 @@ set(COMMON_SRCS
   ${PROJ}/protocol/imu_protocol.cc
   ${PROJ}/protocol/walk_motor_can_codec.cc
   ${PROJ}/protocol/nmea_parser.cc
+  ${PROJ}/protocol/distance_sensor_protocol.cc
 
   # 设备层
   ${PROJ}/device/bms.cc
@@ -19,6 +20,7 @@ set(COMMON_SRCS
   ${PROJ}/device/walk_motor_group.cc
   ${PROJ}/device/brush_motor.cc
   ${PROJ}/device/limit_switch.cc
+  ${PROJ}/device/distance_sensor.cc
 
   # 驱动层
   ${PROJ}/driver/libmodbus_master.cc
@@ -60,6 +62,7 @@ add_executable(unit_tests
   protocol/imu_protocol_test.cc
   protocol/walk_motor_codec_test.cc
   protocol/nmea_parser_test.cc
+  protocol/distance_sensor_protocol_test.cc
 
   # 设备层
   device/bms_device_test.cc
@@ -68,6 +71,7 @@ add_executable(unit_tests
   device/brush_motor_test.cc
   device/limit_switch_test.cc
   device/gps_device_test.cc
+  device/distance_sensor_device_test.cc
 
   # 驱动层（纯软件路径，无需真实硬件即可运行）
   driver/pi_mutex_test.cc
@@ -124,6 +128,7 @@ add_executable(hw_tests
   integration/hardware/walk_motor_group_hw_test.cc
   integration/hardware/clean_cycle_hw_test.cc
   integration/hardware/system_hw_test.cc
+  integration/hardware/distance_sensor_hw_test.cc
 
   ${COMMON_SRCS}
 )
