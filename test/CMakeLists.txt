@@ -55,7 +55,6 @@ set(COMMON_SRCS
 # ── 单元测试可执行文件（纯软件路径，无需真实硬件） ──────────────────────
 add_executable(unit_tests
   test_main.cc
-  test_base.cc
   # 协议层
   protocol/bms_protocol_test.cc
   protocol/bms2_protocol_test.cc
@@ -74,6 +73,7 @@ add_executable(unit_tests
   device/distance_sensor_device_test.cc
 
   # 驱动层（纯软件路径，无需真实硬件即可运行）
+  driver/lockfree_queue_test.cc
   driver/pi_mutex_test.cc
   driver/libgpiod_pin_test.cc
   driver/linux_can_socket_test.cc
