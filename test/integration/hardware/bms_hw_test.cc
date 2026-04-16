@@ -4,12 +4,12 @@
  * 测试分组：
  *   [protocol][bms]    - BmsProtocol 编码 / 解码 / 帧解析（纯内存，无 I/O）
  *   [device][bms]      - BMS 设备层（基于 BmsMockSerial，不依赖真实硬件）
- *   [integration][bms] - BMS 与真实 /dev/ttyS8 的硬件集成测试（须在目标机上运行）
+ *   [hw_bms]           - BMS 硬件集成测试（须在目标机上运行）
  *
  * 运行方法（交叉编译后在目标机上）：
  *   ./unit_tests "[protocol][bms]"    # 只跑协议层单元测试
  *   ./unit_tests "[device][bms]"      # 只跑设备层 mock 测试
- *   ./unit_tests "[integration][bms]" # 只跑硬件集成测试（需接 ttyS8 BMS）
+ *   ./hw_tests "[hw_bms]"             # 只跑硬件集成测试（需接 BMS 设备）
  */
 #include <algorithm>
 #include <catch2/catch.hpp>
@@ -25,6 +25,9 @@
 #include "pv_cleaning_robot/device/bms.h"
 #include "pv_cleaning_robot/driver/libserialport_port.h"
 #include "pv_cleaning_robot/protocol/bms_protocol.h"
+#include "hw_config.h"
+
+static const hw::HwParams kp = hw::load_hw_test_config();
 
 using namespace robot;
 
@@ -172,17 +175,17 @@ static void register_version(BmsMockSerial& mock, const std::string& ver = "V1.0
 //  Part 1: BmsProtocol 编码测试
 // ═══════════════════════════════════════════════════════════════════════════
 
-TEST_CASE("BMS 集成测试 - ttyS8 串口连接与数据读取", "[integration][bms]") {
+TEST_CASE("BMS 集成测试 - ttyS8 串口连接与数据读取", "[hw_bms]") {
     using namespace std::chrono_literals;
 
     hal::UartConfig cfg;
-    cfg.baudrate = 9600;
+    cfg.baudrate = kp.bms_baud;
     cfg.data_bits = 8;
     cfg.parity = 'N';
     cfg.stop_bits = 1;
     cfg.write_timeout_ms = 500;
 
-    auto serial = std::make_shared<driver::LibSerialPort>("/dev/ttyS8", cfg);
+    auto serial = std::make_shared<driver::LibSerialPort>(kp.bms_port, cfg);
     device::BMS bms(serial, 95.0f, 15.0f);
 
     SECTION("串口打开与 BMS 首次握手") {

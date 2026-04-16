@@ -4,12 +4,12 @@
  * 测试分组：
  *   [protocol][imu]    - ImuProtocol 帧解析 / 命令编码（纯内存，无 I/O）
  *   [device][imu]      - ImuDevice 设备层（基于 MockSerialPort，不依赖真实硬件）
- *   [integration][imu] - ImuDevice 与真实 /dev/ttyS1 的硬件集成测试（须在目标机上运行）
+ *   [hw_imu]           - ImuDevice 硬件集成测试（须在目标机上运行）
  *
  * 运行方法（交叉编译后在目标机上）：
  *   ./unit_tests "[protocol][imu]"    # 只跑协议层单元测试
  *   ./unit_tests "[device][imu]"      # 只跑设备层 mock 测试
- *   ./unit_tests "[integration][imu]" # 只跑硬件集成测试（需接 IMU 设备）
+ *   ./hw_tests "[hw_imu]"             # 只跑硬件集成测试（需接 IMU 设备）
  *
  * 帧格式：
  *   [0x55][type][d0L][d0H][d1L][d1H][d2L][d2H][d3L][d3H][SUM]  共 11 字节
@@ -35,6 +35,9 @@
 #include "pv_cleaning_robot/device/imu_device.h"
 #include "pv_cleaning_robot/driver/libserialport_port.h"
 #include "pv_cleaning_robot/protocol/imu_protocol.h"
+#include "hw_config.h"
+
+static const hw::HwParams kp = hw::load_hw_test_config();
 
 using namespace robot;
 
@@ -93,17 +96,17 @@ static std::vector<uint8_t> frame_to_vec(const std::array<uint8_t, 11>& f) {
 //  Part 1：协议层 - 帧解析
 // ═══════════════════════════════════════════════════════════════════════════
 
-TEST_CASE("集成测试 - /dev/ttyS1 读取真实 IMU 欧拉角", "[integration][imu]") {
+TEST_CASE("集成测试 - IMU 读取真实欧拉角", "[hw_imu]") {
     using namespace robot;
 
     hal::UartConfig cfg;
-    cfg.baudrate = 9600;
+    cfg.baudrate = kp.imu_baud;
 
-    auto serial = std::make_shared<driver::LibSerialPort>("/dev/ttyS1", cfg);
+    auto serial = std::make_shared<driver::LibSerialPort>(kp.imu_port, cfg);
     device::ImuDevice imu(serial);
 
     REQUIRE(imu.open());
-    INFO("已打开 /dev/ttyS1，等待 IMU 数据...");
+    INFO("已打开 IMU 串口，等待数据...");
 
     // 等待最多 2 秒收到有效帧
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
@@ -130,17 +133,17 @@ TEST_CASE("集成测试 - /dev/ttyS1 读取真实 IMU 欧拉角", "[integration]
     REQUIRE(diag.frame_count >= 1u);
 }
 
-TEST_CASE("集成测试 - /dev/ttyS1 连续读取 60 秒并打印数据", "[integration][imu][long]") {
+TEST_CASE("集成测试 - IMU 连续读取 60 秒并打印数据", "[hw_imu][long]") {
     using namespace std::chrono_literals;
 
     hal::UartConfig cfg;
-    cfg.baudrate = 9600;
+    cfg.baudrate = kp.imu_baud;
 
-    auto serial = std::make_shared<driver::LibSerialPort>("/dev/ttyS1", cfg);
+    auto serial = std::make_shared<driver::LibSerialPort>(kp.imu_port, cfg);
     device::ImuDevice imu(serial);
 
     REQUIRE(imu.open());
-    spdlog::info("[IMU 连续读取] 已打开 /dev/ttyS1，开始 60 秒数据采集...");
+    spdlog::info("[IMU 连续读取] 已打开 IMU 串口，开始 60 秒数据采集...");
     spdlog::info(
         "[IMU 连续读取] 格式: Roll(°)  Pitch(°)  Yaw(°) | "
         "Ax  Ay  Az(m/s²) | Wx  Wy  Wz(rad/s) | frames err");
