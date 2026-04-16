@@ -19,7 +19,7 @@
     "brush": { "port": "/dev/ttyS3", "baudrate": 9600, "slave_id": 1 },
     "bms":   { "port": "/dev/ttyS8", "baudrate": 9600   },
     "distance_sensor": {
-      "port":           "/dev/ttyS4",
+      "port":           "/dev/ttyS9",
       "baudrate":       9600,
       "slave_id":       1,
       "channel_count":  4,
