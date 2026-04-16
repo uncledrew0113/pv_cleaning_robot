@@ -105,42 +105,47 @@ inline HwParams load_hw_test_config() {
         spdlog::warn("[hw_config] hw_test_config.json not found — using built-in defaults");
         return p;
     }
-    robot::service::ConfigService cfg(path);
-    if (!cfg.load()) {
-        spdlog::warn("[hw_config] Failed to load {} — using built-in defaults", path);
-        return p;
+    try {
+        robot::service::ConfigService cfg(path);
+        if (!cfg.load()) {
+            spdlog::warn("[hw_config] Failed to load {} — using built-in defaults", path);
+            return p;
+        }
+        p.can_iface          = cfg.get<std::string>("hardware.can_iface",          p.can_iface);
+        p.motor_id_base      = static_cast<uint8_t>(cfg.get<int>("hardware.motor_id_base",      (int)p.motor_id_base));
+        p.comm_timeout_ms    = static_cast<uint16_t>(cfg.get<int>("timing.comm_timeout_ms",     (int)p.comm_timeout_ms));
+        p.imu_port           = cfg.get<std::string>("hardware.imu_port",           p.imu_port);
+        p.imu_baud           = cfg.get<int>        ("hardware.imu_baud",           p.imu_baud);
+        p.bms_port           = cfg.get<std::string>("hardware.bms_port",           p.bms_port);
+        p.bms_baud           = cfg.get<int>        ("hardware.bms_baud",           p.bms_baud);
+        p.dist_port          = cfg.get<std::string>("hardware.dist_port",          p.dist_port);
+        p.dist_baud          = cfg.get<int>        ("hardware.dist_baud",          p.dist_baud);
+        p.dist_slave_id      = static_cast<uint8_t>(cfg.get<int>("hardware.dist_slave_id",      (int)p.dist_slave_id));
+        p.dist_channel_count = static_cast<uint8_t>(cfg.get<int>("hardware.dist_channel_count", (int)p.dist_channel_count));
+        p.gpio_chip          = cfg.get<std::string>("hardware.gpio_chip",          p.gpio_chip);
+        p.front_limit_line   = static_cast<unsigned>(cfg.get<int>("hardware.front_limit_line",  (int)p.front_limit_line));
+        p.rear_limit_line    = static_cast<unsigned>(cfg.get<int>("hardware.rear_limit_line",   (int)p.rear_limit_line));
+        p.limit_timeout_sec  = cfg.get<int>        ("timing.limit_timeout_sec",    p.limit_timeout_sec);
+        p.online_timeout_ms  = cfg.get<int>        ("timing.online_timeout_ms",    p.online_timeout_ms);
+        p.sweep_duration_ms  = cfg.get<int>        ("timing.sweep_duration_ms",    p.sweep_duration_ms);
+        p.loop_period_ms     = cfg.get<int>        ("timing.loop_period_ms",       p.loop_period_ms);
+        p.test_speed_rpm     = cfg.get<float>      ("behavior.test_speed_rpm",     p.test_speed_rpm);
+        p.test_return_rpm    = cfg.get<float>      ("behavior.test_return_rpm",    p.test_return_rpm);
+        p.sweep_rpm          = cfg.get<float>      ("behavior.sweep_rpm",          p.sweep_rpm);
+        p.limit_test_rpm     = cfg.get<float>      ("behavior.limit_test_rpm",     p.limit_test_rpm);
+        p.combined_passes    = cfg.get<float>      ("behavior.combined_passes",    p.combined_passes);
+        p.health_jsonl_path  = cfg.get<std::string>("behavior.health_jsonl_path",  p.health_jsonl_path);
+        spdlog::debug("[hw_config] Loaded config: {}", path);
+    } catch (const std::exception& e) {
+        spdlog::warn("[hw_config] Exception loading config {}: {} — using built-in defaults",
+                     path, e.what());
     }
-    p.can_iface          = cfg.get<std::string>("hardware.can_iface",         p.can_iface);
-    p.motor_id_base      = static_cast<uint8_t>(cfg.get<int>("hardware.motor_id_base",     (int)p.motor_id_base));
-    p.comm_timeout_ms    = static_cast<uint16_t>(cfg.get<int>("timing.comm_timeout_ms",    (int)p.comm_timeout_ms));
-    p.imu_port           = cfg.get<std::string>("hardware.imu_port",          p.imu_port);
-    p.imu_baud           = cfg.get<int>        ("hardware.imu_baud",          p.imu_baud);
-    p.bms_port           = cfg.get<std::string>("hardware.bms_port",          p.bms_port);
-    p.bms_baud           = cfg.get<int>        ("hardware.bms_baud",          p.bms_baud);
-    p.dist_port          = cfg.get<std::string>("hardware.dist_port",         p.dist_port);
-    p.dist_baud          = cfg.get<int>        ("hardware.dist_baud",         p.dist_baud);
-    p.dist_slave_id      = static_cast<uint8_t>(cfg.get<int>("hardware.dist_slave_id",     (int)p.dist_slave_id));
-    p.dist_channel_count = static_cast<uint8_t>(cfg.get<int>("hardware.dist_channel_count",(int)p.dist_channel_count));
-    p.gpio_chip          = cfg.get<std::string>("hardware.gpio_chip",         p.gpio_chip);
-    p.front_limit_line   = static_cast<unsigned>(cfg.get<int>("hardware.front_limit_line", (int)p.front_limit_line));
-    p.rear_limit_line    = static_cast<unsigned>(cfg.get<int>("hardware.rear_limit_line",  (int)p.rear_limit_line));
-    p.limit_timeout_sec  = cfg.get<int>        ("timing.limit_timeout_sec",   p.limit_timeout_sec);
-    p.online_timeout_ms  = cfg.get<int>        ("timing.online_timeout_ms",   p.online_timeout_ms);
-    p.sweep_duration_ms  = cfg.get<int>        ("timing.sweep_duration_ms",   p.sweep_duration_ms);
-    p.loop_period_ms     = cfg.get<int>        ("timing.loop_period_ms",      p.loop_period_ms);
-    p.test_speed_rpm     = cfg.get<float>      ("behavior.test_speed_rpm",    p.test_speed_rpm);
-    p.test_return_rpm    = cfg.get<float>      ("behavior.test_return_rpm",   p.test_return_rpm);
-    p.sweep_rpm          = cfg.get<float>      ("behavior.sweep_rpm",         p.sweep_rpm);
-    p.limit_test_rpm     = cfg.get<float>      ("behavior.limit_test_rpm",    p.limit_test_rpm);
-    p.combined_passes    = cfg.get<float>      ("behavior.combined_passes",   p.combined_passes);
-    p.health_jsonl_path  = cfg.get<std::string>("behavior.health_jsonl_path", p.health_jsonl_path);
-    spdlog::info("[hw_config] Loaded config: {}", path);
     return p;
 }
 
 // ── DeviceFixture：Driver + Device 层（限位 / 电机单元测试使用）────────────
 struct DeviceFixture {
-    HwParams p;                                                      // ← 新增，运行时参数
+    HwParams p;  ///< 运行时硬件参数，必须为第一成员（构造时初始化列表先于 ctor 体）
     std::shared_ptr<robot::driver::LinuxCanSocket> can_bus;
     std::shared_ptr<robot::device::WalkMotorGroup> walk_group;
     std::shared_ptr<robot::driver::LibSerialPort> imu_serial;
