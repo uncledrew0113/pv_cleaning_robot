@@ -1,0 +1,32 @@
+{
+  "hardware": {
+    "can_iface":           "can0",
+    "motor_id_base":       1,
+    "imu_port":            "/dev/ttyS1",
+    "imu_baud":            9600,
+    "bms_port":            "/dev/ttyS8",
+    "bms_baud":            9600,
+    "dist_port":           "/dev/ttyS9",
+    "dist_baud":           9600,
+    "dist_slave_id":       1,
+    "dist_channel_count":  2,
+    "gpio_chip":           "gpiochip5",
+    "front_limit_line":    0,
+    "rear_limit_line":     1
+  },
+  "timing": {
+    "limit_timeout_sec":   60,
+    "online_timeout_ms":   600,
+    "comm_timeout_ms":     500,
+    "sweep_duration_ms":   5000,
+    "loop_period_ms":      50
+  },
+  "behavior": {
+    "test_speed_rpm":      10.0,
+    "test_return_rpm":     10.0,
+    "sweep_rpm":           20.0,
+    "limit_test_rpm":      10.0,
+    "combined_passes":     50.0,
+    "health_jsonl_path":   "/tmp/hw_system_test_health.jsonl"
+  }
+}
