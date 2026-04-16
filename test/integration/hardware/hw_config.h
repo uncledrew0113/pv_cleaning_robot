@@ -7,11 +7,12 @@
  * DeviceFixture       — Driver + Device 层，用于限位和电机单元测试
  * FullSystemFixture   — 全层栈，用于集成测试（BrushMotor 用 MockModbusMaster）
  *
- * 硬件接线（与 config/config.json 对齐）：
- *   CAN      : can0，行走电机 M1502E_111，motor_id_base=1
- *   IMU      : /dev/ttyS1，WIT Motion，9600 baud
- *   BMS      : /dev/ttyS8，嘉佰达通用协议 V4，9600 baud
- *   GPIO     : gpiochip5 line0=前限位，line1=后限位
+ * 硬件接线（默认值与 config/config.json 对齐，可通过 hw_test_config.json 覆盖）：
+ *   CAN      : can0（默认），行走电机 M1502E_111，motor_id_base=1
+ *   IMU      : /dev/ttyS1（默认），WIT Motion，9600 baud
+ *   BMS      : /dev/ttyS8（默认），嘉佰达通用协议 V4，9600 baud
+ *   距离传感器: /dev/ttyS9（默认），RS485 Modbus RTU，9600 baud
+ *   GPIO     : gpiochip5 line0=前限位，line1=后限位（默认）
  */
 #include <atomic>
 #include <chrono>
@@ -54,40 +55,92 @@
 
 // Mock（辊刷电机未安装）
 #include "mock/mock_modbus_master.h"
+#include "pv_cleaning_robot/service/config_service.h"
 
 namespace hw {
 
-// ── 硬件接线常量（与 config/config.json 对齐）────────────────────────────────
-constexpr char kCanIface[] = "can0";
-constexpr uint8_t kMotorIdBase = 1u;
-constexpr uint16_t kCommTimeoutMs = 500u;  ///< update 50ms × 10 倍余量
-constexpr float kTestSpeedRpm = 30.0f;     ///< 安全低速（测试专用）
-constexpr float kTestReturnRpm = 30.0f;
+// ── 运行时硬件测试参数（从 hw_test_config.json 加载，缺失则用内嵌默认值）──────
+/// 所有参数均可通过 hw_test_config.json 覆盖，无需重新编译
+struct HwParams {
+    // hardware mapping
+    std::string can_iface          = "can0";
+    uint8_t     motor_id_base      = 1u;
+    uint16_t    comm_timeout_ms    = 500u;   ///< update 50ms × 10 倍余量
+    std::string imu_port           = "/dev/ttyS1";
+    int         imu_baud           = 9600;
+    std::string bms_port           = "/dev/ttyS8";
+    int         bms_baud           = 9600;
+    std::string dist_port          = "/dev/ttyS9";  ///< 距离传感器 RS485 串口
+    int         dist_baud          = 9600;
+    uint8_t     dist_slave_id      = 1u;
+    uint8_t     dist_channel_count = 2u;
+    std::string gpio_chip          = "gpiochip5";
+    unsigned    front_limit_line   = 0u;
+    unsigned    rear_limit_line    = 1u;
+    // timing
+    int         limit_timeout_sec  = 60;    ///< 每段（单一限位）等待最大秒数
+    int         online_timeout_ms  = 600;   ///< 等待电机上线最大毫秒数
+    int         sweep_duration_ms  = 5000;
+    int         loop_period_ms     = 50;
+    // behavior
+    float       test_speed_rpm     = 10.0f;  ///< 安全低速（测试专用）
+    float       test_return_rpm    = 10.0f;
+    float       sweep_rpm          = 20.0f;
+    float       limit_test_rpm     = 10.0f;
+    float       combined_passes    = 50.0f;  ///< combined 测试趟数（1=一来回，2=两来回…）
+    std::string health_jsonl_path  = "/tmp/hw_system_test_health.jsonl";
+};
 
-constexpr char kImuPort[] = "/dev/ttyS1";
-constexpr int kImuBaud = 9600;
+/// 按优先级查找配置：1. 环境变量 HW_TEST_CONFIG  2. CWD/hw_test_config.json  3. 内嵌默认值
+inline HwParams load_hw_test_config() {
+    HwParams p;
+    std::string path;
+    const char* env = std::getenv("HW_TEST_CONFIG");
+    if (env && std::filesystem::exists(env))
+        path = env;
+    else if (std::filesystem::exists("hw_test_config.json"))
+        path = "hw_test_config.json";
 
-constexpr char kBmsPort[] = "/dev/ttyS8";
-constexpr int kBmsBaud = 9600;
-
-constexpr char kDistSensorPort[]     = "/dev/ttyS4";  ///< 距离传感器 RS485 串口
-constexpr int  kDistSensorBaud       = 9600;
-constexpr int  kDistSensorSlaveId    = 1;
-constexpr uint8_t kDistSensorChannelCount = 4;
-
-constexpr char kGpioChip[] = "gpiochip5";
-constexpr unsigned kFrontLine = 0u;
-constexpr unsigned kRearLine = 1u;
-
-constexpr int kLimitTimeoutSec = 60;      ///< 每段（单一限位）等待最大秒数
-constexpr int kOnlineTimeoutMs = 600;     ///< 等待电机上线最大毫秒数
-constexpr float kCombinedPasses = 50.0f;  ///< combined 测试趟数（1=一来回，2=两来回…）
-
-constexpr char kHealthJsonlPath[] =
-    "/tmp/hw_system_test_health.jsonl";  ///< HealthService JSONL 落盘路径
+    if (path.empty()) {
+        spdlog::warn("[hw_config] hw_test_config.json not found — using built-in defaults");
+        return p;
+    }
+    robot::service::ConfigService cfg(path);
+    if (!cfg.load()) {
+        spdlog::warn("[hw_config] Failed to load {} — using built-in defaults", path);
+        return p;
+    }
+    p.can_iface          = cfg.get<std::string>("hardware.can_iface",         p.can_iface);
+    p.motor_id_base      = static_cast<uint8_t>(cfg.get<int>("hardware.motor_id_base",     (int)p.motor_id_base));
+    p.comm_timeout_ms    = static_cast<uint16_t>(cfg.get<int>("timing.comm_timeout_ms",    (int)p.comm_timeout_ms));
+    p.imu_port           = cfg.get<std::string>("hardware.imu_port",          p.imu_port);
+    p.imu_baud           = cfg.get<int>        ("hardware.imu_baud",          p.imu_baud);
+    p.bms_port           = cfg.get<std::string>("hardware.bms_port",          p.bms_port);
+    p.bms_baud           = cfg.get<int>        ("hardware.bms_baud",          p.bms_baud);
+    p.dist_port          = cfg.get<std::string>("hardware.dist_port",         p.dist_port);
+    p.dist_baud          = cfg.get<int>        ("hardware.dist_baud",         p.dist_baud);
+    p.dist_slave_id      = static_cast<uint8_t>(cfg.get<int>("hardware.dist_slave_id",     (int)p.dist_slave_id));
+    p.dist_channel_count = static_cast<uint8_t>(cfg.get<int>("hardware.dist_channel_count",(int)p.dist_channel_count));
+    p.gpio_chip          = cfg.get<std::string>("hardware.gpio_chip",         p.gpio_chip);
+    p.front_limit_line   = static_cast<unsigned>(cfg.get<int>("hardware.front_limit_line", (int)p.front_limit_line));
+    p.rear_limit_line    = static_cast<unsigned>(cfg.get<int>("hardware.rear_limit_line",  (int)p.rear_limit_line));
+    p.limit_timeout_sec  = cfg.get<int>        ("timing.limit_timeout_sec",   p.limit_timeout_sec);
+    p.online_timeout_ms  = cfg.get<int>        ("timing.online_timeout_ms",   p.online_timeout_ms);
+    p.sweep_duration_ms  = cfg.get<int>        ("timing.sweep_duration_ms",   p.sweep_duration_ms);
+    p.loop_period_ms     = cfg.get<int>        ("timing.loop_period_ms",      p.loop_period_ms);
+    p.test_speed_rpm     = cfg.get<float>      ("behavior.test_speed_rpm",    p.test_speed_rpm);
+    p.test_return_rpm    = cfg.get<float>      ("behavior.test_return_rpm",   p.test_return_rpm);
+    p.sweep_rpm          = cfg.get<float>      ("behavior.sweep_rpm",         p.sweep_rpm);
+    p.limit_test_rpm     = cfg.get<float>      ("behavior.limit_test_rpm",    p.limit_test_rpm);
+    p.combined_passes    = cfg.get<float>      ("behavior.combined_passes",   p.combined_passes);
+    p.health_jsonl_path  = cfg.get<std::string>("behavior.health_jsonl_path", p.health_jsonl_path);
+    spdlog::info("[hw_config] Loaded config: {}", path);
+    return p;
+}
 
 // ── DeviceFixture：Driver + Device 层（限位 / 电机单元测试使用）────────────
 struct DeviceFixture {
+    HwParams p;                                                      // ← 新增，运行时参数
     std::shared_ptr<robot::driver::LinuxCanSocket> can_bus;
     std::shared_ptr<robot::device::WalkMotorGroup> walk_group;
     std::shared_ptr<robot::driver::LibSerialPort> imu_serial;
@@ -99,19 +152,18 @@ struct DeviceFixture {
     std::shared_ptr<robot::device::LimitSwitch> front_sw;
     std::shared_ptr<robot::device::LimitSwitch> rear_sw;
 
-    DeviceFixture() {
+    DeviceFixture() : p(load_hw_test_config()) {
         using namespace robot;
-        can_bus = std::make_shared<driver::LinuxCanSocket>(kCanIface);
-        walk_group =
-            std::make_shared<device::WalkMotorGroup>(can_bus, kMotorIdBase, kCommTimeoutMs);
-        imu_serial = std::make_shared<driver::LibSerialPort>(kImuPort, hal::UartConfig{kImuBaud});
-        imu = std::make_shared<device::ImuDevice>(imu_serial);
-        bms_serial = std::make_shared<driver::LibSerialPort>(kBmsPort, hal::UartConfig{kBmsBaud});
-        bms = std::make_shared<device::BMS>(bms_serial, 95.0f, 15.0f);
-        front_gpio = std::make_shared<driver::LibGpiodPin>(kGpioChip, kFrontLine);
-        rear_gpio = std::make_shared<driver::LibGpiodPin>(kGpioChip, kRearLine);
-        front_sw = std::make_shared<device::LimitSwitch>(front_gpio, device::LimitSide::FRONT);
-        rear_sw = std::make_shared<device::LimitSwitch>(rear_gpio, device::LimitSide::REAR);
+        can_bus    = std::make_shared<driver::LinuxCanSocket>(p.can_iface);
+        walk_group = std::make_shared<device::WalkMotorGroup>(can_bus, p.motor_id_base, p.comm_timeout_ms);
+        imu_serial = std::make_shared<driver::LibSerialPort>(p.imu_port, hal::UartConfig{p.imu_baud});
+        imu        = std::make_shared<device::ImuDevice>(imu_serial);
+        bms_serial = std::make_shared<driver::LibSerialPort>(p.bms_port, hal::UartConfig{p.bms_baud});
+        bms        = std::make_shared<device::BMS>(bms_serial, 95.0f, 15.0f);
+        front_gpio = std::make_shared<driver::LibGpiodPin>(p.gpio_chip, p.front_limit_line);
+        rear_gpio  = std::make_shared<driver::LibGpiodPin>(p.gpio_chip, p.rear_limit_line);
+        front_sw   = std::make_shared<device::LimitSwitch>(front_gpio, device::LimitSide::FRONT);
+        rear_sw    = std::make_shared<device::LimitSwitch>(rear_gpio, device::LimitSide::REAR);
     }
 
     ~DeviceFixture() {
@@ -141,7 +193,7 @@ struct FullSystemFixture : DeviceFixture {
     std::shared_ptr<robot::service::FaultService> fault;
     std::shared_ptr<robot::service::HealthService> health;  ///< null cloud，本地 JSONL 落盘
     std::shared_ptr<robot::driver::LibModbusMaster> dist_modbus;  ///< 距离传感器 Modbus RTU 主站
-    std::shared_ptr<robot::device::DistanceSensor>  dist_sensor;  ///< 距离传感器（可选）
+    std::shared_ptr<robot::device::DistanceSensor> dist_sensor;  ///< 距离传感器（可选）
     std::unique_ptr<robot::app::WatchdogMgr> watchdog;
     std::shared_ptr<robot::app::RobotFsm> fsm;
     std::shared_ptr<robot::app::FaultHandler> fault_handler;
@@ -166,8 +218,8 @@ struct FullSystemFixture : DeviceFixture {
         nav = std::make_shared<service::NavService>(walk_group, imu, gps_dummy, 0.3f);
 
         service::MotionService::Config motion_cfg;
-        motion_cfg.clean_speed_rpm = kTestSpeedRpm;
-        motion_cfg.return_speed_rpm = kTestReturnRpm;
+        motion_cfg.clean_speed_rpm   = p.test_speed_rpm;
+        motion_cfg.return_speed_rpm  = p.test_return_rpm;
         motion_cfg.brush_rpm = 0;  // MockModbus，不实际驱动辊刷
         motion_cfg.return_brush_rpm = 0;
         motion_cfg.edge_reverse_rpm = 0.0f;
@@ -240,16 +292,17 @@ struct FullSystemFixture : DeviceFixture {
 
             // 距离传感器（Modbus RTU 9600-8-N-1，可选，打开失败则 nullptr 传入 HealthService）
             dist_modbus = std::make_shared<robot::driver::LibModbusMaster>(
-                kDistSensorPort, robot::hal::ModbusConfig{kDistSensorBaud, 'N', 8, 1});
+                p.dist_port, robot::hal::ModbusConfig{p.dist_baud, 'N', 8, 1});
             if (dist_modbus->open()) {
                 robot::device::DistanceSensorConfig dist_cfg;
-                dist_cfg.slave_id      = kDistSensorSlaveId;
-                dist_cfg.channel_count = kDistSensorChannelCount;
-                dist_sensor = std::make_shared<robot::device::DistanceSensor>(dist_modbus, dist_cfg);
+                dist_cfg.slave_id      = p.dist_slave_id;
+                dist_cfg.channel_count = p.dist_channel_count;
+                dist_sensor =
+                    std::make_shared<robot::device::DistanceSensor>(dist_modbus, dist_cfg);
                 if (!dist_sensor->open())
                     spdlog::warn("[FullSystemFixture] 距离传感器 open 失败，数据不可用");
                 else {
-                    spdlog::info("[FullSystemFixture] 距离传感器已打开: {}", kDistSensorPort);
+                    spdlog::info("[FullSystemFixture] 距离传感器已打开: {}", p.dist_port);
                     // 启动 100ms 轮询线程更新距离传感器缓存
                     dist_update_thread_ = std::thread([this] {
                         while (loops_running_.load()) {
