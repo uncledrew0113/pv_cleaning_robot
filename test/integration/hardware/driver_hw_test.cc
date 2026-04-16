@@ -4,7 +4,7 @@
  * @Date: 2026-03-11 23:38:44
  * @LastEditors: UncleDrew
  * @LastEditTime: 2026-03-19 11:16:10
- * @FilePath: /pv_cleaning_robot/test/test_base.cc
+ * @FilePath: /pv_cleaning_robot/test/integration/hardware/driver_hw_test.cc
  * @Description:
  *
  * Copyright (c) 2026 by UncleDrew, All Rights Reserved.
