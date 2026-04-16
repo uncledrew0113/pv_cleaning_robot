@@ -8,23 +8,23 @@
  *   ./unit_tests "[driver][nonlock]"
  */
 #include <boost/lockfree/spsc_queue.hpp>
-#include <cassert>
+
 #include <catch2/catch.hpp>
 
 TEST_CASE("无锁队列", "[driver][nonlock]") {
     boost::lockfree::spsc_queue<int, boost::lockfree::capacity<1024>> q;
 
-    assert(q.empty());
+    REQUIRE(q.empty());
 
     for (int i = 0; i < 100; ++i) {
-        assert(q.push(i));
+        REQUIRE(q.push(i));
     }
 
     int v;
     for (int i = 0; i < 100; ++i) {
-        assert(q.pop(v));
-        assert(v == i);
+        REQUIRE(q.pop(v));
+        REQUIRE(v == i);
     }
 
-    assert(q.empty());
+    REQUIRE(q.empty());
 }
