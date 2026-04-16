@@ -76,7 +76,7 @@ TEST_CASE("System（真实硬件）全栈初始化 FSM→Idle 无崩溃", "[hw_s
 TEST_CASE("System（真实硬件）HealthService DIAGNOSTICS 落盘真实传感器数据",
           "[hw_system][health_real_data]") {
     hw::FullSystemFixture f;
-    REQUIRE(f.init(hw::kHealthJsonlPath));
+    REQUIRE(f.init(f.p.health_jsonl_path));
     REQUIRE(f.health != nullptr);
 
     // 等待 IMU/BMS 稳定输出 1 秒（IMU 后台线程自动读取，BMS 需 update()）
@@ -94,9 +94,9 @@ TEST_CASE("System（真实硬件）HealthService DIAGNOSTICS 落盘真实传感�
     }
 
     // 验证文件存在
-    REQUIRE(std::filesystem::exists(hw::kHealthJsonlPath));
+    REQUIRE(std::filesystem::exists(f.p.health_jsonl_path));
 
-    std::ifstream ifs(hw::kHealthJsonlPath);
+    std::ifstream ifs(f.p.health_jsonl_path);
     REQUIRE(ifs.is_open());
 
     int line_count = 0;
@@ -158,7 +158,7 @@ TEST_CASE("System（真实硬件）HealthService DIAGNOSTICS 落盘真实传感�
         spdlog::warn("[hw_system][health_real_data] BMS voltage=0，请确认 BMS 接线和通信");
     }
 
-    std::filesystem::remove(hw::kHealthJsonlPath);
+    std::filesystem::remove(f.p.health_jsonl_path);
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -196,7 +196,7 @@ TEST_CASE("System（真实硬件）运动 1s 后 emergency_override 急停", "[h
     f.walk_group->set_mode_all(robot::protocol::WalkMotorMode::SPEED);
     std::this_thread::sleep_for(300ms);
 
-    f.walk_group->set_speed_uniform(hw::kTestSpeedRpm);
+    f.walk_group->set_speed_uniform(f.p.test_speed_rpm);
 
     // 运动 1s（持续发帧）
     for (int i = 0; i < 4; ++i) {
@@ -267,10 +267,9 @@ TEST_CASE("System（真实硬件）WatchdogMgr 漏心跳后超时回调触发", 
 // ────────────────────────────────────────────────────────────────────────────
 TEST_CASE("System（真实硬件）P0 故障链：电机急停 + FSM Fault → 复位 → Idle",
           "[hw_system][p0_fault_chain]") {
-    spdlog::warn("[hw_system][p0_fault_chain] ⚠ 此测试将短暂启动行走电机（{:.0f}rpm），确保安全！",
-                 hw::kTestSpeedRpm);
-
     hw::FullSystemFixture f;
+    spdlog::warn("[hw_system][p0_fault_chain] ⚠ 此测试将短暂启动行走电机（{:.0f}rpm），确保安全！",
+                 f.p.test_speed_rpm);
     REQUIRE(f.init());
     REQUIRE(f.fsm->current_state() == "Idle");
 
@@ -396,11 +395,11 @@ TEST_CASE("System（真实硬件）N=1 完整任务链（真实限位触发）",
 
     spdlog::warn(
         "[hw_system][n1_clean_cycle] ★ 机器人正在向前运动，等待【前端限位】触发（最多 {}s）...",
-        hw::kLimitTimeoutSec);
+        f.p.limit_timeout_sec);
 
     // 等待 SafetyMonitor → EventBus → FSM CleanReturn（真实限位触发）
     const bool front_hit =
-        f.wait_state("CleanReturn", std::chrono::milliseconds(hw::kLimitTimeoutSec * 1000));
+        f.wait_state("CleanReturn", std::chrono::milliseconds(f.p.limit_timeout_sec * 1000));
 
     {
         INFO("前端限位等待超时，请检查导轨/传感器接线");
@@ -410,11 +409,11 @@ TEST_CASE("System（真实硬件）N=1 完整任务链（真实限位触发）",
 
     spdlog::warn(
         "[hw_system][n1_clean_cycle] ★ 机器人正在返回，等待【尾端限位】触发（最多 {}s）...",
-        hw::kLimitTimeoutSec);
+        f.p.limit_timeout_sec);
 
     // 等待尾端限位触发 → Charging（任务完成）
     const bool rear_hit =
-        f.wait_state("Charging", std::chrono::milliseconds(hw::kLimitTimeoutSec * 1000));
+        f.wait_state("Charging", std::chrono::milliseconds(f.p.limit_timeout_sec * 1000));
 
     {
         INFO("尾端限位等待超时，请检查导轨/传感器接线");
@@ -439,18 +438,17 @@ TEST_CASE("System（真实硬件）N=1 完整任务链（真实限位触发）",
 // [hw_system][combined] — 全系统联合启动（电机 + HealthService + WatchdogMgr）
 // ────────────────────────────────────────────────────────────────────────────
 TEST_CASE("System（真实硬件）N 趟完整任务链 + 全程持续采集健康数据", "[hw_system][combined]") {
-    const int    passes_int  = static_cast<int>(hw::kCombinedPasses);
-    const double passes_half = hw::kCombinedPasses * 2.0;
+    hw::FullSystemFixture f;
+    const int    passes_int  = static_cast<int>(f.p.combined_passes);
+    const double passes_half = f.p.combined_passes * 2.0;
     spdlog::warn("[hw_system][combined] ====================================");
-    spdlog::warn("[hw_system][combined] ⚠ 机器人将运动 {:.1f} 趟（{} 段）！", hw::kCombinedPasses, static_cast<int>(passes_half));
-    spdlog::warn("[hw_system][combined] 全程持续记录健康数据到: {}", hw::kHealthJsonlPath);
-    spdlog::warn("[hw_system][combined] 每段限位超时: {}s（触发后重置）", hw::kLimitTimeoutSec);
+    spdlog::warn("[hw_system][combined] ⚠ 机器人将运动 {:.1f} 趟（{} 段）！", f.p.combined_passes, static_cast<int>(passes_half));
+    spdlog::warn("[hw_system][combined] 全程持续记录健康数据到: {}", f.p.health_jsonl_path);
+    spdlog::warn("[hw_system][combined] 每段限位超时: {}s（触发后重置）", f.p.limit_timeout_sec);
     spdlog::warn("[hw_system][combined] 请确保：导轨就位，轨道无人员/障碍物");
     spdlog::warn("[hw_system][combined] ====================================");
     (void)passes_int;
-
-    hw::FullSystemFixture f;
-    REQUIRE(f.init(hw::kHealthJsonlPath));
+    REQUIRE(f.init(f.p.health_jsonl_path));
     REQUIRE(f.health != nullptr);
 
     // 注册看门狗（超时 = kLimitTimeoutSec * 2，每次 poll 喂狗）
@@ -460,7 +458,7 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + 全程持续采集健�
         wd_timeout.store(true);
     });
     const int wd_tid = f.watchdog->register_thread(
-        "hw_combined", hw::kLimitTimeoutSec * 2 * 1000);
+        "hw_combined", f.p.limit_timeout_sec * 2 * 1000);
     REQUIRE(wd_tid >= 0);
 
     const uint32_t frames_before = f.walk_group->get_group_diagnostics().ctrl_frame_count;
@@ -485,7 +483,7 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + 全程持续采集健�
     // 返回切换后的新状态；若超时返回 from（未变）
     auto wait_transition = [&](const std::string& from) -> std::string {
         using clock = std::chrono::steady_clock;
-        auto deadline = clock::now() + std::chrono::seconds(hw::kLimitTimeoutSec);
+        auto deadline = clock::now() + std::chrono::seconds(f.p.limit_timeout_sec);
         while (clock::now() < deadline) {
             std::string curr = f.fsm->current_state();
             if (curr != from) return curr;
@@ -496,7 +494,7 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + 全程持续采集健�
     };
 
     // ── 启动任务，进入 CleanFwd ─────────────────────────────────────────────
-    f.fsm->dispatch(robot::app::EvScheduleStart{.at_home = true, .passes = hw::kCombinedPasses});
+    f.fsm->dispatch(robot::app::EvScheduleStart{.at_home = true, .passes = f.p.combined_passes});
     REQUIRE(f.fsm->current_state() == "CleanFwd");
 
     // ── 逐段等待，每触发一次限位重置 60s 计时 ──────────────────────────────
@@ -510,14 +508,14 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + 全程持续采集健�
                      seg_idx,
                      state,
                      going_fwd ? "【前端】" : "【尾端】",
-                     hw::kLimitTimeoutSec);
+                     f.p.limit_timeout_sec);
 
         std::string next = wait_transition(state);
 
         if (next == state) {
             // 超时，限位未触发
             spdlog::error("[hw_system][combined] 段 {} 超时 {}s，当前状态仍为 {}",
-                          seg_idx, hw::kLimitTimeoutSec, state);
+                          seg_idx, f.p.limit_timeout_sec, state);
             INFO("限位等待超时，请检查导轨/传感器接线");
             REQUIRE(next != state);  // 明确失败
             break;
@@ -550,9 +548,9 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + 全程持续采集健�
     CHECK(f.dispatched_faults.empty());
 
     // JSONL 存在，行数一致，每行含合法 JSON 及时间戳
-    REQUIRE(std::filesystem::exists(hw::kHealthJsonlPath));
+    REQUIRE(std::filesystem::exists(f.p.health_jsonl_path));
     {
-        std::ifstream ifs(hw::kHealthJsonlPath);
+        std::ifstream ifs(f.p.health_jsonl_path);
         REQUIRE(ifs.is_open());
 
         int line_count = 0;
@@ -571,7 +569,7 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + 全程持续采集健�
         }
         CHECK(line_count == total_health_records);
         spdlog::info("[hw_system][combined] JSONL {} 行，路径: {}",
-                     line_count, hw::kHealthJsonlPath);
+                     line_count, f.p.health_jsonl_path);
     }
 
     // IMU 末帧（仅记录）
@@ -580,7 +578,7 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + 全程持续采集健�
                  ld.valid, ld.pitch_deg, ld.roll_deg, ld.yaw_deg);
 
     // ⚠ 不删除 JSONL，供事后分析
-    spdlog::info("[hw_system][combined] PASS — 健康数据已保存至 {}", hw::kHealthJsonlPath);
+    spdlog::info("[hw_system][combined] PASS — 健康数据已保存至 {}", f.p.health_jsonl_path);
 }
 TEST_CASE("System（真实硬件）WatchdogMgr 正常心跳 1s 不触发超时",
           "[hw_system][watchdog_heartbeat]") {

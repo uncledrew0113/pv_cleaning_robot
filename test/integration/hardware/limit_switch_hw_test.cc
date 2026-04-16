@@ -33,14 +33,16 @@
 using namespace robot;
 using namespace std::chrono_literals;
 
+static const hw::HwParams kp = hw::load_hw_test_config();
+
 // ────────────────────────────────────────────────────────────────────────────
 // [hw_limit][open] — GPIO 初始化
 // ────────────────────────────────────────────────────────────────────────────
 TEST_CASE("限位传感器 GPIO 初始化", "[hw_limit][open]") {
     auto front_gpio = std::make_shared<driver::LibGpiodPin>(
-        hw::kGpioChip, hw::kFrontLine);
+        kp.gpio_chip, kp.front_limit_line);
     auto rear_gpio = std::make_shared<driver::LibGpiodPin>(
-        hw::kGpioChip, hw::kRearLine);
+        kp.gpio_chip, kp.rear_limit_line);
     auto front_sw = std::make_shared<device::LimitSwitch>(
         front_gpio, device::LimitSide::FRONT);
     auto rear_sw = std::make_shared<device::LimitSwitch>(
@@ -75,9 +77,9 @@ TEST_CASE("停机位 GPIO 电平自检", "[hw_limit][read_level_home]") {
     // read_current_level() 语义：true=高电平/未遮挡，false=低电平/已遮挡
     // 停机位期望：rear=false（遮挡），front=true（未遮挡）
     auto front_gpio = std::make_shared<driver::LibGpiodPin>(
-        hw::kGpioChip, hw::kFrontLine);
+        kp.gpio_chip, kp.front_limit_line);
     auto rear_gpio = std::make_shared<driver::LibGpiodPin>(
-        hw::kGpioChip, hw::kRearLine);
+        kp.gpio_chip, kp.rear_limit_line);
     auto front_sw = std::make_shared<device::LimitSwitch>(
         front_gpio, device::LimitSide::FRONT);
     auto rear_sw = std::make_shared<device::LimitSwitch>(
@@ -106,7 +108,7 @@ TEST_CASE("停机位 GPIO 电平自检", "[hw_limit][read_level_home]") {
 // ────────────────────────────────────────────────────────────────────────────
 TEST_CASE("前限位传感器回调链路（手动触发）", "[hw_limit][callback_front]") {
     auto front_gpio = std::make_shared<driver::LibGpiodPin>(
-        hw::kGpioChip, hw::kFrontLine);
+        kp.gpio_chip, kp.front_limit_line);
     auto front_sw = std::make_shared<device::LimitSwitch>(
         front_gpio, device::LimitSide::FRONT);
 
@@ -144,7 +146,7 @@ TEST_CASE("前限位传感器回调链路（手动触发）", "[hw_limit][callba
 // ────────────────────────────────────────────────────────────────────────────
 TEST_CASE("后限位传感器回调链路（手动触发）", "[hw_limit][callback_rear]") {
     auto rear_gpio = std::make_shared<driver::LibGpiodPin>(
-        hw::kGpioChip, hw::kRearLine);
+        kp.gpio_chip, kp.rear_limit_line);
     auto rear_sw = std::make_shared<device::LimitSwitch>(
         rear_gpio, device::LimitSide::REAR);
 
@@ -181,7 +183,7 @@ TEST_CASE("后限位传感器回调链路（手动触发）", "[hw_limit][callba
 // ────────────────────────────────────────────────────────────────────────────
 TEST_CASE("限位传感器触发状态管理", "[hw_limit][is_triggered]") {
     auto front_gpio = std::make_shared<driver::LibGpiodPin>(
-        hw::kGpioChip, hw::kFrontLine);
+        kp.gpio_chip, kp.front_limit_line);
     auto front_sw = std::make_shared<device::LimitSwitch>(
         front_gpio, device::LimitSide::FRONT);
 
@@ -222,7 +224,7 @@ TEST_CASE("限位传感器触发状态管理", "[hw_limit][is_triggered]") {
 // ────────────────────────────────────────────────────────────────────────────
 TEST_CASE("限位传感器触发标志清除", "[hw_limit][clear_trigger]") {
     auto rear_gpio = std::make_shared<driver::LibGpiodPin>(
-        hw::kGpioChip, hw::kRearLine);
+        kp.gpio_chip, kp.rear_limit_line);
     auto rear_sw = std::make_shared<device::LimitSwitch>(
         rear_gpio, device::LimitSide::REAR);
 
@@ -248,9 +250,9 @@ TEST_CASE("限位传感器触发标志清除", "[hw_limit][clear_trigger]") {
 // ────────────────────────────────────────────────────────────────────────────
 TEST_CASE("限位传感器 side 枚举传递正确", "[hw_limit][side_enum]") {
     auto front_gpio = std::make_shared<driver::LibGpiodPin>(
-        hw::kGpioChip, hw::kFrontLine);
+        kp.gpio_chip, kp.front_limit_line);
     auto rear_gpio  = std::make_shared<driver::LibGpiodPin>(
-        hw::kGpioChip, hw::kRearLine);
+        kp.gpio_chip, kp.rear_limit_line);
     auto front_sw = std::make_shared<device::LimitSwitch>(
         front_gpio, device::LimitSide::FRONT);
     auto rear_sw = std::make_shared<device::LimitSwitch>(
@@ -299,7 +301,7 @@ TEST_CASE("限位传感器 side 枚举传递正确", "[hw_limit][side_enum]") {
 // ────────────────────────────────────────────────────────────────────────────
 TEST_CASE("限位传感器多次触发稳定性", "[hw_limit][repeated_trigger]") {
     auto front_gpio = std::make_shared<driver::LibGpiodPin>(
-        hw::kGpioChip, hw::kFrontLine);
+        kp.gpio_chip, kp.front_limit_line);
     auto front_sw = std::make_shared<device::LimitSwitch>(
         front_gpio, device::LimitSide::FRONT);
 

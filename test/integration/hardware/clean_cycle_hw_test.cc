@@ -104,14 +104,14 @@ TEST_CASE("完整清扫一趟（PID 关闭）", "[hw_cycle][one_pass_no_pid]") {
 
     // 阶段2：等待前限位触发（最多 kLimitTimeoutSec 秒）
     REQUIRE(fx.wait_state("CleanReturn",
-            std::chrono::seconds(hw::kLimitTimeoutSec)));
+            std::chrono::seconds(fx.p.limit_timeout_sec)));
     const auto t_fwd_end = std::chrono::steady_clock::now();
     spdlog::info("[hw_cycle][one_pass_no_pid] → CleanReturn (正向 {:.1f}s)",
                  std::chrono::duration<float>(t_fwd_end - t_fwd_start).count());
 
     // 阶段3：等待后限位触发 → Charging
     REQUIRE(fx.wait_state("Charging",
-            std::chrono::seconds(hw::kLimitTimeoutSec)));
+            std::chrono::seconds(fx.p.limit_timeout_sec)));
     const auto t_total = std::chrono::steady_clock::now();
     const float elapsed = std::chrono::duration<float>(t_total - t_start).count();
 
@@ -158,11 +158,11 @@ TEST_CASE("完整清扫一趟（PID 开启，yaw 漂移 < 10°）", "[hw_cycle][
     spdlog::info("[hw_cycle][one_pass_with_pid] → CleanFwd  初始 yaw={:.2f}°", yaw_start);
 
     REQUIRE(fx.wait_state("CleanReturn",
-            std::chrono::seconds(hw::kLimitTimeoutSec)));
+            std::chrono::seconds(fx.p.limit_timeout_sec)));
     spdlog::info("[hw_cycle][one_pass_with_pid] → CleanReturn");
 
     REQUIRE(fx.wait_state("Charging",
-            std::chrono::seconds(hw::kLimitTimeoutSec)));
+            std::chrono::seconds(fx.p.limit_timeout_sec)));
 
     monitor_running.store(false);
     monitor_thread.join();
@@ -241,7 +241,7 @@ TEST_CASE("低电量触发安全返回", "[hw_cycle][low_battery_return]") {
 
     // 等待后限位触发 → Charging（最多 kLimitTimeoutSec 秒）
     REQUIRE(fx.wait_state("Charging",
-            std::chrono::seconds(hw::kLimitTimeoutSec)));
+            std::chrono::seconds(fx.p.limit_timeout_sec)));
     spdlog::info("[hw_cycle][low_battery_return] FSM → Charging ✓ (已归停机位)");
     CHECK(fx.fsm->current_state() == "Charging");
 }

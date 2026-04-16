@@ -34,12 +34,14 @@
 using namespace robot;
 using namespace std::chrono_literals;
 
+static const hw::HwParams kp = hw::load_hw_test_config();
+
 // ────────────────────────────────────────────────────────────────────────────
 // [hw_walk][open_close]
 // ────────────────────────────────────────────────────────────────────────────
 TEST_CASE("WalkMotorGroup CAN 初始化与关闭", "[hw_walk][open_close]") {
-    auto can = std::make_shared<driver::LinuxCanSocket>(hw::kCanIface);
-    device::WalkMotorGroup grp(can, hw::kMotorIdBase, hw::kCommTimeoutMs);
+    auto can = std::make_shared<driver::LinuxCanSocket>(kp.can_iface);
+    device::WalkMotorGroup grp(can, kp.motor_id_base, kp.comm_timeout_ms);
 
     REQUIRE(grp.open() == device::DeviceError::OK);
     spdlog::info("[hw_walk][open_close] CAN open ✓");
@@ -51,8 +53,8 @@ TEST_CASE("WalkMotorGroup CAN 初始化与关闭", "[hw_walk][open_close]") {
 // [hw_walk][enable_disable]
 // ────────────────────────────────────────────────────────────────────────────
 TEST_CASE("WalkMotorGroup 使能与失能", "[hw_walk][enable_disable]") {
-    auto can = std::make_shared<driver::LinuxCanSocket>(hw::kCanIface);
-    device::WalkMotorGroup grp(can, hw::kMotorIdBase, hw::kCommTimeoutMs);
+    auto can = std::make_shared<driver::LinuxCanSocket>(kp.can_iface);
+    device::WalkMotorGroup grp(can, kp.motor_id_base, kp.comm_timeout_ms);
 
     REQUIRE(grp.open() == device::DeviceError::OK);
 
@@ -71,8 +73,8 @@ TEST_CASE("WalkMotorGroup 使能与失能", "[hw_walk][enable_disable]") {
 // [hw_walk][all_online]
 // ────────────────────────────────────────────────────────────────────────────
 TEST_CASE("WalkMotorGroup 全轮联机", "[hw_walk][all_online]") {
-    auto can = std::make_shared<driver::LinuxCanSocket>(hw::kCanIface);
-    device::WalkMotorGroup grp(can, hw::kMotorIdBase, hw::kCommTimeoutMs);
+    auto can = std::make_shared<driver::LinuxCanSocket>(kp.can_iface);
+    device::WalkMotorGroup grp(can, kp.motor_id_base, kp.comm_timeout_ms);
 
     REQUIRE(grp.open() == device::DeviceError::OK);
     // 配置 10ms 主动上报（100Hz），使电机快速上线
@@ -81,7 +83,7 @@ TEST_CASE("WalkMotorGroup 全轮联机", "[hw_walk][all_online]") {
     // 等待最多 kOnlineTimeoutMs ms，轮询直到全部上线
     bool all_online = false;
     auto deadline =
-        std::chrono::steady_clock::now() + std::chrono::milliseconds(hw::kOnlineTimeoutMs);
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(kp.online_timeout_ms);
     while (std::chrono::steady_clock::now() < deadline) {
         auto gs = grp.get_group_status();
         all_online = true;
@@ -110,8 +112,8 @@ TEST_CASE("WalkMotorGroup 全轮联机", "[hw_walk][all_online]") {
 // [hw_walk][fwd_no_pid] — PID 关闭前进
 // ────────────────────────────────────────────────────────────────────────────
 TEST_CASE("WalkMotorGroup 前进（PID 关闭）", "[hw_walk][fwd_no_pid]") {
-    auto can = std::make_shared<driver::LinuxCanSocket>(hw::kCanIface);
-    device::WalkMotorGroup grp(can, hw::kMotorIdBase, hw::kCommTimeoutMs);
+    auto can = std::make_shared<driver::LinuxCanSocket>(kp.can_iface);
+    device::WalkMotorGroup grp(can, kp.motor_id_base, kp.comm_timeout_ms);
 
     REQUIRE(grp.open() == device::DeviceError::OK);
     grp.set_feedback_mode_all(10u);
@@ -122,7 +124,7 @@ TEST_CASE("WalkMotorGroup 前进（PID 关闭）", "[hw_walk][fwd_no_pid]") {
     std::this_thread::sleep_for(300ms);  // 等待上线
 
     // 前进 3s
-    grp.set_speed_uniform(hw::kTestSpeedRpm);
+    grp.set_speed_uniform(kp.test_speed_rpm);
     for (int i = 0; i < 6; ++i) {  // 6 × 500ms = 3s
         grp.update();
         std::this_thread::sleep_for(500ms);
@@ -159,13 +161,13 @@ TEST_CASE("WalkMotorGroup 前进（PID 关闭）", "[hw_walk][fwd_no_pid]") {
 TEST_CASE("WalkMotorGroup 前进（PID 开启，yaw 漂移 < 5°）", "[hw_walk][fwd_with_pid]") {
     // 需要 IMU 提供 yaw 数据
     auto imu_serial =
-        std::make_shared<driver::LibSerialPort>(hw::kImuPort, hal::UartConfig{hw::kImuBaud});
+        std::make_shared<driver::LibSerialPort>(kp.imu_port, hal::UartConfig{kp.imu_baud});
     auto imu = std::make_shared<device::ImuDevice>(imu_serial);
     REQUIRE(imu->open());
     std::this_thread::sleep_for(500ms);  // 等待 IMU 首帧
 
-    auto can = std::make_shared<driver::LinuxCanSocket>(hw::kCanIface);
-    device::WalkMotorGroup grp(can, hw::kMotorIdBase, hw::kCommTimeoutMs);
+    auto can = std::make_shared<driver::LinuxCanSocket>(kp.can_iface);
+    device::WalkMotorGroup grp(can, kp.motor_id_base, kp.comm_timeout_ms);
 
     REQUIRE(grp.open() == device::DeviceError::OK);
     grp.set_feedback_mode_all(10u);
@@ -181,7 +183,7 @@ TEST_CASE("WalkMotorGroup 前进（PID 开启，yaw 漂移 < 5°）", "[hw_walk]
     spdlog::info("[hw_walk][fwd_with_pid] 初始 yaw={:.2f}°", yaw_start);
 
     // 前进 5s（50ms update 周期）
-    grp.set_speed_uniform(hw::kTestSpeedRpm);
+    grp.set_speed_uniform(kp.test_speed_rpm);
     for (int i = 0; i < 100; ++i) {  // 100 × 50ms = 5s
         auto d = imu->get_latest();
         grp.update(d.valid ? d.yaw_deg : 0.0f);
@@ -209,14 +211,14 @@ TEST_CASE("WalkMotorGroup 前进（PID 开启，yaw 漂移 < 5°）", "[hw_walk]
 // ────────────────────────────────────────────────────────────────────────────
 TEST_CASE("WalkMotorGroup PID 直线度量化对比", "[hw_walk][pid_straightness]") {
     auto imu_serial =
-        std::make_shared<driver::LibSerialPort>(hw::kImuPort, hal::UartConfig{hw::kImuBaud});
+        std::make_shared<driver::LibSerialPort>(kp.imu_port, hal::UartConfig{kp.imu_baud});
     auto imu = std::make_shared<device::ImuDevice>(imu_serial);
     REQUIRE(imu->open());
     std::this_thread::sleep_for(500ms);
 
     auto run_and_measure = [&](bool pid_on) -> float {
-        auto can = std::make_shared<driver::LinuxCanSocket>(hw::kCanIface);
-        device::WalkMotorGroup grp(can, hw::kMotorIdBase, hw::kCommTimeoutMs);
+        auto can = std::make_shared<driver::LinuxCanSocket>(kp.can_iface);
+        device::WalkMotorGroup grp(can, kp.motor_id_base, kp.comm_timeout_ms);
         grp.open();
         grp.set_feedback_mode_all(10u);
         grp.enable_heading_control(pid_on);
@@ -227,7 +229,7 @@ TEST_CASE("WalkMotorGroup PID 直线度量化对比", "[hw_walk][pid_straightnes
         auto d0 = imu->get_latest();
         const float yaw0 = d0.valid ? d0.yaw_deg : 0.0f;
 
-        grp.set_speed_uniform(hw::kTestSpeedRpm);
+        grp.set_speed_uniform(kp.test_speed_rpm);
         for (int i = 0; i < 100; ++i) {  // 5s
             auto d = imu->get_latest();
             grp.update(d.valid ? d.yaw_deg : 0.0f);
@@ -270,8 +272,8 @@ TEST_CASE("WalkMotorGroup PID 直线度量化对比", "[hw_walk][pid_straightnes
 // [hw_walk][rev_speed] — 反转
 // ────────────────────────────────────────────────────────────────────────────
 TEST_CASE("WalkMotorGroup 反转", "[hw_walk][rev_speed]") {
-    auto can = std::make_shared<driver::LinuxCanSocket>(hw::kCanIface);
-    device::WalkMotorGroup grp(can, hw::kMotorIdBase, hw::kCommTimeoutMs);
+    auto can = std::make_shared<driver::LinuxCanSocket>(kp.can_iface);
+    device::WalkMotorGroup grp(can, kp.motor_id_base, kp.comm_timeout_ms);
 
     REQUIRE(grp.open() == device::DeviceError::OK);
     grp.set_feedback_mode_all(10u);
@@ -279,7 +281,7 @@ TEST_CASE("WalkMotorGroup 反转", "[hw_walk][rev_speed]") {
     grp.set_mode_all(protocol::WalkMotorMode::SPEED);
     std::this_thread::sleep_for(300ms);
 
-    grp.set_speed_uniform(-hw::kTestSpeedRpm);
+    grp.set_speed_uniform(-kp.test_speed_rpm);
     for (int i = 0; i < 4; ++i) {  // 4 × 500ms = 2s
         grp.update();
         std::this_thread::sleep_for(500ms);
@@ -309,8 +311,8 @@ TEST_CASE("WalkMotorGroup 反转", "[hw_walk][rev_speed]") {
 // [hw_walk][emergency_override] — 急停
 // ────────────────────────────────────────────────────────────────────────────
 TEST_CASE("WalkMotorGroup 急停（emergency_override）", "[hw_walk][emergency_override]") {
-    auto can = std::make_shared<driver::LinuxCanSocket>(hw::kCanIface);
-    device::WalkMotorGroup grp(can, hw::kMotorIdBase, hw::kCommTimeoutMs);
+    auto can = std::make_shared<driver::LinuxCanSocket>(kp.can_iface);
+    device::WalkMotorGroup grp(can, kp.motor_id_base, kp.comm_timeout_ms);
 
     REQUIRE(grp.open() == device::DeviceError::OK);
     grp.set_feedback_mode_all(10u);
@@ -319,7 +321,7 @@ TEST_CASE("WalkMotorGroup 急停（emergency_override）", "[hw_walk][emergency_
     std::this_thread::sleep_for(300ms);
 
     // 先建立运动
-    grp.set_speed_uniform(hw::kTestSpeedRpm);
+    grp.set_speed_uniform(kp.test_speed_rpm);
     grp.update();
     std::this_thread::sleep_for(500ms);
 
@@ -346,8 +348,8 @@ TEST_CASE("WalkMotorGroup 急停（emergency_override）", "[hw_walk][emergency_
 // [hw_walk][override_blocks_set_speeds] — override 期间 set_speeds 封锁
 // ────────────────────────────────────────────────────────────────────────────
 TEST_CASE("WalkMotorGroup override 封锁 set_speeds", "[hw_walk][override_blocks_set_speeds]") {
-    auto can = std::make_shared<driver::LinuxCanSocket>(hw::kCanIface);
-    device::WalkMotorGroup grp(can, hw::kMotorIdBase, hw::kCommTimeoutMs);
+    auto can = std::make_shared<driver::LinuxCanSocket>(kp.can_iface);
+    device::WalkMotorGroup grp(can, kp.motor_id_base, kp.comm_timeout_ms);
 
     REQUIRE(grp.open() == device::DeviceError::OK);
     grp.set_feedback_mode_all(10u);
@@ -362,7 +364,7 @@ TEST_CASE("WalkMotorGroup override 封锁 set_speeds", "[hw_walk][override_block
     const uint32_t frames_before = grp.get_group_diagnostics().ctrl_frame_count;
 
     // 尝试发送速度帧（应被封锁）
-    grp.set_speeds(hw::kTestSpeedRpm, hw::kTestSpeedRpm, hw::kTestSpeedRpm, hw::kTestSpeedRpm);
+    grp.set_speeds(kp.test_speed_rpm, kp.test_speed_rpm, kp.test_speed_rpm, kp.test_speed_rpm);
     grp.update();
     std::this_thread::sleep_for(200ms);
 
@@ -380,8 +382,8 @@ TEST_CASE("WalkMotorGroup override 封锁 set_speeds", "[hw_walk][override_block
 // [hw_walk][clear_override] — 解除急停后恢复驱动
 // ────────────────────────────────────────────────────────────────────────────
 TEST_CASE("WalkMotorGroup 解除急停后恢复驱动", "[hw_walk][clear_override]") {
-    auto can = std::make_shared<driver::LinuxCanSocket>(hw::kCanIface);
-    device::WalkMotorGroup grp(can, hw::kMotorIdBase, hw::kCommTimeoutMs);
+    auto can = std::make_shared<driver::LinuxCanSocket>(kp.can_iface);
+    device::WalkMotorGroup grp(can, kp.motor_id_base, kp.comm_timeout_ms);
 
     REQUIRE(grp.open() == device::DeviceError::OK);
     grp.set_feedback_mode_all(10u);
@@ -402,7 +404,7 @@ TEST_CASE("WalkMotorGroup 解除急停后恢复驱动", "[hw_walk][clear_overrid
 
     // 解除后可以重新驱动
     const uint32_t frames_before = grp.get_group_diagnostics().ctrl_frame_count;
-    grp.set_speed_uniform(hw::kTestSpeedRpm);
+    grp.set_speed_uniform(kp.test_speed_rpm);
     grp.update();
     std::this_thread::sleep_for(200ms);
     const uint32_t frames_after = grp.get_group_diagnostics().ctrl_frame_count;
@@ -424,8 +426,8 @@ TEST_CASE("WalkMotorGroup 解除急停后恢复驱动", "[hw_walk][clear_overrid
 TEST_CASE("WalkMotorGroup 通信超时自保护", "[hw_walk][comm_timeout_self_stop]") {
     constexpr uint16_t kShortTimeout = 300u;  // 300ms 超时（更短，便于测试）
 
-    auto can = std::make_shared<driver::LinuxCanSocket>(hw::kCanIface);
-    device::WalkMotorGroup grp(can, hw::kMotorIdBase, kShortTimeout);
+    auto can = std::make_shared<driver::LinuxCanSocket>(kp.can_iface);
+    device::WalkMotorGroup grp(can, kp.motor_id_base, kShortTimeout);
 
     REQUIRE(grp.open() == device::DeviceError::OK);
     grp.set_feedback_mode_all(10u);
@@ -434,7 +436,7 @@ TEST_CASE("WalkMotorGroup 通信超时自保护", "[hw_walk][comm_timeout_self_s
     std::this_thread::sleep_for(300ms);
 
     // 短暂前进
-    grp.set_speed_uniform(hw::kTestSpeedRpm);
+    grp.set_speed_uniform(kp.test_speed_rpm);
     grp.update();
     std::this_thread::sleep_for(500ms);
     spdlog::info("[hw_walk][comm_timeout_self_stop] 电机运行中，即将关闭 CAN 总线...");
@@ -455,8 +457,8 @@ TEST_CASE("WalkMotorGroup 通信超时自保护", "[hw_walk][comm_timeout_self_s
 // [hw_walk][frame_stats_no_pid] — 帧统计（PID 关）
 // ────────────────────────────────────────────────────────────────────────────
 TEST_CASE("WalkMotorGroup 帧统计（PID 关，10s）", "[hw_walk][frame_stats_no_pid]") {
-    auto can = std::make_shared<driver::LinuxCanSocket>(hw::kCanIface);
-    device::WalkMotorGroup grp(can, hw::kMotorIdBase, hw::kCommTimeoutMs);
+    auto can = std::make_shared<driver::LinuxCanSocket>(kp.can_iface);
+    device::WalkMotorGroup grp(can, kp.motor_id_base, kp.comm_timeout_ms);
 
     REQUIRE(grp.open() == device::DeviceError::OK);
     grp.set_feedback_mode_all(10u);
@@ -465,7 +467,7 @@ TEST_CASE("WalkMotorGroup 帧统计（PID 关，10s）", "[hw_walk][frame_stats_
     grp.set_mode_all(protocol::WalkMotorMode::SPEED);
     std::this_thread::sleep_for(300ms);
 
-    grp.set_speed_uniform(hw::kTestSpeedRpm);
+    grp.set_speed_uniform(kp.test_speed_rpm);
     for (int i = 0; i < 10; ++i) {  // 10 × 500ms = 5s
         grp.update();
         std::this_thread::sleep_for(500ms);
@@ -491,13 +493,13 @@ TEST_CASE("WalkMotorGroup 帧统计（PID 关，10s）", "[hw_walk][frame_stats_
 // ────────────────────────────────────────────────────────────────────────────
 TEST_CASE("WalkMotorGroup 帧统计（PID 开，10s）", "[hw_walk][frame_stats_with_pid]") {
     auto imu_serial =
-        std::make_shared<driver::LibSerialPort>(hw::kImuPort, hal::UartConfig{hw::kImuBaud});
+        std::make_shared<driver::LibSerialPort>(kp.imu_port, hal::UartConfig{kp.imu_baud});
     auto imu = std::make_shared<device::ImuDevice>(imu_serial);
     REQUIRE(imu->open());
     std::this_thread::sleep_for(500ms);
 
-    auto can = std::make_shared<driver::LinuxCanSocket>(hw::kCanIface);
-    device::WalkMotorGroup grp(can, hw::kMotorIdBase, hw::kCommTimeoutMs);
+    auto can = std::make_shared<driver::LinuxCanSocket>(kp.can_iface);
+    device::WalkMotorGroup grp(can, kp.motor_id_base, kp.comm_timeout_ms);
 
     REQUIRE(grp.open() == device::DeviceError::OK);
     grp.set_feedback_mode_all(10u);
@@ -506,7 +508,7 @@ TEST_CASE("WalkMotorGroup 帧统计（PID 开，10s）", "[hw_walk][frame_stats_
     grp.set_mode_all(protocol::WalkMotorMode::SPEED);
     std::this_thread::sleep_for(300ms);
 
-    grp.set_speed_uniform(hw::kTestSpeedRpm);
+    grp.set_speed_uniform(kp.test_speed_rpm);
     for (int i = 0; i < 10; ++i) {  // 10 × 500ms = 5s
         auto d = imu->get_latest();
         grp.update(d.valid ? d.yaw_deg : 0.0f);
