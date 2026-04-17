@@ -963,6 +963,7 @@ public:
         float kd{0.1f};               ///< 微分系数
         float max_output{30.0f};      ///< 最大差速输出（RPM）
         float integral_limit{20.0f};  ///< 积分限幅（RPM）
+        float deadband_deg{0.0f};     ///< 死区（°），|err| ≤ deadband_deg 时输出 0；0.0f = 关闭
     };
 
     HeadingPidController() = default;
@@ -2352,5 +2353,34 @@ avg_rpm /= static_cast<float>(device::WalkMotorGroup::kWheelCount);
 
 ---
 
-*文档更新日期：2026-04-08*  
-*对应代码版本：pv_cleaning_robot @ RK3576 aarch64（WalkMotor 全面替换为 WalkMotorGroup，HealthService 双模式 HEALTH/DIAGNOSTICS，DiagnosticsCollector 已完全移除，RT 调度/CPU 亲和性/PiMutex/mlockall 全面补齐，GPIO 轮询/IRQ 双模式，ISO 8601 JSONL 时间戳）*
+*文档更新日期：2026-04-17*  
+*对应代码版本：pv_cleaning_robot @ RK3576 aarch64（WalkMotor 全面替换为 WalkMotorGroup，HealthService 双模式 HEALTH/DIAGNOSTICS，DiagnosticsCollector 已完全移除，RT 调度/CPU 亲和性/PiMutex/mlockall 全面补齐，GPIO 轮询/IRQ 双模式，ISO 8601 JSONL 时间戳，HeadingPidController 死区，pid_combined 硬件测试）*
+
+---
+
+## 17. 硬件集成测试标签参考
+
+> 在目标机（RK3576）上运行：`./hw_tests "[hw_system][<tag>]"`
+
+| 测试标签 | 说明 |
+|---------|------|
+| `[hw_system][full_init]` | 全栈初始化、FSM → Idle、无崩溃 |
+| `[hw_system][health_real_data]` | HealthService 用真实传感器数据落盘 JSONL |
+| `[hw_system][safety_idle]` | SafetyMonitor 启动后不误触发限位回调 |
+| `[hw_system][motion_then_stop]` | 运动 1s 后急停，验证电机停止且 override 激活 |
+| `[hw_system][watchdog_heartbeat]` | WatchdogMgr 正常心跳 1s 不触发超时 |
+| `[hw_system][combined]` | N 趟完整任务链 + 全程持续采集健康数据（无 PID） |
+| `[hw_system][pid_combined]` | N 趟完整任务链 + 航向 PID + yaw 指标采集到 `pid_jsonl_path` |
+
+### PID 相关配置项（hw_test_config.json）
+
+| 节 | 字段 | 类型 | 默认值 | 说明 |
+|----|------|------|--------|------|
+| `pid` | `kp` | float | 0.5 | 比例系数 |
+| `pid` | `ki` | float | 0.05 | 积分系数 |
+| `pid` | `kd` | float | 0.1 | 微分系数 |
+| `pid` | `max_output` | float | 30.0 | 最大差速输出（RPM） |
+| `pid` | `integral_limit` | float | 20.0 | 积分限幅（RPM） |
+| `pid` | `deadband_deg` | float | 0.0 | 死区（°），0=关闭 |
+| `behavior` | `pid_jsonl_path` | string | `/tmp/hw_pid_test_metrics.jsonl` | PID 指标落盘路径 |
+| `behavior` | `pid_max_drift_deg` | float | 15.0 | 全程最大漂移 CHECK 阈值（°） |
