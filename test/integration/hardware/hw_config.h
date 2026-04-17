@@ -89,6 +89,18 @@ struct HwParams {
     float       limit_test_rpm     = 10.0f;
     float       combined_passes    = 50.0f;  ///< combined 测试趟数（1=一来回，2=两来回…）
     std::string health_jsonl_path  = "/tmp/hw_system_test_health.jsonl";
+    std::string pid_jsonl_path     = "/tmp/hw_pid_test_metrics.jsonl";  ///< PID 指标 JSONL 路径
+    float       pid_max_drift_deg  = 15.0f;  ///< pid_combined: 全程最大 yaw 漂移警告阈值（°）
+
+    /// PID 参数，与 HeadingPidController::Params 字段一一对应
+    struct PidParams {
+        float kp{0.5f};
+        float ki{0.05f};
+        float kd{0.1f};
+        float max_output{30.0f};
+        float integral_limit{20.0f};
+        float deadband_deg{0.0f};
+    } pid;
 };
 
 /// 按优先级查找配置：1. 环境变量 HW_TEST_CONFIG  2. CWD/hw_test_config.json  3. 内嵌默认值
@@ -135,6 +147,14 @@ inline HwParams load_hw_test_config() {
         p.limit_test_rpm     = cfg.get<float>      ("behavior.limit_test_rpm",     p.limit_test_rpm);
         p.combined_passes    = cfg.get<float>      ("behavior.combined_passes",    p.combined_passes);
         p.health_jsonl_path  = cfg.get<std::string>("behavior.health_jsonl_path",  p.health_jsonl_path);
+        p.pid_jsonl_path     = cfg.get<std::string>("behavior.pid_jsonl_path",     p.pid_jsonl_path);
+        p.pid_max_drift_deg  = cfg.get<float>      ("behavior.pid_max_drift_deg",  p.pid_max_drift_deg);
+        p.pid.kp             = cfg.get<float>      ("pid.kp",                      p.pid.kp);
+        p.pid.ki             = cfg.get<float>      ("pid.ki",                      p.pid.ki);
+        p.pid.kd             = cfg.get<float>      ("pid.kd",                      p.pid.kd);
+        p.pid.max_output     = cfg.get<float>      ("pid.max_output",              p.pid.max_output);
+        p.pid.integral_limit = cfg.get<float>      ("pid.integral_limit",          p.pid.integral_limit);
+        p.pid.deadband_deg   = cfg.get<float>      ("pid.deadband_deg",            p.pid.deadband_deg);
         spdlog::debug("[hw_config] Loaded config: {}", path);
     } catch (const std::exception& e) {
         spdlog::warn("[hw_config] Exception loading config {}: {} — using built-in defaults",
@@ -229,6 +249,13 @@ struct FullSystemFixture : DeviceFixture {
         motion_cfg.return_brush_rpm = 0;
         motion_cfg.edge_reverse_rpm = 0.0f;
         motion_cfg.heading_pid_en = pid_enabled;
+        // 将配置文件中的 PID 参数传入（无论是否使能，均写入供 start_cleaning 时生效）
+        motion_cfg.pid.kp             = p.pid.kp;
+        motion_cfg.pid.ki             = p.pid.ki;
+        motion_cfg.pid.kd             = p.pid.kd;
+        motion_cfg.pid.max_output     = p.pid.max_output;
+        motion_cfg.pid.integral_limit = p.pid.integral_limit;
+        motion_cfg.pid.deadband_deg   = p.pid.deadband_deg;
 
         motion =
             std::make_shared<service::MotionService>(walk_group, brush, imu, event_bus, motion_cfg);
