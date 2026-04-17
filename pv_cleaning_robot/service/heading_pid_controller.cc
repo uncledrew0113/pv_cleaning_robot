@@ -1,5 +1,7 @@
 #include "pv_cleaning_robot/service/heading_pid_controller.h"
 
+#include <cmath>
+
 namespace robot::service {
 
 HeadingPidController::HeadingPidController(const Params& p) : params_(p) {}
@@ -42,13 +44,17 @@ float HeadingPidController::compute(float yaw_deg, float dt_s) {
 
     float err = norm_angle(target_ - yaw_deg);
 
-    // 积分（带限幅）
+    // 积分（带限幅；死区内也累积，避免退出死区时出现积分滞后）
     integral_ += err * dt_s;
     integral_ = clamp(integral_, -params_.integral_limit, params_.integral_limit);
 
     // 微分
     float derivative = (dt_s > 0.0f) ? (err - prev_err_) / dt_s : 0.0f;
-    prev_err_ = err;
+    prev_err_ = err;  // 死区内也更新，确保退出死区时导数平滑
+
+    // 死区：|err| ≤ deadband_deg 时抑制输出
+    if (params_.deadband_deg > 0.0f && std::abs(err) <= params_.deadband_deg)
+        return 0.0f;
 
     float output = params_.kp * err + params_.ki * integral_ + params_.kd * derivative;
     return clamp(output, -params_.max_output, params_.max_output);

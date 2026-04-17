@@ -28,6 +28,7 @@ class HeadingPidController {
         float kd{0.1f};               ///< 微分系数
         float max_output{30.0f};      ///< 最大差速输出（RPM），防止饱和
         float integral_limit{20.0f};  ///< 积分限幅（RPM）
+        float deadband_deg{0.0f};     ///< 死区（°），|err| ≤ deadband_deg 时输出 0；0.0f = 关闭
     };
 
     /// 使用默认参数构造

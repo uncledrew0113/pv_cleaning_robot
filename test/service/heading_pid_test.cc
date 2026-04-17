@@ -143,6 +143,57 @@ TEST_CASE("HeadingPidController: 积分限幅", "[service][heading_pid]") {
     REQUIRE(c == Approx(-10.0f).margin(0.5f));
 }
 
+// ── 死区（Deadband）────────────────────────────────────────────────────────
+
+TEST_CASE("HeadingPidController: deadband=0 时行为不变", "[service][heading_pid]") {
+    HeadingPidController::Params p = kp_only(2.0f);
+    p.deadband_deg = 0.0f;
+    HeadingPidController pid(p);
+    pid.enable(true);
+    pid.set_target(0.0f);
+
+    // |err|=5°，deadband=0 → 正常计算，correction = kp*err = 2*(-5) = -10
+    float c = pid.compute(5.0f, 0.0f);  // err = 0 - 5 = -5
+    REQUIRE(c != Approx(0.0f).margin(0.01f));
+    REQUIRE(c == Approx(-10.0f).margin(0.01f));
+}
+
+TEST_CASE("HeadingPidController: 误差在死区内返回 0", "[service][heading_pid]") {
+    HeadingPidController::Params p = kp_only(2.0f);
+    p.deadband_deg = 2.0f;
+    HeadingPidController pid(p);
+    pid.enable(true);
+    pid.set_target(0.0f);
+
+    // |err|=1.5° < 2.0° → correction = 0
+    float c = pid.compute(1.5f, 0.0f);
+    REQUIRE(c == Approx(0.0f).margin(0.001f));
+}
+
+TEST_CASE("HeadingPidController: 误差恰好等于死区边界返回 0", "[service][heading_pid]") {
+    HeadingPidController::Params p = kp_only(2.0f);
+    p.deadband_deg = 2.0f;
+    HeadingPidController pid(p);
+    pid.enable(true);
+    pid.set_target(0.0f);
+
+    // |err|=2.0° == deadband（≤ 判断）→ correction = 0
+    float c = pid.compute(2.0f, 0.0f);
+    REQUIRE(c == Approx(0.0f).margin(0.001f));
+}
+
+TEST_CASE("HeadingPidController: 超出死区范围正常计算", "[service][heading_pid]") {
+    HeadingPidController::Params p = kp_only(2.0f);
+    p.deadband_deg = 2.0f;
+    HeadingPidController pid(p);
+    pid.enable(true);
+    pid.set_target(0.0f);
+
+    // |err|=5° > 2.0° → correction = kp * err = 2 * (-5) = -10
+    float c = pid.compute(5.0f, 0.0f);
+    REQUIRE(c == Approx(-10.0f).margin(0.01f));
+}
+
 TEST_CASE("HeadingPidController: set_params 热更新不复位积分", "[service][heading_pid]") {
     HeadingPidController::Params p = kp_only(1.0f);
     p.ki = 1.0f;
