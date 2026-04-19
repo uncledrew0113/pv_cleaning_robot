@@ -37,7 +37,11 @@ void FaultHandler::on_fault(const service::FaultService::FaultEvent& evt)
         dispatch_fn_(evt);
         break;
     case Level::P1:
-        // 停止清扫，启动返回
+        // P1 故障：先停辊刷，再启动返程，最后通知 FSM
+        // 注意：dispatch_fn_ 将触发 RobotFsm::dispatch<EvFaultP1>()，
+        // FSM 内部会进一步调用 motion_->start_returning_no_brush()（停刷+返回）。
+        // 此处 stop_cleaning() + start_returning() 是 P1 的首次运动状态变更，
+        // FSM 的 start_returning_no_brush() 会再次确认停刷状态，两者不冲突。
         motion_->stop_cleaning();
         motion_->start_returning();
         dispatch_fn_(evt);

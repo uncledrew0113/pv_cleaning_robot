@@ -99,7 +99,7 @@ struct BmsCellVoltages {
  *
  *   for (uint8_t b : rx_bytes) {
  *       parser.push_byte(b);
- *               && parser.get_cmd() == 0x03) {
+ *       if (parser.frame_complete() && parser.get_cmd() == 0x03) {
  *           auto info = BmsProtocol::decode_basic_info(
  *               parser.get_data(), parser.get_data_len());
  *       }

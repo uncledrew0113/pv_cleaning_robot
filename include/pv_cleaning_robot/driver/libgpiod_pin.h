@@ -4,7 +4,10 @@
  * @LastEditors: UncleDrew
  * @LastEditTime: 2026-03-24 11:37:17
  * @FilePath: /pv_cleaning_robot/include/pv_cleaning_robot/driver/libgpiod_pin.h
- * @Description:
+ * @Description: libgpiod v1.6 GPIO 引脚驱动实现。
+ *               支持输入（边沿检测）和输出两种模式。
+ *               边沿检测优先使用硬件 IRQ，不可用时自动回退至 1ms 软件轮询。
+ *               支持软件消抖（可配置延迟）、RT 提权（SCHED_FIFO）和 CPU 绑定。
  *
  * Copyright (c) 2026 by UncleDrew, All Rights Reserved.
  */

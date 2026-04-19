@@ -30,11 +30,11 @@ class ImuDevice {
         float gyro[3];   ///< 角速度 rad/s  [x,y,z]
         float mag[3];    ///< 磁场   uT      [x,y,z]
         float quat[4];   ///< 四元数 [w,x,y,z]
-        float roll_deg;
-        float pitch_deg;
-        float yaw_deg;
-        uint64_t timestamp_us;
-        bool valid;
+        float    roll_deg;       ///< 横滚角（度，-180~+180）
+        float    pitch_deg;      ///< 俯仰角（度，-90~+90）
+        float    yaw_deg;        ///< 航向角（度，-180~+180；顺时针为正）
+        uint64_t timestamp_us;   ///< 设备本地时间戳（微秒，取自系统单调时钟）
+        bool     valid;          ///< 数据有效标志：read_loop 至少解析出 1 帧后置 true；超过 1s 无帧则清除
     };
 
     struct DeviceInfo {

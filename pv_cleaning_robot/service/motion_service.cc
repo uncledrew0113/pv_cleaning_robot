@@ -187,8 +187,9 @@ void MotionService::update() {
     group_->update(filtered_yaw_);
 
     // 注意：brush_->update() 已移到 bms_exec 线程（SCHED_OTHER, 500ms）
-    // 原因：Modbus RTU 读取寄存器需 5~10ms阶塞 I/O，放在 walk_ctrl(FIFO 80, 20ms)
-    // 中将住用 25%~50% 控制周期时间预算。BrushMotor 状态 50~500ms 周期平候
+    // 原因：Modbus RTU 读取寄存器需 5~10ms 阻塞 I/O，放在 walk_ctrl(FIFO 80, 20ms)
+    // 中将占用 25%~50% 控制周期时间预算。BrushMotor 状态 50~500ms 周期变化，
+    // 移至低优先级 bms_exec 线程可完全消除对运动控制周期的干扰。
 }
 
 }  // namespace robot::service

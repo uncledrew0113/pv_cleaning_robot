@@ -58,7 +58,10 @@ class MotionService : public middleware::IRunnable {
     /// 以返回速度反向行进（辊刷反向运行，保持航向 PID）
     bool start_returning();
 
-    /// 以返回速度反向行进，不启动辊刷（P1 故障路径，辊刷已停）
+    /// @brief P1 故障路径：先停辊刷，再以返回速度倒退回停机位。
+    ///
+    /// 由 RobotFsm::dispatch<EvFaultP1>() 调用；与 start_returning() 的区别是
+    /// 辊刷立即停止（不反向运行），适用于需要避免辊刷二次损伤的故障场景。
     bool start_returning_no_brush();
 
     /// 原地急停（失能行走，停辊刷）

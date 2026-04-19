@@ -25,6 +25,11 @@ class NavService : public middleware::IRunnable {
         bool valid{false};
     };
 
+    /// @param walk              行走电机组，用于读取各轮速度反馈
+    /// @param imu               IMU 设备，用于读取航向角
+    /// @param gps               GPS 设备，用于读取经纬度坐标
+    /// @param wheel_circumference_m 车轮周长（米），用于里程积分；
+    ///        典型值：0.628f（直径 200mm 橡胶轮，π × 0.2）；默认 0.3f（小型测试轮）
     NavService(std::shared_ptr<device::WalkMotorGroup> walk,
                std::shared_ptr<device::ImuDevice>      imu,
                std::shared_ptr<device::GpsDevice>      gps,

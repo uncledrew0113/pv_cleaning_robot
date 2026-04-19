@@ -37,7 +37,9 @@ public:
     bool publish(const std::string& topic,
                  const std::string& payload) override;
 
-    /// LoRaWAN 下行订阅（作为回调注册，当收到下行消息时触发）
+    /// LoRaWAN 下行订阅（作为回调注册，当收到下行消息时触发）。
+    /// @note LoRaWAN 单信道限制：仅支持一个下行回调槽（downlink_cb_），
+    ///       重复调用将覆盖上一个回调。如需多路分发，请在回调内部自行路由。
     bool subscribe(const std::string& topic, MessageCallback cb) override;
 
 private:

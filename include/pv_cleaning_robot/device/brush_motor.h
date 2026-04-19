@@ -61,7 +61,7 @@ public:
     Status      get_status() const;
     Diagnostics get_diagnostics() const;
 
-    // ── 周期更新（50ms）─────────────────────────────────────────
+    // ── 周期更新（500ms，由 bms_exec 线程 SCHED_OTHER 调用）─────────────────
     void update();
 
 private:

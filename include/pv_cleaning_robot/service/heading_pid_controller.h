@@ -67,7 +67,9 @@ class HeadingPidController {
     float integral_{0.0f};
     float prev_err_{0.0f};
 
+    /// 将角度规范化到 (-180, +180] 区间，处理 0°/360° 跨越边界的误差计算
     static float norm_angle(float deg);
+    /// 通用限幅：将 v 限制在 [lo, hi] 范围内
     static float clamp(float v, float lo, float hi);
 };
 

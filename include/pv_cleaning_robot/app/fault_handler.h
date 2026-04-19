@@ -20,8 +20,10 @@ class FaultHandler {
                  middleware::EventBus& bus,
                  FsmDispatchFn dispatch_fn);
 
-    ~FaultHandler();  ///< 析构时自动取消 EventBus 订阅，防止回调悬空指针/// 注册 EventBus 监听（在
-                      ///< EventBus 上订阅 FaultEvent）
+    /// 析构时自动取消 EventBus 订阅，防止回调访问悬空指针
+    ~FaultHandler();
+
+    /// 注册 EventBus 监听（订阅 FaultEvent），必须在 EventBus 和 MotionService 就绪后调用
     void start_listening();
 
    private:

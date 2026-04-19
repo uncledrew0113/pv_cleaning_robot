@@ -17,7 +17,12 @@ namespace robot::service {
 class FaultService {
 public:
     struct FaultEvent {
-        enum class Level { P0, P1, P2, P3 };
+        enum class Level {
+            P0,  ///< 严重故障：立即急停，FSM → Fault 状态，等待人工复位
+            P1,  ///< 一般故障：停辊刷，安全返回停机位，FSM → Returning
+            P2,  ///< 告警：降速继续，告警上报（EventBus），不转换 FSM 状态
+            P3   ///< 提示：仅记录日志，不影响运行
+        };
         Level       level{Level::P3};
         uint32_t    code{0};
         std::string description;

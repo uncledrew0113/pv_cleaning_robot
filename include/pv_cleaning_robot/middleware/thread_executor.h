@@ -8,7 +8,25 @@
 
 namespace robot::middleware {
 
-/// @brief 可调度任务接口
+/// @brief 可调度任务接口。
+///
+/// 使用方式（推荐用 RunnableAdapter 包装 lambda）：
+/// @code
+/// // 方式1：实现接口
+/// struct MyTask : IRunnable {
+///     void update() override { /* 业务逻辑 */ }
+/// };
+///
+/// // 方式2：lambda 包装（推荐）
+/// auto exec = ThreadExecutor(ThreadExecutor::Config{
+///     .name = "my_worker",
+///     .period_ms = 50,
+///     .sched_policy = SCHED_FIFO,
+///     .sched_priority = 80,
+/// });
+/// exec.add_runnable(std::make_shared<RunnableAdapter>([]{ /* ... */ }));
+/// exec.start();
+/// @endcode
 struct IRunnable {
     virtual ~IRunnable() = default;
     virtual void update() = 0;

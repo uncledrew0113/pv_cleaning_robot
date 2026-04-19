@@ -24,7 +24,8 @@ public:
     void set_on_task_start(TaskCallback cb);
     void set_on_task_end(TaskCallback cb);
 
-    /// 检查是否进入调度窗口（应由 1Hz 循环调用）
+    /// 检查是否进入调度窗口（由主循环定期调用，main.cc 以 100ms 间隔调用，即 ~10Hz）。
+    /// 内部计时器精度取决于调用间隔；建议调用间隔 ≤ 1000ms。
     void tick();
 
 private:
