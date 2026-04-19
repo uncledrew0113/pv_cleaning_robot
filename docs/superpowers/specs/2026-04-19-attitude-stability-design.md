@@ -78,14 +78,22 @@ bool tilt_comp_en{true};  ///< 使能 roll/pitch 倾斜补偿（默认开启）
 const auto imu_data = imu_ ? imu_->get_latest() : device::ImuDevice::ImuData{};
 float raw_yaw = imu_data.yaw_deg;
 
-// 倾斜补偿：将机体 yaw 投影到水平面，消除 roll/pitch 引起的虚假航向偏差
+// ── IMU 坐标轴说明（Y 轴=前进方向，右手法则，X=右，Y=前，Z=上）────────────────
+// roll_deg  (绕X轴) = 纵向倾斜（前后俯仰，上坡/下坡）→ 公式中"pitch"角色
+// pitch_deg (绕Y轴) = 横向倾斜（上下边框高差，机身左右倾）→ 公式中"roll"角色
+// 注意：IMU 字段名称与飞行器惯例（X=前进）相反，实测时建议手动倾斜验证符号方向。
+// ────────────────────────────────────────────────────────────────────────────
+
+// 倾斜补偿：将机体 yaw 投影到水平面，消除横向/纵向倾斜引起的虚假航向偏差
 if (cfg_.tilt_comp_en && imu_data.valid) {
-    const float r = imu_data.roll_deg  * kDegToRad;
-    const float p = imu_data.pitch_deg * kDegToRad;
-    const float y = raw_yaw            * kDegToRad;
+    // phi   = 横向倾斜角（绕Y轴，IMU pitch_deg）= 公式中的 "roll"
+    // theta = 纵向倾斜角（绕X轴，IMU roll_deg） = 公式中的 "pitch"
+    const float phi   = imu_data.pitch_deg * kDegToRad;
+    const float theta = imu_data.roll_deg  * kDegToRad;
+    const float y     = raw_yaw            * kDegToRad;
     raw_yaw = std::atan2(
-        std::sin(y)*std::cos(p) - std::cos(y)*std::sin(r)*std::sin(p),
-        std::cos(y)*std::cos(r) + std::sin(y)*std::sin(r)*std::sin(p)
+        std::sin(y)*std::cos(theta) - std::cos(y)*std::sin(phi)*std::sin(theta),
+        std::cos(y)*std::cos(phi)   + std::sin(y)*std::sin(phi)*std::sin(theta)
     ) * kRadToDeg;
 }
 
@@ -99,9 +107,9 @@ group_->update(filtered_yaw_);
 
 | 场景 | 原行为 | 新行为 |
 |---|---|---|
-| 平地直行 | PID 稳定 | 无变化（roll≈0, pitch≈0，补偿量≈0） |
-| 接缝处侧倾 15° | PID 误加 ~8 RPM 差速 | yaw 补偿后误差 < 0.5°，PID 静默 |
-| 斜面行驶（pitch 10°） | yaw 漂移 ~1.5° | 补偿后 yaw 稳定 |
+| 平地直行 | PID 稳定 | 无变化（pitch_deg≈0，补偿量≈0） |
+| 接缝处横向倾斜 15° (pitch_deg=15°) | PID 误加 ~8 RPM 差速 | yaw 补偿后误差 < 0.5°，PID 静默 |
+| 上坡行驶（roll_deg=10°） | yaw 漂移 ~1.5° | 补偿后 yaw 稳定 |
 
 ---
 
@@ -109,10 +117,15 @@ group_->update(filtered_yaw_);
 
 ### 原理
 
-利用 IMU 陀螺仪（`gyro[0]` = roll 角速度，`gyro[1]` = pitch 角速度，单位 rad/s）检测接缝穿越事件。过缝时角速度会出现明显脉冲，检测到后：
+利用 IMU 陀螺仪检测接缝穿越事件。过缝时角速度会出现明显脉冲，检测到后：
 
 1. **降低行走速度** × `joint_speed_scale`（减少冲击力）
 2. **扩大 PID 死区** × `joint_deadband_scale`（避免颠簸中反复纠偏）
+
+**陀螺仪轴映射（Y=前进方向，右手法则）：**
+- `gyro[1]`（Y轴角速度）= 横向倾斜率 = **接缝高差的主要激发轴**（LT/RT与LB/RB高差变化）
+- `gyro[0]`（X轴角速度）= 纵向倾斜率 = 纵向高差激发轴（前后轮高差）
+- 两轴均监控，任一超阈值即触发接缝状态
 
 穿越结束后自动恢复正常速度和死区。
 
@@ -153,12 +166,12 @@ device::WalkMotorGroup::SpeedCmd base_cmd_{};
 
 ```cpp
 // 接缝检测（陀螺仪角速度，rad/s → deg/s）
-// gyro[0] = x 轴角速度 (≈ roll rate)，gyro[1] = y 轴角速度 (≈ pitch rate)
-// 注意：具体轴映射依 IMU 安装方向确定，实测时用 spdlog::debug 打印验证
-const float roll_rate_dps  = std::abs(imu_data.gyro[0]) * kRadToDeg;
-const float pitch_rate_dps = std::abs(imu_data.gyro[1]) * kRadToDeg;
-const bool  high_rate = (roll_rate_dps  > cfg_.joint_detect_rate_dps ||
-                         pitch_rate_dps > cfg_.joint_detect_rate_dps);
+// gyro[1] = Y轴角速度 = 横向倾斜率（上下边框高差方向，接缝穿越主要激发轴）
+// gyro[0] = X轴角速度 = 纵向倾斜率（前后轮高差方向，次要激发轴）
+const float lateral_rate_dps  = std::abs(imu_data.gyro[1]) * kRadToDeg;
+const float fore_aft_rate_dps = std::abs(imu_data.gyro[0]) * kRadToDeg;
+const bool  high_rate = (lateral_rate_dps  > cfg_.joint_detect_rate_dps ||
+                         fore_aft_rate_dps > cfg_.joint_detect_rate_dps);
 
 if (joint_state_ == JointState::kNormal) {
     if (high_rate) {
@@ -235,12 +248,15 @@ SafetyMonitor(std::shared_ptr<device::WalkMotorGroup> walk_group,
               std::shared_ptr<device::ImuDevice>      imu = nullptr);
 
 // 姿态监控配置
+// ⚠ IMU Y=前进方向（右手法则）坐标约定：
+//   pitch_deg (绕Y轴) = 横向倾斜 = LT/RT 与 LB/RB 高差 → 下边框平轮失约束主要风险
+//   roll_deg  (绕X轴) = 纵向倾斜 = 上坡/下坡                → 陡坡风险
 struct AttitudeConfig {
     bool  en{false};
-    float roll_warn_deg{15.0f};    ///< 横滚角警告阈值 → kWarn 事件
-    float roll_limit_deg{25.0f};   ///< 横滚角限制阈值 → kLimit 急停
-    float pitch_warn_deg{25.0f};   ///< 俯仰角警告阈值 → kWarn 事件
-    float pitch_limit_deg{35.0f};  ///< 俯仰角限制阈值 → kLimit 急停
+    float pitch_warn_deg{15.0f};   ///< 横向倾斜（pitch_deg）警告阈值 → kWarn 事件（上下边框高差）
+    float pitch_limit_deg{25.0f};  ///< 横向倾斜（pitch_deg）限制阈值 → kLimit 急停
+    float roll_warn_deg{25.0f};    ///< 纵向倾斜（roll_deg） 警告阈值 → kWarn 事件（上坡/下坡）
+    float roll_limit_deg{35.0f};   ///< 纵向倾斜（roll_deg） 限制阈值 → kLimit 急停
 };
 
 // 姿态预警事件（由 FaultHandler 订阅）
@@ -267,16 +283,18 @@ std::atomic<uint64_t> last_warn_ts_{0};  ///< kWarn 上次发布时间戳（限�
 if (att_cfg_.en && imu_) {
     const auto d = imu_->get_latest();
     if (d.valid) {
-        const float abs_roll  = std::abs(d.roll_deg);
+        // pitch_deg = 横向倾斜（上下边框高差，主要安全风险）
+        // roll_deg  = 纵向倾斜（上坡/下坡，次要风险）
         const float abs_pitch = std::abs(d.pitch_deg);
-        if (abs_roll  >= att_cfg_.roll_limit_deg ||
-            abs_pitch >= att_cfg_.pitch_limit_deg) {
+        const float abs_roll  = std::abs(d.roll_deg);
+        if (abs_pitch >= att_cfg_.pitch_limit_deg ||
+            abs_roll  >= att_cfg_.roll_limit_deg) {
             // P1：立即急停（每次超限均触发，急停幂等）
             walk_group_->emergency_override(0.0f);
             event_bus_.publish(AttitudeAlertEvent{
                 AttitudeAlertEvent::Level::kLimit, d.roll_deg, d.pitch_deg});
-        } else if (abs_roll  >= att_cfg_.roll_warn_deg ||
-                   abs_pitch >= att_cfg_.pitch_warn_deg) {
+        } else if (abs_pitch >= att_cfg_.pitch_warn_deg ||
+                   abs_roll  >= att_cfg_.roll_warn_deg) {
             // P2：发布警告，限流 1 次/秒，防止每 5ms 泛洪事件总线
             const uint64_t now = now_ms();
             if (now - last_warn_ts_.load(std::memory_order_relaxed) >= 1000u) {
@@ -326,13 +344,17 @@ void FaultHandler::on_attitude_alert(const SafetyMonitor::AttitudeAlertEvent& e)
   },
   "safety": {
     "attitude_en": true,
-    "roll_warn_deg": 15.0,
-    "roll_limit_deg": 25.0,
-    "pitch_warn_deg": 25.0,
-    "pitch_limit_deg": 35.0
+    "pitch_warn_deg": 15.0,
+    "pitch_limit_deg": 25.0,
+    "roll_warn_deg": 25.0,
+    "roll_limit_deg": 35.0
   }
 }
 ```
+
+> **⚠ 字段名说明（IMU Y=前进方向）：**  
+> `pitch_*_deg` = 横向倾斜（上下边框高差，绕Y轴，**主要安全风险**，阈值较低）  
+> `roll_*_deg`  = 纵向倾斜（上坡/下坡，绕X轴，次要风险，阈值较高）
 
 **向后兼容**：`tilt_comp_en` 和 `attitude_en` 默认 false，旧配置文件无需修改即可使用。
 
@@ -343,7 +365,7 @@ void FaultHandler::on_attitude_alert(const SafetyMonitor::AttitudeAlertEvent& e)
 | 文件 | 改动摘要 |
 |---|---|
 | `include/.../service/motion_service.h` | Config 新增 7 个字段；私有成员新增 JointState + 4 个变量 |
-| `.../service/motion_service.cc` | `update()` 增加倾斜补偿 + 接缝状态机；`start_*()` 记录 `base_speed_rpm_` |
+| `.../service/motion_service.cc` | `update()` 增加倾斜补偿 + 接缝状态机；`start_*()` 记录 `base_cmd_` |
 | `include/.../middleware/safety_monitor.h` | 新增 `AttitudeConfig`、`AttitudeAlertEvent`；构造函数增加可选 imu；新增 `set_attitude_config()` |
 | `.../middleware/safety_monitor.cc` | 构造函数存储 imu；`monitor_loop()` 增加姿态检查 |
 | `include/.../app/fault_handler.h` | 新增 `on_attitude_alert()` 声明 |
@@ -363,9 +385,10 @@ void FaultHandler::on_attitude_alert(const SafetyMonitor::AttitudeAlertEvent& e)
 
 ### 硬件测试（在机器上）
 
-1. 人工倾斜机器人，验证 `roll_limit_deg` 触发急停
-2. 过真实接缝，观察日志中 "joint crossing enter/exit" 及速度变化
-3. 平地对比测试：`tilt_comp_en: false` vs `true`，对比 PID 误纠偏次数
+1. **验证 IMU 轴方向**（首先执行）：静止时向上边框侧（LT/RT侧）倾斜机器人，确认 `pitch_deg` 增大（而非 `roll_deg`）；向前进方向倾斜，确认 `roll_deg` 变化。若反之，则阈值字段名需对调。
+2. 人工倾斜机器人超过 `pitch_limit_deg`，验证急停触发
+3. 过真实接缝，观察日志中 "joint crossing enter/exit" 及速度变化
+4. 平地对比测试：`tilt_comp_en: false` vs `true`，对比 PID 误纠偏次数
 
 ---
 
@@ -376,5 +399,9 @@ void FaultHandler::on_attitude_alert(const SafetyMonitor::AttitudeAlertEvent& e)
 | `joint_detect_rate_dps` | 25 °/s | 过接缝不触发 → 降低；平地误触发 → 提高 |
 | `joint_speed_scale` | 0.6 | 仍卡死 → 降低；过缝太慢影响效率 → 提高 |
 | `joint_deadband_scale` | 2.0 | 过缝中仍纠偏 → 提高；过缝后恢复慢 → 降低 |
-| `roll_warn_deg` | 15° | 根据实测最大正常过缝 roll 角调整 |
-| `roll_limit_deg` | 25° | 确保低于轮子失去约束的临界角 |
+| `pitch_warn_deg` | 15° | 根据实测最大正常过缝 pitch_deg 值调整（横向倾斜） |
+| `pitch_limit_deg` | 25° | 确保低于下边框平轮失去约束的临界角 |
+| `roll_warn_deg` | 25° | 根据实测最大坡度行驶 roll_deg 值调整（纵向倾斜） |
+| `roll_limit_deg` | 35° | 确保低于机器人倾覆临界角 |
+
+> **⚠ 实测优先**：以上阈值为初始值，需在实际光伏板上测量正常行驶的最大 pitch_deg/roll_deg 后，将阈值设为该值的 1.5~2 倍。
