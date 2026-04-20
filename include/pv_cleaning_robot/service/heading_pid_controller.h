@@ -17,8 +17,9 @@ namespace robot::service {
 /// **非线程安全**：所有方法须在调用方的锁保护下调用（通常为 WalkMotorGroup::mtx_）。
 /// 本类不含任何硬件/CAN 依赖，便于独立单元测试。
 ///
-/// 差速约定：correction > 0 → 偏右（yaw < target），左轮加速/右轮减速；
-///           correction < 0 → 偏左，右轮加速/左轮减速。
+/// 差速约定（IMU 顺时针为正/CW+）：
+///   correction > 0 → 偏左（yaw < target，向左偏转未达目标），左轮加速/右轮减速 → 机器人向右纠偏；
+///   correction < 0 → 偏右（yaw > target，向右偏转超过目标），右轮加速/左轮减速 → 机器人向左纠偏。
 class HeadingPidController {
    public:
     /// PID 调参（与原 WalkMotorGroup::HeadingPidParams 字段完全一致）

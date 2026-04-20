@@ -459,7 +459,7 @@ void WalkMotorGroup::update(float yaw_deg) {
 
         if (has && pid_ctrl_.is_enabled()) {
             float correction = pid_ctrl_.compute(yaw_deg, dt_s);
-            // correction > 0 → 偏右（yaw < target），加大左侧速度
+            // correction > 0 → 偏左（yaw < target；CW+ 约定：yaw 减小=向左转），加大左侧速度使机器人向右纠偏
             float lt = clamp_rpm(base_lt_rpm_ + correction);
             float rt = clamp_rpm(base_rt_rpm_ - correction);
             // 物理安装：LB/RB 安装方向与 LT/RT 相反，需取反才能同向运动
