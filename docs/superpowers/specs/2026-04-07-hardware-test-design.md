@@ -78,7 +78,7 @@ constexpr int kOnlineTimeoutMs   = 600;  // 等待电机上线最大时间
 
 #### `hw::FullSystemFixture`（全层栈）
 继承 `DeviceFixture`，额外构造：
-- `MockModbusMaster` → `BrushMotor`（辊刷未安装，Mock 替代）
+- `MockModbusMaster` → `BrushMotor`（滚刷未安装，Mock 替代）
 - `EventBus`
 - `SafetyMonitor`（持有 walk_group 引用）
 - `NavService`（10ms 周期）

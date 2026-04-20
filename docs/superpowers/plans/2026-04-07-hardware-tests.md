@@ -81,7 +81,7 @@ test/CMakeLists.txt                 (修改) hw_tests 目标加入 3 个新文�
 #include "pv_cleaning_robot/app/robot_fsm.h"
 #include "pv_cleaning_robot/app/watchdog_mgr.h"
 
-// Mock（辊刷电机未安装）
+// Mock（滚刷电机未安装）
 #include "mock/mock_modbus_master.h"
 
 namespace hw {
@@ -184,7 +184,7 @@ struct FullSystemFixture : DeviceFixture {
         service::MotionService::Config motion_cfg;
         motion_cfg.clean_speed_rpm  = kTestSpeedRpm;
         motion_cfg.return_speed_rpm = kTestReturnRpm;
-        motion_cfg.brush_rpm        = 0;   // MockModbus，不实际驱动辊刷
+        motion_cfg.brush_rpm        = 0;   // MockModbus，不实际驱动滚刷
         motion_cfg.return_brush_rpm = 0;
         motion_cfg.edge_reverse_rpm = 0.0f;
         motion_cfg.heading_pid_en   = pid_enabled;

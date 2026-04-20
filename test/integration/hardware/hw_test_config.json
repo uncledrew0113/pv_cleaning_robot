@@ -22,10 +22,10 @@
     "loop_period_ms":      50
   },
   "behavior": {
-    "test_speed_rpm":      10.0,
-    "test_return_rpm":     10.0,
+    "test_speed_rpm":      20.0,
+    "test_return_rpm":     20.0,
     "sweep_rpm":           20.0,
-    "limit_test_rpm":      10.0,
+    "limit_test_rpm":      20.0,
     "combined_passes":     50.0,
     "health_jsonl_path":   "/tmp/hw_system_test_health.jsonl",
     "pid_jsonl_path":      "/tmp/hw_pid_test_metrics.jsonl",
@@ -37,6 +37,6 @@
     "kd":             0.1,
     "max_output":     30.0,
     "integral_limit": 20.0,
-    "deadband_deg":   0.0
+    "deadband_deg":   3.0
   }
 }

@@ -218,10 +218,10 @@ bool start_returning_no_brush();
 ```
 Replace with:
 ```cpp
-/// @brief P1 故障路径：先停辊刷，再以返回速度倒退回停机位。
+/// @brief P1 故障路径：先停滚刷，再以返回速度倒退回停机位。
 ///
 /// 由 RobotFsm::dispatch<EvFaultP1>() 调用；与 start_returning() 的区别是
-/// 辊刷不反向运行（刷电机立即停止），适用于需要避免辊刷二次损伤的故障场景。
+/// 滚刷不反向运行（刷电机立即停止），适用于需要避免滚刷二次损伤的故障场景。
 bool start_returning_no_brush();
 ```
 
@@ -235,7 +235,7 @@ Replace with:
 ```cpp
 enum class Level {
     P0,  ///< 严重故障：立即急停，FSM → Fault 状态，等待人工复位
-    P1,  ///< 一般故障：停辊刷，安全返回停机位，FSM → Returning
+    P1,  ///< 一般故障：停滚刷，安全返回停机位，FSM → Returning
     P2,  ///< 告警：降速继续，告警上报（EventBus），不转换 FSM 状态
     P3   ///< 提示：仅记录日志，不影响运行
 };
@@ -461,7 +461,7 @@ case Level::P1:
 Replace with:
 ```cpp
 case Level::P1:
-    // P1 故障：先停辊刷，再启动返程，最后通知 FSM
+    // P1 故障：先停滚刷，再启动返程，最后通知 FSM
     // 注意：dispatch_fn_ 将触发 RobotFsm::dispatch<EvFaultP1>()，
     // FSM 内部会进一步调用 motion_->start_returning_no_brush()（停刷+返回）。
     // 此处 stop_cleaning() + start_returning() 是 P1 的首次运动状态变更，

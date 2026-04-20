@@ -11,7 +11,7 @@
 
 namespace robot::service {
 
-/// @brief 运动控制服务——协调行走电机组与辊刷电机
+/// @brief 运动控制服务——协调行走电机组与滚刷电机
 ///
 /// 新增功能：
 ///   1. 通信超时保活：WalkMotorGroup 在 open() 时自动下发 comm_timeout_ms
@@ -30,15 +30,15 @@ class MotionService : public middleware::IRunnable {
     struct Config {
         float clean_speed_rpm{30.0f};   ///< 清扫行进速度（RPM）
         float return_speed_rpm{30.0f};  ///< 返回速度（RPM，快速）
-        int brush_rpm{1200};            ///< 辊刷正向转速
-        int return_brush_rpm{1200};     ///< 辊刷返程转速（绝对值，实际方向取反）
+        int brush_rpm{1200};            ///< 滚刷正向转速
+        int return_brush_rpm{1200};     ///< 滚刷返程转速（绝对值，实际方向取反）
         float edge_reverse_rpm{30.0f};  ///< 边缘触发后反转速度（RPM，0=原地停）
         bool heading_pid_en{true};      ///< 是否使能航向 PID
         device::WalkMotorGroup::HeadingPidParams pid{};  ///< PID 参数
     };
 
     /// @param group    4轮行走电机组（构造时已配置 comm_timeout_ms）
-    /// @param brush    辊刷电机
+    /// @param brush    滚刷电机
     /// @param imu      IMU 设备（提供 yaw_deg）
     /// @param bus      事件总线
     /// @param cfg      运动配置
@@ -49,22 +49,22 @@ class MotionService : public middleware::IRunnable {
                   Config cfg);
 
     // ── 运动控制 ──────────────────────────────────────────────────────────
-    /// 开始清扫前进（使能行走 + 辊刷，锁定航向目标）
+    /// 开始清扫前进（使能行走 + 滚刷，锁定航向目标）
     bool start_cleaning();
 
-    /// 停止清扫（停辊刷，行走归零，禁用 PID）
+    /// 停止清扫（停滚刷，行走归零，禁用 PID）
     void stop_cleaning();
 
-    /// 以返回速度反向行进（辊刷反向运行，保持航向 PID）
+    /// 以返回速度反向行进（滚刷反向运行，保持航向 PID）
     bool start_returning();
 
-    /// @brief P1 故障路径：先停辊刷，再以返回速度倒退回停机位。
+    /// @brief P1 故障路径：先停滚刷，再以返回速度倒退回停机位。
     ///
     /// 由 RobotFsm::dispatch<EvFaultP1>() 调用；与 start_returning() 的区别是
-    /// 辊刷立即停止（不反向运行），适用于需要避免辊刷二次损伤的故障场景。
+    /// 滚刷立即停止（不反向运行），适用于需要避免滚刷二次损伤的故障场景。
     bool start_returning_no_brush();
 
-    /// 原地急停（失能行走，停辊刷）
+    /// 原地急停（失能行走，停滚刷）
     void emergency_stop();
 
     /// 直接设置行走速度（RPM），同时更新 PID 基准速度
@@ -92,7 +92,7 @@ class MotionService : public middleware::IRunnable {
 
     /// EMA 滤波后的 yaw（替代 update() 中的 static 局部变量，解决多实例共享和重启污染）
     float filtered_yaw_{0.0f};
-    bool  filtered_yaw_inited_{false};
+    bool filtered_yaw_inited_{false};
 };
 
 }  // namespace robot::service

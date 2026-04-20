@@ -188,16 +188,17 @@ int main() {
     }
     if (!gps->open())
         log->warn("[Main] GPS 初始化失败");
-    // gpio.use_irq: 若 GPIO 控制器不支持硬件 IRQ（如 RK3576 gpiochip5），配置为 false 使用 1ms 软件轮询
+    // gpio.use_irq: 若 GPIO 控制器不支持硬件 IRQ（如 RK3576 gpiochip5），配置为 false 使用 1ms
+    // 软件轮询
     const bool gpio_use_irq = cfg.get<bool>("gpio.use_irq", false);
     const bool front_open_ok = front_switch->open(95,  // SCHED_FIFO 95: GPIO 边缘最高硬件响应优先级
-                                                  2,           // 2ms 软件消抖
-                                                  1 << 4,      // 绑定大核 CPU 4（安全关键专用）
+                                                  2,       // 2ms 软件消抖
+                                                  1 << 4,  // 绑定大核 CPU 4（安全关键专用）
                                                   gpio_use_irq);
     const bool rear_open_ok =
         rear_switch->open(95,
                           2,
-                          1 << 4,      // 绑定大核 CPU 4（与 safety_monitor 同核，减少跨核缓存失效）
+                          1 << 4,  // 绑定大核 CPU 4（与 safety_monitor 同核，减少跨核缓存失效）
                           gpio_use_irq);
     if (!front_open_ok)
         log->warn("[Main] 前限位开关初始化失败");
@@ -224,7 +225,7 @@ int main() {
               rear_at_home ? "OK(0)" : "FAIL(1)",
               front_clear ? "OK(1)" : "FAIL(0)");
     if (!brush_motor->open())
-        log->warn("[Main] 辊刷电机 RS485 初始化失败");
+        log->warn("[Main] 滚刷电机 RS485 初始化失败");
     if (bms->open() != robot::device::DeviceError::OK)
         log->warn("[Main] BMS RS485 初始化失败");
 
@@ -326,28 +327,26 @@ int main() {
         if (windows_json.is_array()) {
             for (auto& w : windows_json) {
                 robot::service::SchedulerService::TimeWindow tw;
-                tw.hour   = w.value("hour",   8);
-                tw.minute = w.value("minute",  0);
+                tw.hour = w.value("hour", 8);
+                tw.minute = w.value("minute", 0);
                 scheduler.add_window(tw);
             }
         }
     }
     scheduler.set_on_task_start(
         [&fsm, &rear_switch, &front_switch, &rear_open_ok, &front_open_ok, &cfg]() {
-            const bool at_home =
-                rear_open_ok  && !rear_switch->read_current_level();
-            const bool at_front =
-                front_open_ok && !front_switch->read_current_level();
+            const bool at_home = rear_open_ok && !rear_switch->read_current_level();
+            const bool at_front = front_open_ok && !front_switch->read_current_level();
             const float passes = cfg.get<float>("robot.passes", 1.0f);
             fsm->dispatch(robot::app::EvScheduleStart{at_home, at_front, passes});
         });
 
     // ── 云端 RPC 处理器 ─────────────────────────────────────────────
     cloud->register_rpc("start", [&](const std::string& /*params*/) {
-        const bool at_home  = rear_open_ok  && !rear_switch->read_current_level();
+        const bool at_home = rear_open_ok && !rear_switch->read_current_level();
         const bool at_front = front_open_ok && !front_switch->read_current_level();
-        fsm->dispatch(robot::app::EvScheduleStart{
-            at_home, at_front, cfg.get<float>("robot.passes", 1.0f)});
+        fsm->dispatch(
+            robot::app::EvScheduleStart{at_home, at_front, cfg.get<float>("robot.passes", 1.0f)});
         return nlohmann::json{{"result", "ok"}}.dump();
     });
     cloud->register_rpc("stop", [&](const std::string& /*params*/) {
@@ -365,8 +364,8 @@ int main() {
                 scheduler.clear_windows();
                 for (auto& w : j["windows"]) {
                     robot::service::SchedulerService::TimeWindow tw;
-                    tw.hour   = w.value("hour",   8);
-                    tw.minute = w.value("minute",  0);
+                    tw.hour = w.value("hour", 8);
+                    tw.minute = w.value("minute", 0);
                     scheduler.add_window(tw);
                 }
                 cfg.set("scheduler.windows", j["windows"]);
@@ -383,13 +382,13 @@ int main() {
     // ── 共享属性回调：远程更新配置，持久化到 config.json （下次启动生效）──
     cloud->subscribe_shared_attributes([&cfg](const nlohmann::json& attrs) {
         if (attrs.contains("passes"))
-            cfg.set("robot.passes",          attrs["passes"].get<float>());
+            cfg.set("robot.passes", attrs["passes"].get<float>());
         if (attrs.contains("clean_speed_rpm"))
-            cfg.set("robot.clean_speed_rpm",  attrs["clean_speed_rpm"].get<float>());
+            cfg.set("robot.clean_speed_rpm", attrs["clean_speed_rpm"].get<float>());
         if (attrs.contains("return_speed_rpm"))
             cfg.set("robot.return_speed_rpm", attrs["return_speed_rpm"].get<float>());
         if (attrs.contains("brush_rpm"))
-            cfg.set("robot.brush_rpm",        attrs["brush_rpm"].get<int>());
+            cfg.set("robot.brush_rpm", attrs["brush_rpm"].get<int>());
         cfg.save();
     });
 

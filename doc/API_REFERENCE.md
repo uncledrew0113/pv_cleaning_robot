@@ -1022,7 +1022,7 @@ public:
         float return_speed_rpm{500.0f};  ///< 返回速度（RPM）
         int   brush_rpm{1200};           ///< 滚刷转速
         float edge_reverse_rpm{150.0f};  ///< 边缘触发反转速度（RPM，0=原地停，默认150=缓速后退）
-        int   return_brush_rpm{1200};    ///< 辊刷返程转速绝对值（方向自动取反）
+        int   return_brush_rpm{1200};    ///< 滚刷返程转速绝对值（方向自动取反）
         bool  heading_pid_en{true};      ///< 是否使能航向 PID
         device::WalkMotorGroup::HeadingPidParams pid{};  ///< PID 参数（HeadingPidController::Params 别名）
     };
@@ -1055,8 +1055,8 @@ public:
 ```
 
 **实现原理**：
-- `start_cleaning()`：切换速度环 → 使能 → 锁定当前 yaw → 启动 PID → `set_speeds(+300, +300, -300, -300)` → 启动辊刷
-- `start_returning()`：`clear_override()` → 锁定当前 yaw → 保持 PID → `set_speeds(-500, -500, +500, +500)` → 辊刷反向（-rpm）
+- `start_cleaning()`：切换速度环 → 使能 → 锁定当前 yaw → 启动 PID → `set_speeds(+300, +300, -300, -300)` → 启动滚刷
+- `start_returning()`：`clear_override()` → 锁定当前 yaw → 保持 PID → `set_speeds(-500, -500, +500, +500)` → 滚刷反向（-rpm）
 - `start_returning_no_brush()`：`brush.stop()` → 禁用 PID → `clear_override()` → `set_speeds(-500, -500, +500, +500)`（P1 故障路径）
 - `emergency_stop()`：`brush.stop()` → `group_->emergency_override(0)` → `override_active_=true`（抑制心跳帧） → `disable_all()`
 - `on_edge_triggered()`：`group_->emergency_override(edge_reverse_rpm=150)` → `brush.stop()`（注：SafetyMonitor 直接调 WalkMotorGroup，不经本方法）
@@ -2037,7 +2037,7 @@ CAN 帧统计：启动时 2 帧（0x105×2）+ 1 帧（0x32）；运行中每 20
 ```
 MotionService::start_returning()
   ├─ group_->clear_override()
-  ├─ brush_->set_rpm(-1200) + brush_->start()         辊刷反向运行
+  ├─ brush_->set_rpm(-1200) + brush_->start()         滚刷反向运行
   ├─ group_->set_target_heading(cur_yaw)              重锁当前 yaw（返程时机可能偏转）
   ├─ group_->enable_heading_control(true)
   ├─ group_->set_mode_all(SPEED)                   →  CAN 0x105

@@ -1,47 +1,48 @@
 #pragma once
-#include "pv_cleaning_robot/device/device_error.h"
-#include "pv_cleaning_robot/hal/i_modbus_master.h"
-#include "pv_cleaning_robot/hal/pi_mutex.h"
 #include <memory>
 #include <mutex>
 
+#include "pv_cleaning_robot/device/device_error.h"
+#include "pv_cleaning_robot/hal/i_modbus_master.h"
+#include "pv_cleaning_robot/hal/pi_mutex.h"
+
 namespace robot::device {
 
-/// @brief 辊刷电机设备（RS485 Modbus RTU，独立总线1）
+/// @brief 滚刷电机设备（RS485 Modbus RTU，独立总线1）
 /// update() 由 bms_exec (SCHED_OTHER, 500ms) 周期调用
 ///
-/// @note 寄存器地址请根据辊刷电机驱动器实际手册调整（当前为占位地址）
+/// @note 寄存器地址请根据滚刷电机驱动器实际手册调整（当前为占位地址）
 class BrushMotor {
-public:
+   public:
     // ── 寄存器地址（根据实际驱动器手册修改）─────────────────────
     static constexpr int REG_TARGET_RPM = 0x1000;  ///< 目标转速（写）
-    static constexpr int REG_ENABLE     = 0x1001;  ///< 使能控制（写：1=启动，0=停止）
-    static constexpr int REG_CLR_FAULT  = 0x1002;  ///< 清故障（写：1=清除）
-    static constexpr int REG_ACT_RPM    = 0x2000;  ///< 实际转速（读）
-    static constexpr int REG_CURRENT    = 0x2001;  ///< 相电流（读，A*100）
-    static constexpr int REG_VOLTAGE    = 0x2002;  ///< 总线电压（读，V*10）
-    static constexpr int REG_TEMP       = 0x2003;  ///< 温度（读，℃*10）
-    static constexpr int REG_STATUS     = 0x2004;  ///< 状态字（读）
+    static constexpr int REG_ENABLE = 0x1001;      ///< 使能控制（写：1=启动，0=停止）
+    static constexpr int REG_CLR_FAULT = 0x1002;   ///< 清故障（写：1=清除）
+    static constexpr int REG_ACT_RPM = 0x2000;     ///< 实际转速（读）
+    static constexpr int REG_CURRENT = 0x2001;     ///< 相电流（读，A*100）
+    static constexpr int REG_VOLTAGE = 0x2002;     ///< 总线电压（读，V*10）
+    static constexpr int REG_TEMP = 0x2003;        ///< 温度（读，℃*10）
+    static constexpr int REG_STATUS = 0x2004;      ///< 状态字（读）
     static constexpr int REG_FAULT_CODE = 0x2005;  ///< 故障码（读）
 
     // 状态字位定义
-    static constexpr uint16_t STATUS_RUNNING   = 0x0001;
-    static constexpr uint16_t STATUS_FAULT     = 0x0002;
-    static constexpr uint16_t STATUS_OVERCURR  = 0x0004;
-    static constexpr uint16_t STATUS_STALL     = 0x0008;
+    static constexpr uint16_t STATUS_RUNNING = 0x0001;
+    static constexpr uint16_t STATUS_FAULT = 0x0002;
+    static constexpr uint16_t STATUS_OVERCURR = 0x0004;
+    static constexpr uint16_t STATUS_STALL = 0x0008;
 
     struct Status {
-        int      actual_rpm;
-        float    current_a;
-        bool     running;
-        bool     fault;
+        int actual_rpm;
+        float current_a;
+        bool running;
+        bool fault;
         uint16_t fault_code;
     };
 
     struct Diagnostics : Status {
-        float    temperature_c;
-        float    bus_voltage_v;
-        int      target_rpm;
+        float temperature_c;
+        float bus_voltage_v;
+        int target_rpm;
         uint32_t stall_count;
         uint32_t comm_error_count;
     };
@@ -58,22 +59,22 @@ public:
     DeviceError clear_fault();
 
     // ── 状态读取（缓存，无 I/O）────────────────────────────────
-    Status      get_status() const;
+    Status get_status() const;
     Diagnostics get_diagnostics() const;
 
     // ── 周期更新（500ms，由 bms_exec 线程 SCHED_OTHER 调用）─────────────────
     void update();
 
-private:
+   private:
     DeviceError refresh_status();  // 读取寄存器更新缓存
 
     std::shared_ptr<hal::IModbusMaster> modbus_;
-    int                                 slave_id_;
+    int slave_id_;
     // PiMutex (PTHREAD_PRIO_INHERIT)：walk_ctrl(FIFO 80) 与 cloud(SCHED_OTHER)
     // 同时访问 diag_/target_rpm_，需要优先级继承防止 PI 反转。
-    mutable hal::PiMutex                mtx_;
-    Diagnostics                         diag_{};
-    int                                 target_rpm_{0};
+    mutable hal::PiMutex mtx_;
+    Diagnostics diag_{};
+    int target_rpm_{0};
 };
 
 }  // namespace robot::device

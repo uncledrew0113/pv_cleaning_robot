@@ -1,9 +1,11 @@
 #pragma once
-#include "pv_cleaning_robot/middleware/event_bus.h"
-#include "pv_cleaning_robot/hal/pi_mutex.h"
 #include <cstdint>
 #include <functional>
 #include <string>
+
+#include "pv_cleaning_robot/hal/pi_mutex.h"
+#include "pv_cleaning_robot/middleware/event_bus.h"
+
 
 namespace robot::service {
 
@@ -15,35 +17,34 @@ namespace robot::service {
 ///   P2 — 降速继续清扫，告警上报
 ///   P3 — 仅记录日志
 class FaultService {
-public:
+   public:
     struct FaultEvent {
         enum class Level {
             P0,  ///< 严重故障：立即急停，FSM → Fault 状态，等待人工复位
-            P1,  ///< 一般故障：停辊刷，安全返回停机位，FSM → Returning
+            P1,  ///< 一般故障：停滚刷，安全返回停机位，FSM → Returning
             P2,  ///< 告警：降速继续，告警上报（EventBus），不转换 FSM 状态
             P3   ///< 提示：仅记录日志，不影响运行
         };
-        Level       level{Level::P3};
-        uint32_t    code{0};
+        Level level{Level::P3};
+        uint32_t code{0};
         std::string description;
-        uint64_t    timestamp_ms{0};
+        uint64_t timestamp_ms{0};
     };
 
     explicit FaultService(middleware::EventBus& bus);
 
     /// 报告一个故障（发布到 EventBus，由 RobotFsm 和 FaultHandler 响应）
-    void report(FaultEvent::Level level, uint32_t code,
-                const std::string& description);
+    void report(FaultEvent::Level level, uint32_t code, const std::string& description);
 
     bool has_active_fault(FaultEvent::Level min_level = FaultEvent::Level::P2) const;
 
     const FaultEvent& last_fault() const;
 
-private:
+   private:
     middleware::EventBus& bus_;
-    FaultEvent            last_fault_{};
-    bool                  has_fault_{false};
-    mutable hal::PiMutex  mtx_;
+    FaultEvent last_fault_{};
+    bool has_fault_{false};
+    mutable hal::PiMutex mtx_;
 };
 
-} // namespace robot::service
+}  // namespace robot::service

@@ -153,7 +153,7 @@ TEST_CASE("MotionService: start_returning() 发出 CAN 帧（反向）", "[servi
     REQUIRE_FALSE(f.can->sent_frames.empty());
 }
 
-TEST_CASE("MotionService: start_returning() 辊刷反转（负 rpm）", "[service][motion]") {
+TEST_CASE("MotionService: start_returning() 滚刷反转（负 rpm）", "[service][motion]") {
     MotionFixture f;
     f.motion.start_returning();
 
@@ -169,7 +169,7 @@ TEST_CASE("MotionService: start_returning() 辊刷反转（负 rpm）", "[servic
 // ────────────────────────────────────────────────────────────────
 // start_returning_no_brush()
 // ────────────────────────────────────────────────────────────────
-TEST_CASE("MotionService: start_returning_no_brush() 先停辊刷再反向", "[service][motion]") {
+TEST_CASE("MotionService: start_returning_no_brush() 先停滚刷再反向", "[service][motion]") {
     MotionFixture f;
     f.motion.start_cleaning();  // 先启动
     f.modbus->write_calls.clear();
@@ -178,7 +178,7 @@ TEST_CASE("MotionService: start_returning_no_brush() 先停辊刷再反向", "[s
     bool ok = f.motion.start_returning_no_brush();
     REQUIRE(ok);
 
-    // 辊刷停止（REG_ENABLE=0）应在 CAN 帧之前
+    // 滚刷停止（REG_ENABLE=0）应在 CAN 帧之前
     bool brush_stopped = false;
     for (auto& w : f.modbus->write_calls)
         if (w.addr == BrushMotor::REG_ENABLE && w.val == 0) {
@@ -192,7 +192,7 @@ TEST_CASE("MotionService: start_returning_no_brush() 先停辊刷再反向", "[s
 // ────────────────────────────────────────────────────────────────
 // emergency_stop()
 // ────────────────────────────────────────────────────────────────
-TEST_CASE("MotionService: emergency_stop() 停辊刷并发出急停 CAN 帧", "[service][motion]") {
+TEST_CASE("MotionService: emergency_stop() 停滚刷并发出急停 CAN 帧", "[service][motion]") {
     MotionFixture f;
     f.motion.start_cleaning();
     f.modbus->write_calls.clear();
@@ -200,7 +200,7 @@ TEST_CASE("MotionService: emergency_stop() 停辊刷并发出急停 CAN 帧", "[
 
     f.motion.emergency_stop();
 
-    // 辊刷停止
+    // 滚刷停止
     bool brush_stopped = false;
     for (auto& w : f.modbus->write_calls)
         if (w.addr == BrushMotor::REG_ENABLE && w.val == 0) {
@@ -263,9 +263,7 @@ TEST_CASE("MotionService: heading_pid_en=true 时 update(20°) 输出差速帧�
     REQUIRE_FALSE(f.can->sent_frames.empty());
     const auto& frm = f.can->sent_frames.back();
     REQUIRE(frm.id == 0x032u);
-    int16_t lt = static_cast<int16_t>(
-        (static_cast<uint16_t>(frm.data[0]) << 8) | frm.data[1]);
-    int16_t rt = static_cast<int16_t>(
-        (static_cast<uint16_t>(frm.data[2]) << 8) | frm.data[3]);
+    int16_t lt = static_cast<int16_t>((static_cast<uint16_t>(frm.data[0]) << 8) | frm.data[1]);
+    int16_t rt = static_cast<int16_t>((static_cast<uint16_t>(frm.data[2]) << 8) | frm.data[3]);
     REQUIRE(lt < rt);
 }

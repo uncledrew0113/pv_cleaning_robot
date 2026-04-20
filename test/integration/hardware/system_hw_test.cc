@@ -4,7 +4,7 @@
  * @brief 全栈系统集成测试（真实硬件）
  *
  * 使用真实 IMU / BMS / WalkMotorGroup / LimitSwitch；
- * BrushMotor 使用 MockModbusMaster（辊刷未安装）；
+ * BrushMotor 使用 MockModbusMaster（滚刷未安装）；
  * GPS 使用占位对象（GPS 未安装）。
  *
  * 测试段：
@@ -442,10 +442,12 @@ TEST_CASE("System（真实硬件）N=1 完整任务链（真实限位触发）",
 // ────────────────────────────────────────────────────────────────────────────
 TEST_CASE("System（真实硬件）N 趟完整任务链 + 全程持续采集健康数据", "[hw_system][combined]") {
     hw::FullSystemFixture f;
-    const int    passes_int  = static_cast<int>(f.p.combined_passes);
+    const int passes_int = static_cast<int>(f.p.combined_passes);
     const double passes_half = f.p.combined_passes * 2.0;
     spdlog::warn("[hw_system][combined] ====================================");
-    spdlog::warn("[hw_system][combined] ⚠ 机器人将运动 {:.1f} 趟（{} 段）！", f.p.combined_passes, static_cast<int>(passes_half));
+    spdlog::warn("[hw_system][combined] ⚠ 机器人将运动 {:.1f} 趟（{} 段）！",
+                 f.p.combined_passes,
+                 static_cast<int>(passes_half));
     spdlog::warn("[hw_system][combined] 全程持续记录健康数据到: {}", f.p.health_jsonl_path);
     spdlog::warn("[hw_system][combined] 每段限位超时: {}s（触发后重置）", f.p.limit_timeout_sec);
     spdlog::warn("[hw_system][combined] 请确保：导轨就位，轨道无人员/障碍物");
@@ -460,8 +462,7 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + 全程持续采集健�
         spdlog::error("[hw_system][combined] 看门狗超时: {}", n);
         wd_timeout.store(true);
     });
-    const int wd_tid = f.watchdog->register_thread(
-        "hw_combined", f.p.limit_timeout_sec * 2 * 1000);
+    const int wd_tid = f.watchdog->register_thread("hw_combined", f.p.limit_timeout_sec * 2 * 1000);
     REQUIRE(wd_tid >= 0);
 
     const uint32_t frames_before = f.walk_group->get_group_diagnostics().ctrl_frame_count;
@@ -475,11 +476,14 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + 全程持续采集健�
         ++total_health_records;
         auto gd = f.walk_group->get_group_diagnostics();
         auto ld = f.imu->get_latest();
-        spdlog::info("[hw_system][combined] #{}: LT={:.1f} RT={:.1f}rpm "
-                     "pitch={:.2f}° state={}",
-                     total_health_records,
-                     gd.wheel[0].speed_rpm, gd.wheel[1].speed_rpm,
-                     ld.pitch_deg, f.fsm->current_state());
+        spdlog::info(
+            "[hw_system][combined] #{}: LT={:.1f} RT={:.1f}rpm "
+            "pitch={:.2f}° state={}",
+            total_health_records,
+            gd.wheel[0].speed_rpm,
+            gd.wheel[1].speed_rpm,
+            ld.pitch_deg,
+            f.fsm->current_state());
     };
 
     // ── 等待函数：从 from 状态等待切换到任意其他状态（每段独立 60s 超时）──
@@ -489,11 +493,12 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + 全程持续采集健�
         auto deadline = clock::now() + std::chrono::seconds(f.p.limit_timeout_sec);
         while (clock::now() < deadline) {
             std::string curr = f.fsm->current_state();
-            if (curr != from) return curr;
+            if (curr != from)
+                return curr;
             poll_once();
             std::this_thread::sleep_for(500ms);
         }
-        return from;   // 超时：状态未变
+        return from;  // 超时：状态未变
     };
 
     // ── 启动任务，进入 CleanFwd ─────────────────────────────────────────────
@@ -502,7 +507,7 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + 全程持续采集健�
 
     // ── 逐段等待，每触发一次限位重置 60s 计时 ──────────────────────────────
     std::string state = "CleanFwd";
-    int  seg_idx = 0;
+    int seg_idx = 0;
 
     while (state != "Charging") {
         ++seg_idx;
@@ -518,14 +523,19 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + 全程持续采集健�
         if (next == state) {
             // 超时，限位未触发
             spdlog::error("[hw_system][combined] 段 {} 超时 {}s，当前状态仍为 {}",
-                          seg_idx, f.p.limit_timeout_sec, state);
+                          seg_idx,
+                          f.p.limit_timeout_sec,
+                          state);
             INFO("限位等待超时，请检查导轨/传感器接线");
             REQUIRE(next != state);  // 明确失败
             break;
         }
 
         spdlog::info("[hw_system][combined] ✓ 段 {} 完成：{} → {}（已采集 {} 条）",
-                     seg_idx, state, next, total_health_records);
+                     seg_idx,
+                     state,
+                     next,
+                     total_health_records);
         poll_once();  // 在状态切换点额外采集一条
         state = next;
     }
@@ -535,8 +545,8 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + 全程持续采集健�
         INFO("任务未能到达 Charging 状态");
         REQUIRE(state == "Charging");
     }
-    spdlog::info("[hw_system][combined] ✓ 全部 {} 段完成，总采集 {} 条",
-                 seg_idx, total_health_records);
+    spdlog::info(
+        "[hw_system][combined] ✓ 全部 {} 段完成，总采集 {} 条", seg_idx, total_health_records);
 
     // 看门狗全程无超时
     CHECK(!wd_timeout.load());
@@ -544,7 +554,9 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + 全程持续采集健�
     // CAN 控制帧增加（MotionService 全程在发帧）
     const uint32_t frames_after = f.walk_group->get_group_diagnostics().ctrl_frame_count;
     spdlog::info("[hw_system][combined] CAN 帧: {} → {} (增量={})",
-                 frames_before, frames_after, frames_after - frames_before);
+                 frames_before,
+                 frames_after,
+                 frames_after - frames_before);
     CHECK(frames_after > frames_before + 10u * static_cast<uint32_t>(passes_half));
 
     // 无故障
@@ -559,11 +571,12 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + 全程持续采集健�
         int line_count = 0;
         std::string line;
         while (std::getline(ifs, line)) {
-            if (line.empty()) continue;
+            if (line.empty())
+                continue;
             ++line_count;
             nlohmann::json j;
             REQUIRE_NOTHROW(j = nlohmann::json::parse(line));
-            REQUIRE(j.contains("ts"));       // 时间戳
+            REQUIRE(j.contains("ts"));  // 时间戳
             REQUIRE(j.contains("walk"));
             REQUIRE(j.contains("bms"));
             REQUIRE(j.contains("imu"));
@@ -571,14 +584,17 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + 全程持续采集健�
             CHECK(!j["ts"].get<std::string>().empty());
         }
         CHECK(line_count == total_health_records);
-        spdlog::info("[hw_system][combined] JSONL {} 行，路径: {}",
-                     line_count, f.p.health_jsonl_path);
+        spdlog::info(
+            "[hw_system][combined] JSONL {} 行，路径: {}", line_count, f.p.health_jsonl_path);
     }
 
     // IMU 末帧（仅记录）
     auto ld = f.imu->get_latest();
     spdlog::info("[hw_system][combined] 末帧 IMU: valid={} pitch={:.2f}° roll={:.2f}° yaw={:.2f}°",
-                 ld.valid, ld.pitch_deg, ld.roll_deg, ld.yaw_deg);
+                 ld.valid,
+                 ld.pitch_deg,
+                 ld.roll_deg,
+                 ld.yaw_deg);
 
     // ⚠ 不删除 JSONL，供事后分析
     spdlog::info("[hw_system][combined] PASS — 健康数据已保存至 {}", f.p.health_jsonl_path);
@@ -587,14 +603,19 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + 全程持续采集健�
 // ────────────────────────────────────────────────────────────────────────────
 // [hw_system][pid_combined] — N 趟完整任务链 + 航向 PID + 全程 yaw 指标采集
 // ────────────────────────────────────────────────────────────────────────────
-TEST_CASE("System（真实硬件）N 趟完整任务链 + PID 控制 + yaw 指标采集", "[hw_system][pid_combined]") {
+TEST_CASE("System（真实硬件）N 趟完整任务链 + PID 控制 + yaw 指标采集",
+          "[hw_system][pid_combined]") {
     hw::FullSystemFixture f(true /* pid_on */);
     const double passes_half = f.p.combined_passes * 2.0;
     spdlog::warn("[hw_system][pid_combined] ====================================");
     spdlog::warn("[hw_system][pid_combined] ⚠ 机器人将运动 {:.1f} 趟（{} 段）！",
-                 f.p.combined_passes, static_cast<int>(passes_half));
+                 f.p.combined_passes,
+                 static_cast<int>(passes_half));
     spdlog::warn("[hw_system][pid_combined] PID kp={:.2f} ki={:.3f} kd={:.3f} deadband={:.1f}°",
-                 f.p.pid.kp, f.p.pid.ki, f.p.pid.kd, f.p.pid.deadband_deg);
+                 f.p.pid.kp,
+                 f.p.pid.ki,
+                 f.p.pid.kd,
+                 f.p.pid.deadband_deg);
     spdlog::warn("[hw_system][pid_combined] 健康数据: {}", f.p.health_jsonl_path);
     spdlog::warn("[hw_system][pid_combined] PID 指标: {}", f.p.pid_jsonl_path);
     spdlog::warn("[hw_system][pid_combined] 最大漂移警告阈值: {:.1f}°", f.p.pid_max_drift_deg);
@@ -614,12 +635,12 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + PID 控制 + yaw 指�
         spdlog::error("[hw_system][pid_combined] 看门狗超时: {}", n);
         wd_timeout.store(true);
     });
-    const int wd_tid = f.watchdog->register_thread(
-        "hw_pid_combined", f.p.limit_timeout_sec * 2 * 1000);
+    const int wd_tid =
+        f.watchdog->register_thread("hw_pid_combined", f.p.limit_timeout_sec * 2 * 1000);
     REQUIRE(wd_tid >= 0);
 
     // ── 读取真实传感器状态（修复 combined 测试 at_home 硬编码 bug）──────────
-    const bool at_home  = !f.rear_sw->read_current_level();
+    const bool at_home = !f.rear_sw->read_current_level();
     const bool at_front = !f.front_sw->read_current_level();
     {
         INFO("设备不在已知端点（at_home=false, at_front=false），请将设备移至停机位或前端");
@@ -638,8 +659,10 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + PID 控制 + yaw 指�
 
     // norm_angle helper（−180 ~ +180）
     auto norm_angle = [](float deg) -> float {
-        while (deg >  180.0f) deg -= 360.0f;
-        while (deg < -180.0f) deg += 360.0f;
+        while (deg > 180.0f)
+            deg -= 360.0f;
+        while (deg < -180.0f)
+            deg += 360.0f;
         return deg;
     };
 
@@ -653,30 +676,37 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + PID 控制 + yaw 指�
         f.watchdog->heartbeat(wd_tid);
         ++total_health_records;
 
-        auto gd  = f.walk_group->get_group_diagnostics();
+        auto gd = f.walk_group->get_group_diagnostics();
         auto imu = f.imu->get_latest();
-        const float yaw     = imu.yaw_deg;
+        const float yaw = imu.yaw_deg;
         const float yaw_err = norm_angle(target_yaw - yaw);
-        const float drift   = std::abs(yaw_err);
-        if (drift > max_drift_all) max_drift_all = drift;
+        const float drift = std::abs(yaw_err);
+        if (drift > max_drift_all)
+            max_drift_all = drift;
 
-        const int64_t ts_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-            clock::now() - t_test_start).count();
+        const int64_t ts_ms =
+            std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - t_test_start)
+                .count();
 
         nlohmann::json rec;
-        rec["ts_ms"]      = ts_ms;
-        rec["seg"]        = cur_seg;
-        rec["state"]      = f.fsm->current_state();
-        rec["yaw"]        = std::round(yaw     * 100.0f) / 100.0f;
+        rec["ts_ms"] = ts_ms;
+        rec["seg"] = cur_seg;
+        rec["state"] = f.fsm->current_state();
+        rec["yaw"] = std::round(yaw * 100.0f) / 100.0f;
         rec["target_yaw"] = std::round(target_yaw * 100.0f) / 100.0f;
-        rec["yaw_err"]    = std::round(yaw_err * 100.0f) / 100.0f;
+        rec["yaw_err"] = std::round(yaw_err * 100.0f) / 100.0f;
         pid_ofs << rec.dump() << '\n';
 
-        spdlog::info("[hw_system][pid_combined] #{} seg={} yaw={:.2f}° err={:.2f}° "
-                     "LT={:.1f} RT={:.1f}rpm state={}",
-                     total_health_records, cur_seg, yaw, yaw_err,
-                     gd.wheel[0].speed_rpm, gd.wheel[1].speed_rpm,
-                     f.fsm->current_state());
+        spdlog::info(
+            "[hw_system][pid_combined] #{} seg={} yaw={:.2f}° err={:.2f}° "
+            "LT={:.1f} RT={:.1f}rpm state={}",
+            total_health_records,
+            cur_seg,
+            yaw,
+            yaw_err,
+            gd.wheel[0].speed_rpm,
+            gd.wheel[1].speed_rpm,
+            f.fsm->current_state());
     };
 
     // 等待 FSM 从 from 状态切换到其他状态（每段独立超时）
@@ -684,7 +714,8 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + PID 控制 + yaw 指�
         auto deadline = clock::now() + std::chrono::seconds(f.p.limit_timeout_sec);
         while (clock::now() < deadline) {
             std::string curr = f.fsm->current_state();
-            if (curr != from) return curr;
+            if (curr != from)
+                return curr;
             poll_once();
             std::this_thread::sleep_for(500ms);
         }
@@ -693,10 +724,7 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + PID 控制 + yaw 指�
 
     // ── 启动任务 ────────────────────────────────────────────────────────────
     f.fsm->dispatch(robot::app::EvScheduleStart{
-        .at_home  = at_home,
-        .at_front = at_front,
-        .passes   = f.p.combined_passes
-    });
+        .at_home = at_home, .at_front = at_front, .passes = f.p.combined_passes});
     {
         const std::string s = f.fsm->current_state();
         INFO("FSM 未能进入 CleanFwd/CleanReturn，请检查传感器与 FSM 逻辑");
@@ -713,7 +741,8 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + PID 控制 + yaw 指�
         const bool going_fwd = (state == "CleanFwd");
         const auto seg_start = clock::now();
         spdlog::warn("[hw_system][pid_combined] 段 {}: {} → 等待{}限位（最多 {}s）...",
-                     seg_idx, state,
+                     seg_idx,
+                     state,
                      going_fwd ? "【前端】" : "【尾端】",
                      f.p.limit_timeout_sec);
 
@@ -721,7 +750,9 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + PID 控制 + yaw 指�
 
         if (next == state) {
             spdlog::error("[hw_system][pid_combined] 段 {} 超时 {}s，当前状态仍为 {}",
-                          seg_idx, f.p.limit_timeout_sec, state);
+                          seg_idx,
+                          f.p.limit_timeout_sec,
+                          state);
             INFO("限位等待超时，请检查导轨/传感器接线");
             REQUIRE(next != state);
             break;
@@ -730,17 +761,22 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + PID 控制 + yaw 指�
         // 写段摘要到 pid_metrics.jsonl
         const float seg_dur = std::chrono::duration<float>(clock::now() - seg_start).count();
         nlohmann::json seg_sum;
-        seg_sum["type"]          = "segment_summary";
-        seg_sum["seg"]           = seg_idx;
-        seg_sum["direction"]     = going_fwd ? "fwd" : "ret";
-        seg_sum["from_state"]    = state;
-        seg_sum["to_state"]      = next;
+        seg_sum["type"] = "segment_summary";
+        seg_sum["seg"] = seg_idx;
+        seg_sum["direction"] = going_fwd ? "fwd" : "ret";
+        seg_sum["from_state"] = state;
+        seg_sum["to_state"] = next;
         seg_sum["max_drift_deg"] = std::round(max_drift_all * 100.0f) / 100.0f;
-        seg_sum["duration_s"]    = std::round(seg_dur * 10.0f) / 10.0f;
+        seg_sum["duration_s"] = std::round(seg_dur * 10.0f) / 10.0f;
         pid_ofs << seg_sum.dump() << '\n';
 
-        spdlog::info("[hw_system][pid_combined] ✓ 段 {} 完成：{} → {}（已采集 {} 条，耗时 {:.1f}s）",
-                     seg_idx, state, next, total_health_records, seg_dur);
+        spdlog::info(
+            "[hw_system][pid_combined] ✓ 段 {} 完成：{} → {}（已采集 {} 条，耗时 {:.1f}s）",
+            seg_idx,
+            state,
+            next,
+            total_health_records,
+            seg_dur);
         poll_once();
         state = next;
     }
@@ -753,18 +789,19 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + PID 控制 + yaw 指�
 
     // 写全局摘要到 pid_metrics.jsonl
     nlohmann::json final_sum;
-    final_sum["type"]              = "final_summary";
-    final_sum["total_segs"]        = seg_idx;
-    final_sum["total_records"]     = total_health_records;
+    final_sum["type"] = "final_summary";
+    final_sum["total_segs"] = seg_idx;
+    final_sum["total_records"] = total_health_records;
     final_sum["max_drift_all_deg"] = std::round(max_drift_all * 100.0f) / 100.0f;
-    final_sum["kp"]                = f.p.pid.kp;
-    final_sum["ki"]                = f.p.pid.ki;
-    final_sum["kd"]                = f.p.pid.kd;
-    final_sum["deadband_deg"]      = f.p.pid.deadband_deg;
+    final_sum["kp"] = f.p.pid.kp;
+    final_sum["ki"] = f.p.pid.ki;
+    final_sum["kd"] = f.p.pid.kd;
+    final_sum["deadband_deg"] = f.p.pid.deadband_deg;
     pid_ofs << final_sum.dump() << '\n';
     pid_ofs.close();
 
-    spdlog::info("[hw_system][pid_combined] ✓ 全部 {} 段完成，总采集 {} 条", seg_idx, total_health_records);
+    spdlog::info(
+        "[hw_system][pid_combined] ✓ 全部 {} 段完成，总采集 {} 条", seg_idx, total_health_records);
     spdlog::info("[hw_system][pid_combined] 全程最大 yaw 漂移={:.2f}°", max_drift_all);
 
     // 看门狗全程无超时
@@ -773,8 +810,10 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + PID 控制 + yaw 指�
     CHECK(f.dispatched_faults.empty());
     // yaw 漂移 CHECK（不强制 REQUIRE，允许 PID 参数不理想时继续记录）
     if (max_drift_all >= f.p.pid_max_drift_deg) {
-        spdlog::warn("[hw_system][pid_combined] ⚠ 最大漂移 {:.2f}° ≥ 阈值 {:.1f}°，建议调整 PID 参数",
-                     max_drift_all, f.p.pid_max_drift_deg);
+        spdlog::warn(
+            "[hw_system][pid_combined] ⚠ 最大漂移 {:.2f}° ≥ 阈值 {:.1f}°，建议调整 PID 参数",
+            max_drift_all,
+            f.p.pid_max_drift_deg);
     }
     CHECK(max_drift_all < f.p.pid_max_drift_deg);
 
@@ -783,6 +822,7 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + PID 控制 + yaw 指�
     spdlog::info("[hw_system][pid_combined] PASS — PID 指标已保存至 {}", f.p.pid_jsonl_path);
     spdlog::info("[hw_system][pid_combined] PASS — 健康数据已保存至 {}", f.p.health_jsonl_path);
 }
+
 TEST_CASE("System（真实硬件）WatchdogMgr 正常心跳 1s 不触发超时",
           "[hw_system][watchdog_heartbeat]") {
     hw::FullSystemFixture f;

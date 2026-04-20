@@ -32,7 +32,31 @@
 
 ---
 
-## 2. 解决方案概述
+## 2. 现有 PID 调用链与改动边界
+
+```
+MotionService::update()  [50Hz, SCHED_FIFO 80, motion_service.cc]
+  ├─ imu_->get_latest().yaw_deg          ← 当前仅读 yaw；本次改为读完整 ImuData
+  ├─ EMA 滤波 filtered_yaw_
+  ├─ [新增] 倾斜补偿 → yaw_h
+  ├─ [新增] 接缝状态机（gyro[0/1] 检测）
+  └─ group_->update(yaw_h)               ← 接口不变，仅传入值变化
+
+WalkMotorGroup::update(yaw_deg)  [walk_motor_group.cc]
+  └─ HeadingPidController::compute()
+       → correction
+       → lt = base_lt_rpm_ + correction
+       → rt = base_rt_rpm_ - correction
+       → lb = -lt, rb = -rt              ← LB/RB 始终是 LT/RT 的镜像取反
+```
+
+> **架构说明**：`WalkMotorGroup` 内部只存储 `base_lt_rpm_` / `base_rt_rpm_`（LB/RB 在 update() 内推导为取反），接缝降速需由 `MotionService` 持有完整 `SpeedCmd base_cmd_`（含4轮方向符号），并在状态转换时调用 `group_->set_speeds(scaled_cmd)` 一次即可，WalkMotorGroup 会自动持续重播该帧。
+
+**`HeadingPidController` 和 `WalkMotorGroup` 无需修改**——`set_heading_pid_params()` 已支持热更新所有参数含死区，供接缝穿越时动态调整。
+
+---
+
+## 3. 解决方案概述
 
 实现三个互补的子功能，**全部改写在现有文件中，不创建新文件**：
 
@@ -50,11 +74,12 @@
 
 IMU 测量的 yaw 是机体坐标系相对磁北的转角。当机体有 roll/pitch 时，坐标系已倾斜，yaw 读数对应的并非水平面上的真实航向角。
 
-通过 Euler 坐标旋转，将机体 yaw 投影到水平面，得到**水平参考航向角** `yaw_h`：
+通过 Euler 坐标旋转（ZYX，右手系），将机体 yaw 投影到水平面，得到**水平参考航向角** `yaw_h`：
 
 ```
-roll_r  = roll_deg  × π/180
-pitch_r = pitch_deg × π/180
+// 标准 ZYX Euler 倾斜补偿公式（φ = 绕X轴 = roll_deg，θ = 绕Y轴 = pitch_deg）
+roll_r  = roll_deg  × π/180   // φ：绕X轴，纵向倾斜（上坡/下坡）
+pitch_r = pitch_deg × π/180   // θ：绕Y轴，横向倾斜（上下边框高差）
 yaw_r   = yaw_deg   × π/180
 
 yaw_h = atan2(
@@ -62,6 +87,13 @@ yaw_h = atan2(
     cos(yaw_r)·cos(roll_r)  + sin(yaw_r)·sin(roll_r)·sin(pitch_r)
 ) × 180/π
 ```
+
+> **⚠ IMU 坐标系特别说明**：本机器人 Y轴=前进方向（右手法则），与飞行器 X轴=前进惯例不同。
+> 因此：
+> - `roll_deg`（绕X轴）= **纵向**倾斜（上坡/下坡），物理感受类似飞行器的 "pitch"
+> - `pitch_deg`（绕Y轴）= **横向**倾斜（上下边框高差），物理感受类似飞行器的 "roll"
+>
+> 但数学公式中 φ 始终对应绕X轴的旋转量（即 `roll_deg`），θ 始终对应绕Y轴的旋转量（即 `pitch_deg`），**与物理直觉无关**。实测时需手动倾斜机器人验证 roll_deg / pitch_deg 符号方向后再确认阈值设置。
 
 ### 实现位置
 
@@ -74,22 +106,15 @@ bool tilt_comp_en{true};  ///< 使能 roll/pitch 倾斜补偿（默认开启）
 **`motion_service.cc` / `update()` 修改：**
 
 ```cpp
-// 在 EMA 滤波之前，先获取完整 IMU 数据（roll/pitch/yaw）
+// 在 EMA 滤波之前，先获取完整 IMU 数据（roll/pitch/yaw/gyro）
 const auto imu_data = imu_ ? imu_->get_latest() : device::ImuDevice::ImuData{};
 float raw_yaw = imu_data.yaw_deg;
 
-// ── IMU 坐标轴说明（Y 轴=前进方向，右手法则，X=右，Y=前，Z=上）────────────────
-// roll_deg  (绕X轴) = 纵向倾斜（前后俯仰，上坡/下坡）→ 公式中"pitch"角色
-// pitch_deg (绕Y轴) = 横向倾斜（上下边框高差，机身左右倾）→ 公式中"roll"角色
-// 注意：IMU 字段名称与飞行器惯例（X=前进）相反，实测时建议手动倾斜验证符号方向。
-// ────────────────────────────────────────────────────────────────────────────
-
 // 倾斜补偿：将机体 yaw 投影到水平面，消除横向/纵向倾斜引起的虚假航向偏差
+// 公式约定：phi = roll_deg（绕X轴），theta = pitch_deg（绕Y轴），与数学标准 ZYX 一致
 if (cfg_.tilt_comp_en && imu_data.valid) {
-    // phi   = 横向倾斜角（绕Y轴，IMU pitch_deg）= 公式中的 "roll"
-    // theta = 纵向倾斜角（绕X轴，IMU roll_deg） = 公式中的 "pitch"
-    const float phi   = imu_data.pitch_deg * kDegToRad;
-    const float theta = imu_data.roll_deg  * kDegToRad;
+    const float phi   = imu_data.roll_deg  * kDegToRad;  ///< 绕X轴，纵向倾斜
+    const float theta = imu_data.pitch_deg * kDegToRad;  ///< 绕Y轴，横向倾斜
     const float y     = raw_yaw            * kDegToRad;
     raw_yaw = std::atan2(
         std::sin(y)*std::cos(theta) - std::cos(y)*std::sin(phi)*std::sin(theta),

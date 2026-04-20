@@ -53,7 +53,7 @@
 #include "pv_cleaning_robot/app/robot_fsm.h"
 #include "pv_cleaning_robot/app/watchdog_mgr.h"
 
-// Mock（辊刷电机未安装）
+// Mock（滚刷电机未安装）
 #include "mock/mock_modbus_master.h"
 #include "pv_cleaning_robot/service/config_service.h"
 
@@ -63,34 +63,34 @@ namespace hw {
 /// 所有参数均可通过 hw_test_config.json 覆盖，无需重新编译
 struct HwParams {
     // hardware mapping
-    std::string can_iface          = "can0";
-    uint8_t     motor_id_base      = 1u;
-    uint16_t    comm_timeout_ms    = 500u;   ///< update 50ms × 10 倍余量
-    std::string imu_port           = "/dev/ttyS1";
-    int         imu_baud           = 9600;
-    std::string bms_port           = "/dev/ttyS8";
-    int         bms_baud           = 9600;
-    std::string dist_port          = "/dev/ttyS9";  ///< 距离传感器 RS485 串口
-    int         dist_baud          = 9600;
-    uint8_t     dist_slave_id      = 1u;
-    uint8_t     dist_channel_count = 2u;
-    std::string gpio_chip          = "gpiochip5";
-    unsigned    front_limit_line   = 0u;
-    unsigned    rear_limit_line    = 1u;
+    std::string can_iface = "can0";
+    uint8_t motor_id_base = 1u;
+    uint16_t comm_timeout_ms = 500u;  ///< update 50ms × 10 倍余量
+    std::string imu_port = "/dev/ttyS1";
+    int imu_baud = 9600;
+    std::string bms_port = "/dev/ttyS8";
+    int bms_baud = 9600;
+    std::string dist_port = "/dev/ttyS9";  ///< 距离传感器 RS485 串口
+    int dist_baud = 9600;
+    uint8_t dist_slave_id = 1u;
+    uint8_t dist_channel_count = 2u;
+    std::string gpio_chip = "gpiochip5";
+    unsigned front_limit_line = 0u;
+    unsigned rear_limit_line = 1u;
     // timing
-    int         limit_timeout_sec  = 60;    ///< 每段（单一限位）等待最大秒数
-    int         online_timeout_ms  = 600;   ///< 等待电机上线最大毫秒数
-    int         sweep_duration_ms  = 5000;
-    int         loop_period_ms     = 50;
+    int limit_timeout_sec = 60;   ///< 每段（单一限位）等待最大秒数
+    int online_timeout_ms = 600;  ///< 等待电机上线最大毫秒数
+    int sweep_duration_ms = 5000;
+    int loop_period_ms = 50;
     // behavior
-    float       test_speed_rpm     = 10.0f;  ///< 安全低速（测试专用）
-    float       test_return_rpm    = 10.0f;
-    float       sweep_rpm          = 20.0f;
-    float       limit_test_rpm     = 10.0f;
-    float       combined_passes    = 50.0f;  ///< combined 测试趟数（1=一来回，2=两来回…）
-    std::string health_jsonl_path  = "/tmp/hw_system_test_health.jsonl";
-    std::string pid_jsonl_path     = "/tmp/hw_pid_test_metrics.jsonl";  ///< PID 指标 JSONL 路径
-    float       pid_max_drift_deg  = 15.0f;  ///< pid_combined: 全程最大 yaw 漂移警告阈值（°）
+    float test_speed_rpm = 10.0f;  ///< 安全低速（测试专用）
+    float test_return_rpm = 10.0f;
+    float sweep_rpm = 20.0f;
+    float limit_test_rpm = 10.0f;
+    float combined_passes = 50.0f;  ///< combined 测试趟数（1=一来回，2=两来回…）
+    std::string health_jsonl_path = "/tmp/hw_system_test_health.jsonl";
+    std::string pid_jsonl_path = "/tmp/hw_pid_test_metrics.jsonl";  ///< PID 指标 JSONL 路径
+    float pid_max_drift_deg = 15.0f;  ///< pid_combined: 全程最大 yaw 漂移警告阈值（°）
 
     /// PID 参数，与 HeadingPidController::Params 字段一一对应
     struct PidParams {
@@ -123,42 +123,50 @@ inline HwParams load_hw_test_config() {
             spdlog::warn("[hw_config] Failed to load {} — using built-in defaults", path);
             return p;
         }
-        p.can_iface          = cfg.get<std::string>("hardware.can_iface",          p.can_iface);
-        p.motor_id_base      = static_cast<uint8_t>(cfg.get<int>("hardware.motor_id_base",      (int)p.motor_id_base));
-        p.comm_timeout_ms    = static_cast<uint16_t>(cfg.get<int>("timing.comm_timeout_ms",     (int)p.comm_timeout_ms));
-        p.imu_port           = cfg.get<std::string>("hardware.imu_port",           p.imu_port);
-        p.imu_baud           = cfg.get<int>        ("hardware.imu_baud",           p.imu_baud);
-        p.bms_port           = cfg.get<std::string>("hardware.bms_port",           p.bms_port);
-        p.bms_baud           = cfg.get<int>        ("hardware.bms_baud",           p.bms_baud);
-        p.dist_port          = cfg.get<std::string>("hardware.dist_port",          p.dist_port);
-        p.dist_baud          = cfg.get<int>        ("hardware.dist_baud",          p.dist_baud);
-        p.dist_slave_id      = static_cast<uint8_t>(cfg.get<int>("hardware.dist_slave_id",      (int)p.dist_slave_id));
-        p.dist_channel_count = static_cast<uint8_t>(cfg.get<int>("hardware.dist_channel_count", (int)p.dist_channel_count));
-        p.gpio_chip          = cfg.get<std::string>("hardware.gpio_chip",          p.gpio_chip);
-        p.front_limit_line   = static_cast<unsigned>(cfg.get<int>("hardware.front_limit_line",  (int)p.front_limit_line));
-        p.rear_limit_line    = static_cast<unsigned>(cfg.get<int>("hardware.rear_limit_line",   (int)p.rear_limit_line));
-        p.limit_timeout_sec  = cfg.get<int>        ("timing.limit_timeout_sec",    p.limit_timeout_sec);
-        p.online_timeout_ms  = cfg.get<int>        ("timing.online_timeout_ms",    p.online_timeout_ms);
-        p.sweep_duration_ms  = cfg.get<int>        ("timing.sweep_duration_ms",    p.sweep_duration_ms);
-        p.loop_period_ms     = cfg.get<int>        ("timing.loop_period_ms",       p.loop_period_ms);
-        p.test_speed_rpm     = cfg.get<float>      ("behavior.test_speed_rpm",     p.test_speed_rpm);
-        p.test_return_rpm    = cfg.get<float>      ("behavior.test_return_rpm",    p.test_return_rpm);
-        p.sweep_rpm          = cfg.get<float>      ("behavior.sweep_rpm",          p.sweep_rpm);
-        p.limit_test_rpm     = cfg.get<float>      ("behavior.limit_test_rpm",     p.limit_test_rpm);
-        p.combined_passes    = cfg.get<float>      ("behavior.combined_passes",    p.combined_passes);
-        p.health_jsonl_path  = cfg.get<std::string>("behavior.health_jsonl_path",  p.health_jsonl_path);
-        p.pid_jsonl_path     = cfg.get<std::string>("behavior.pid_jsonl_path",     p.pid_jsonl_path);
-        p.pid_max_drift_deg  = cfg.get<float>      ("behavior.pid_max_drift_deg",  p.pid_max_drift_deg);
-        p.pid.kp             = cfg.get<float>      ("pid.kp",                      p.pid.kp);
-        p.pid.ki             = cfg.get<float>      ("pid.ki",                      p.pid.ki);
-        p.pid.kd             = cfg.get<float>      ("pid.kd",                      p.pid.kd);
-        p.pid.max_output     = cfg.get<float>      ("pid.max_output",              p.pid.max_output);
-        p.pid.integral_limit = cfg.get<float>      ("pid.integral_limit",          p.pid.integral_limit);
-        p.pid.deadband_deg   = cfg.get<float>      ("pid.deadband_deg",            p.pid.deadband_deg);
+        p.can_iface = cfg.get<std::string>("hardware.can_iface", p.can_iface);
+        p.motor_id_base =
+            static_cast<uint8_t>(cfg.get<int>("hardware.motor_id_base", (int)p.motor_id_base));
+        p.comm_timeout_ms =
+            static_cast<uint16_t>(cfg.get<int>("timing.comm_timeout_ms", (int)p.comm_timeout_ms));
+        p.imu_port = cfg.get<std::string>("hardware.imu_port", p.imu_port);
+        p.imu_baud = cfg.get<int>("hardware.imu_baud", p.imu_baud);
+        p.bms_port = cfg.get<std::string>("hardware.bms_port", p.bms_port);
+        p.bms_baud = cfg.get<int>("hardware.bms_baud", p.bms_baud);
+        p.dist_port = cfg.get<std::string>("hardware.dist_port", p.dist_port);
+        p.dist_baud = cfg.get<int>("hardware.dist_baud", p.dist_baud);
+        p.dist_slave_id =
+            static_cast<uint8_t>(cfg.get<int>("hardware.dist_slave_id", (int)p.dist_slave_id));
+        p.dist_channel_count = static_cast<uint8_t>(
+            cfg.get<int>("hardware.dist_channel_count", (int)p.dist_channel_count));
+        p.gpio_chip = cfg.get<std::string>("hardware.gpio_chip", p.gpio_chip);
+        p.front_limit_line = static_cast<unsigned>(
+            cfg.get<int>("hardware.front_limit_line", (int)p.front_limit_line));
+        p.rear_limit_line =
+            static_cast<unsigned>(cfg.get<int>("hardware.rear_limit_line", (int)p.rear_limit_line));
+        p.limit_timeout_sec = cfg.get<int>("timing.limit_timeout_sec", p.limit_timeout_sec);
+        p.online_timeout_ms = cfg.get<int>("timing.online_timeout_ms", p.online_timeout_ms);
+        p.sweep_duration_ms = cfg.get<int>("timing.sweep_duration_ms", p.sweep_duration_ms);
+        p.loop_period_ms = cfg.get<int>("timing.loop_period_ms", p.loop_period_ms);
+        p.test_speed_rpm = cfg.get<float>("behavior.test_speed_rpm", p.test_speed_rpm);
+        p.test_return_rpm = cfg.get<float>("behavior.test_return_rpm", p.test_return_rpm);
+        p.sweep_rpm = cfg.get<float>("behavior.sweep_rpm", p.sweep_rpm);
+        p.limit_test_rpm = cfg.get<float>("behavior.limit_test_rpm", p.limit_test_rpm);
+        p.combined_passes = cfg.get<float>("behavior.combined_passes", p.combined_passes);
+        p.health_jsonl_path =
+            cfg.get<std::string>("behavior.health_jsonl_path", p.health_jsonl_path);
+        p.pid_jsonl_path = cfg.get<std::string>("behavior.pid_jsonl_path", p.pid_jsonl_path);
+        p.pid_max_drift_deg = cfg.get<float>("behavior.pid_max_drift_deg", p.pid_max_drift_deg);
+        p.pid.kp = cfg.get<float>("pid.kp", p.pid.kp);
+        p.pid.ki = cfg.get<float>("pid.ki", p.pid.ki);
+        p.pid.kd = cfg.get<float>("pid.kd", p.pid.kd);
+        p.pid.max_output = cfg.get<float>("pid.max_output", p.pid.max_output);
+        p.pid.integral_limit = cfg.get<float>("pid.integral_limit", p.pid.integral_limit);
+        p.pid.deadband_deg = cfg.get<float>("pid.deadband_deg", p.pid.deadband_deg);
         spdlog::debug("[hw_config] Loaded config: {}", path);
     } catch (const std::exception& e) {
         spdlog::warn("[hw_config] Exception loading config {}: {} — using built-in defaults",
-                     path, e.what());
+                     path,
+                     e.what());
     }
     return p;
 }
@@ -179,16 +187,19 @@ struct DeviceFixture {
 
     DeviceFixture() : p(load_hw_test_config()) {
         using namespace robot;
-        can_bus    = std::make_shared<driver::LinuxCanSocket>(p.can_iface);
-        walk_group = std::make_shared<device::WalkMotorGroup>(can_bus, p.motor_id_base, p.comm_timeout_ms);
-        imu_serial = std::make_shared<driver::LibSerialPort>(p.imu_port, hal::UartConfig{p.imu_baud});
-        imu        = std::make_shared<device::ImuDevice>(imu_serial);
-        bms_serial = std::make_shared<driver::LibSerialPort>(p.bms_port, hal::UartConfig{p.bms_baud});
-        bms        = std::make_shared<device::BMS>(bms_serial, 95.0f, 15.0f);
+        can_bus = std::make_shared<driver::LinuxCanSocket>(p.can_iface);
+        walk_group =
+            std::make_shared<device::WalkMotorGroup>(can_bus, p.motor_id_base, p.comm_timeout_ms);
+        imu_serial =
+            std::make_shared<driver::LibSerialPort>(p.imu_port, hal::UartConfig{p.imu_baud});
+        imu = std::make_shared<device::ImuDevice>(imu_serial);
+        bms_serial =
+            std::make_shared<driver::LibSerialPort>(p.bms_port, hal::UartConfig{p.bms_baud});
+        bms = std::make_shared<device::BMS>(bms_serial, 95.0f, 15.0f);
         front_gpio = std::make_shared<driver::LibGpiodPin>(p.gpio_chip, p.front_limit_line);
-        rear_gpio  = std::make_shared<driver::LibGpiodPin>(p.gpio_chip, p.rear_limit_line);
-        front_sw   = std::make_shared<device::LimitSwitch>(front_gpio, device::LimitSide::FRONT);
-        rear_sw    = std::make_shared<device::LimitSwitch>(rear_gpio, device::LimitSide::REAR);
+        rear_gpio = std::make_shared<driver::LibGpiodPin>(p.gpio_chip, p.rear_limit_line);
+        front_sw = std::make_shared<device::LimitSwitch>(front_gpio, device::LimitSide::FRONT);
+        rear_sw = std::make_shared<device::LimitSwitch>(rear_gpio, device::LimitSide::REAR);
     }
 
     ~DeviceFixture() {
@@ -243,19 +254,19 @@ struct FullSystemFixture : DeviceFixture {
         nav = std::make_shared<service::NavService>(walk_group, imu, gps_dummy, 0.3f);
 
         service::MotionService::Config motion_cfg;
-        motion_cfg.clean_speed_rpm   = p.test_speed_rpm;
-        motion_cfg.return_speed_rpm  = p.test_return_rpm;
-        motion_cfg.brush_rpm = 0;  // MockModbus，不实际驱动辊刷
+        motion_cfg.clean_speed_rpm = p.test_speed_rpm;
+        motion_cfg.return_speed_rpm = p.test_return_rpm;
+        motion_cfg.brush_rpm = 0;  // MockModbus，不实际驱动滚刷
         motion_cfg.return_brush_rpm = 0;
         motion_cfg.edge_reverse_rpm = 0.0f;
         motion_cfg.heading_pid_en = pid_enabled;
         // 将配置文件中的 PID 参数传入（无论是否使能，均写入供 start_cleaning 时生效）
-        motion_cfg.pid.kp             = p.pid.kp;
-        motion_cfg.pid.ki             = p.pid.ki;
-        motion_cfg.pid.kd             = p.pid.kd;
-        motion_cfg.pid.max_output     = p.pid.max_output;
+        motion_cfg.pid.kp = p.pid.kp;
+        motion_cfg.pid.ki = p.pid.ki;
+        motion_cfg.pid.kd = p.pid.kd;
+        motion_cfg.pid.max_output = p.pid.max_output;
         motion_cfg.pid.integral_limit = p.pid.integral_limit;
-        motion_cfg.pid.deadband_deg   = p.pid.deadband_deg;
+        motion_cfg.pid.deadband_deg = p.pid.deadband_deg;
 
         motion =
             std::make_shared<service::MotionService>(walk_group, brush, imu, event_bus, motion_cfg);
@@ -327,7 +338,7 @@ struct FullSystemFixture : DeviceFixture {
                 p.dist_port, robot::hal::ModbusConfig{p.dist_baud, 'N', 8, 1});
             if (dist_modbus->open()) {
                 robot::device::DistanceSensorConfig dist_cfg;
-                dist_cfg.slave_id      = p.dist_slave_id;
+                dist_cfg.slave_id = p.dist_slave_id;
                 dist_cfg.channel_count = p.dist_channel_count;
                 dist_sensor =
                     std::make_shared<robot::device::DistanceSensor>(dist_modbus, dist_cfg);

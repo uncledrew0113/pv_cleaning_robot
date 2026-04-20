@@ -68,7 +68,7 @@ bool MotionService::start_returning() {
     // 解除可能由 SafetyMonitor 触发的 emergency_override 锁，确保心跳正常恢复
     group_->clear_override();
 
-    // 返程辊刷反向运行（清洁板面残留，绝对值同 brush_rpm，方向取反）
+    // 返程滚刷反向运行（清洁板面残留，绝对值同 brush_rpm，方向取反）
     brush_->set_rpm(-static_cast<float>(cfg_.return_brush_rpm));
     brush_->start();
 

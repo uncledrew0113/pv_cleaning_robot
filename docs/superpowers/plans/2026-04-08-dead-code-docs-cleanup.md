@@ -485,7 +485,7 @@ RK3576 / PREEMPT\_RT Linux / aarch64，C++17。光伏板面清扫机器人固件
 | CAN (`can0`) | 行走电机组 × 4（M1502E_111，motor_id 1–4） | `can.interface` |
 | UART `/dev/ttyS1` | IMU（WIT Motion 9轴，9600 baud） | `serial.imu` |
 | UART `/dev/ttyS2` | GPS（NMEA 0183，可选，暂无硬件） | `serial.gps` |
-| UART `/dev/ttyS3` | 辊刷电机（Modbus RTU，slave_id=1） | `serial.brush` |
+| UART `/dev/ttyS3` | 滚刷电机（Modbus RTU，slave_id=1） | `serial.brush` |
 | UART `/dev/ttyS8` | BMS（嘉佰达 UART 自定义协议，BMS1） | `serial.bms` |
 | GPIO `gpiochip5/0` | 前限位传感器（接近开关，NPN 常开） | `gpio.front_limit` |
 | GPIO `gpiochip5/1` | 后限位传感器（接近开关，NPN 常开） | `gpio.rear_limit` |
