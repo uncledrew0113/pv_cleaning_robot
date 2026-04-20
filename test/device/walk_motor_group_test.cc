@@ -281,7 +281,7 @@ TEST_CASE("设备层WalkMotorGroup - HeadingPidParams 是 HeadingPidController::
     SUCCEED("编译期类型别名验证通过");
 }
 
-TEST_CASE("设备层WalkMotorGroup - update() PID 使能时差速（yaw=10°→LT<RT）",
+TEST_CASE("设备层WalkMotorGroup - update() PID 使能时上下轨差速（偏右 yaw=10°→上轨减速/下轨加速）",
           "[device][walk_motor_group]") {
     auto bus = std::make_shared<MockCanBus>();
     device::WalkMotorGroup group(bus, 1u);
@@ -296,7 +296,8 @@ TEST_CASE("设备层WalkMotorGroup - update() PID 使能时差速（yaw=10°→L
     group.update(0.0f);
     bus->sent_frames.clear();
 
-    // 第二次 update：yaw=10°，err=-10 → correction<0 → LT 降速，RT 升速
+    // 第二次 update：yaw=10°（偏右，yaw > target），err=-10 → correction<0
+    // 预期：上轨（LT=RT）均匀减速，下轨（LB=RB）均匀加速（物理速度更大）
     group.update(10.0f);
 
     REQUIRE_FALSE(bus->sent_frames.empty());
@@ -304,8 +305,14 @@ TEST_CASE("设备层WalkMotorGroup - update() PID 使能时差速（yaw=10°→L
     REQUIRE(f.id == 0x032u);
     int16_t lt = be16s(f.data[0], f.data[1]);
     int16_t rt = be16s(f.data[2], f.data[3]);
-    // 航向偏右（yaw>target）时 correction<0，左轮减速，右轮加速
-    REQUIRE(lt < rt);
+    int16_t lb = be16s(f.data[4], f.data[5]);
+    int16_t rb = be16s(f.data[6], f.data[7]);
+    // 上轨同速（lt==rt），下轨同速（lb==rb）
+    REQUIRE(lt == rt);
+    REQUIRE(lb == rb);
+    // 上轨减速（lt < base=10000）；下轨加速（|lb| > lt，即 lb < -lt）
+    REQUIRE(lt > 0);     // 前进方向，上轨仍为正
+    REQUIRE(lb < -lt);   // 下轨命令绝对值 > 上轨，物理速度更大
 
     group.close();
 }

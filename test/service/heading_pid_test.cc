@@ -45,7 +45,7 @@ TEST_CASE("HeadingPidController: 比例项方向正确", "[service][heading_pid]
     pid.enable(true);
     pid.set_target(10.0f);   // 目标 10°
 
-    // yaw=0°，误差=+10°，correction 应为正（偏右，左轮加速）
+    // yaw=0°，误差=+10°，correction 应为正（偏左 yaw < target，上轨加速/下轨减速）
     float c = pid.compute(0.0f, 0.0f);  // dt=0 → 微分项为0
     REQUIRE(c > 0.0f);
     REQUIRE(c == Approx(2.0f * 10.0f).margin(0.01f));  // kp*err = 2*10 = 20

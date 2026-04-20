@@ -459,12 +459,17 @@ void WalkMotorGroup::update(float yaw_deg) {
 
         if (has && pid_ctrl_.is_enabled()) {
             float correction = pid_ctrl_.compute(yaw_deg, dt_s);
-            // correction > 0 → 偏左（yaw < target；CW+ 约定：yaw 减小=向左转），加大左侧速度使机器人向右纠偏
-            float lt = clamp_rpm(base_lt_rpm_ + correction);
-            float rt = clamp_rpm(base_rt_rpm_ - correction);
-            // 物理安装：LB/RB 安装方向与 LT/RT 相反，需取反才能同向运动
-            float lb = -lt;
-            float rb = -rt;
+            // 上下轨差速纠偏（CW+ 约定，upper = 上边框轨道 LT+RT，lower = 下边框轨道 LB+RB）：
+            //   correction > 0 → 偏左（yaw < target）→ 上轨加速/下轨减速 → 机器人向右纠偏
+            //   correction < 0 → 偏右（yaw > target）→ 上轨减速/下轨加速 → 机器人向左纠偏
+            // 注：同一轨道两轮必须同速（物理硬约束），因此 lt==rt、lb==rb；
+            //     lb 不等于 -lt：base 取反体现反向安装，correction 符号相同以实现上下差速。
+            float upper_spd = correction;  // 上轨修正量
+            float lower_spd = correction;  // 下轨修正量（与上轨同号才能产生差速，因 base 已取反）
+            float lt = clamp_rpm(base_lt_rpm_ + upper_spd);
+            float rt = clamp_rpm(base_rt_rpm_ + upper_spd);   // 与 lt 同向，非 - correction
+            float lb = clamp_rpm(-base_lt_rpm_ + lower_spd);  // 非 -lt：base 取反，correction 同号
+            float rb = clamp_rpm(-base_rt_rpm_ + lower_spd);  // 同理
             ctrl = protocol::WalkMotorCanCodec::encode_group_speed(id_base_, lt, rt, lb, rb);
         }
     }
