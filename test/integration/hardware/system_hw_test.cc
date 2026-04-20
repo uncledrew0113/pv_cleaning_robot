@@ -477,12 +477,14 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + 全程持续采集健�
         auto gd = f.walk_group->get_group_diagnostics();
         auto ld = f.imu->get_latest();
         spdlog::info(
-            "[hw_system][combined] #{}: LT={:.1f} RT={:.1f}rpm "
-            "pitch={:.2f}° state={}",
+            "[hw_system][combined] #{}: LT={:.1f} RT={:.1f} LB={:.1f} RB={:.1f} rpm "
+            "yaw={:.2f}° state={}",
             total_health_records,
             gd.wheel[0].speed_rpm,
             gd.wheel[1].speed_rpm,
-            ld.pitch_deg,
+            gd.wheel[2].speed_rpm,
+            gd.wheel[3].speed_rpm,
+            ld.yaw_deg,
             f.fsm->current_state());
     };
 
@@ -496,7 +498,7 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + 全程持续采集健�
             if (curr != from)
                 return curr;
             poll_once();
-            std::this_thread::sleep_for(500ms);
+            std::this_thread::sleep_for(5ms);
         }
         return from;  // 超时：状态未变
     };
@@ -699,13 +701,15 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + PID 控制 + yaw 指�
 
         spdlog::info(
             "[hw_system][pid_combined] #{} seg={} yaw={:.2f}° err={:.2f}° "
-            "LT={:.1f} RT={:.1f}rpm state={}",
+            "LT={:.1f} RT={:.1f} LB={:.1f} RB={:.1f}rpm state={}",
             total_health_records,
             cur_seg,
             yaw,
             yaw_err,
             gd.wheel[0].speed_rpm,
             gd.wheel[1].speed_rpm,
+            gd.wheel[2].speed_rpm,
+            gd.wheel[3].speed_rpm,
             f.fsm->current_state());
     };
 
@@ -717,7 +721,7 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + PID 控制 + yaw 指�
             if (curr != from)
                 return curr;
             poll_once();
-            std::this_thread::sleep_for(500ms);
+            std::this_thread::sleep_for(5ms);
         }
         return from;  // 超时：状态未变
     };

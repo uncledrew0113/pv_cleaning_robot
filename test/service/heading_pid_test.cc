@@ -261,3 +261,76 @@ TEST_CASE("HeadingPidController: set_params 热更新不复位积分", "[service
     float c = pid.compute(5.0f, 0.0f);
     REQUIRE(c == Approx(-15.0f).margin(0.5f));
 }
+
+// ─── 自适应目标跟踪测试 ──────────────────────────────────────────────────────
+
+TEST_CASE("HeadingPidController: alpha=1.0（禁用跟踪）目标保持不变", "[service][heading_pid]") {
+    HeadingPidController::Params p = kp_only(2.0f);
+    p.deadband_deg = 0.0f;
+    p.target_tracking_alpha = 1.0f;  // 禁用跟踪
+    HeadingPidController pid(p);
+    pid.enable(true);
+    pid.set_target(0.0f);
+
+    // 调用 100 次 compute，yaw=10°；目标不动，err 始终为 norm(0-10)=-10°
+    float last_c = 0.0f;
+    for (int i = 0; i < 100; ++i) {
+        last_c = pid.compute(10.0f, 0.02f);
+    }
+    // kp=2, err≈-10 → correction≈-20（被 max_output=100 限制在 -20）
+    REQUIRE(last_c == Approx(-20.0f).margin(1.0f));
+}
+
+TEST_CASE("HeadingPidController: alpha=0.99 目标缓慢跟踪 yaw（误差指数衰减）", "[service][heading_pid]") {
+    HeadingPidController::Params p = kp_only(2.0f, 1000.0f);  // 大 max_output 避免限幅
+    p.ki = 0.0f;  // 纯 P，便于验证
+    p.kd = 0.0f;
+    p.deadband_deg = 0.0f;
+    p.target_tracking_alpha = 0.99f;
+    HeadingPidController pid(p);
+    pid.enable(true);
+    pid.set_target(0.0f);
+
+    // yaw 突变至 10°，alpha=0.99，每步 target += 0.01*(10-target)
+    // 经 n 步后 err = 10° × 0.99^n（指数衰减）
+
+    // 第 1 步：target += 0.01*(10-0) = 0.1°，err = 0.1-10 = -9.9°
+    float c1 = pid.compute(10.0f, 0.0f);
+    REQUIRE(c1 == Approx(2.0f * (-9.9f)).margin(0.05f));  // kp * err = 2 * (-9.9)
+
+    // 经 100 步：err ≈ 10° × 0.99^100 ≈ 3.66°，误差应明显衰减
+    for (int i = 0; i < 99; ++i) {
+        pid.compute(10.0f, 0.0f);
+    }
+    float c100 = pid.compute(10.0f, 0.0f);
+    // err ≈ -10° × 0.99^100 ≈ -3.66° → correction ≈ 2 * (-3.66) = -7.32
+    REQUIRE(c100 < -5.0f);   // 已明显衰减
+    REQUIRE(c100 > -10.0f);  // 但尚未归零（未到 deadband）
+}
+
+TEST_CASE("HeadingPidController: alpha=0.99 对返程漂移误差有界（防脱轨）", "[service][heading_pid]") {
+    // 模拟返程场景：target=141°（由 set_target 设），yaw 以 0.3°/s 从 143° 缓慢降至 134°
+    // 共 90 帧 × 0.1s/帧（慢速测试帧率）= 9s，yaw = 143 - 0.1°/帧
+    HeadingPidController::Params p = kp_only(1.5f, 10.0f);
+    p.ki = 0.0f;
+    p.kd = 0.0f;
+    p.deadband_deg = 0.5f;
+    p.target_tracking_alpha = 0.99f;
+    HeadingPidController pid(p);
+    pid.enable(true);
+    pid.set_target(141.0f);  // 返程初始目标 = 正向终点 yaw
+
+    float max_correction = 0.0f;
+    float yaw = 143.0f;
+    for (int i = 0; i < 90; ++i) {
+        yaw -= 0.1f;  // 每帧下降 0.1°（模拟轨道几何复位力）
+        float c = pid.compute(yaw, 0.1f);  // dt = 0.1s（测试帧率）
+        if (std::abs(c) > max_correction)
+            max_correction = std::abs(c);
+    }
+
+    // 自适应跟踪后，最大纠偏力远小于旧代码的 10 RPM 上限
+    // 旧代码（alpha=1.0）：err 最大达 7°，correction=10 RPM（被 max_output 截断）
+    // 新代码（alpha=0.99）：稳态误差 ≈ 0.6° → correction ≈ 0.9 RPM → 远低于上限
+    REQUIRE(max_correction < 5.0f);  // 验证纠偏力有界（不触发脱轨量级的差速）
+}

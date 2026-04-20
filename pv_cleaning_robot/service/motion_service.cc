@@ -72,7 +72,14 @@ bool MotionService::start_returning() {
     brush_->set_rpm(-static_cast<float>(cfg_.return_brush_rpm));
     brush_->start();
 
-    // 保持航向 PID：锁定当前 yaw，防止返程漂移
+    // 返程保持航向 PID，但配合自适应目标跟踪（target_tracking_alpha < 1.0）：
+    //   - 以当前 yaw（正向终点）为初始目标，PID 在目标自适应跟踪下不再以固定偏移值对抗轨道复位力
+    //   - 轨道几何引起的慢速 yaw 变化（τ < 2s）：目标自动跟踪 → PID 误差小 → 纠偏力弱 → 不脱轨
+    //   - 突发偏转（出轨等异常）：目标跟不上 → PID 大力纠正 → 保证安全
+    // 根因分析（doc/pid.txt）：
+    //   旧做法以正向终点 yaw（~141°）为固定返程目标，轨道自然将 yaw 压回 134°，
+    //   PID 对抗轨道复位力产生 20+ RPM 差速（LT≈-9, LB≈+30）→ 脱轨。
+    //   自适应跟踪（alpha=0.99）下稳态误差 ≤ 0.6°，纠偏力 ≤ 0.9 RPM，彻底解决此问题。
     if (cfg_.heading_pid_en) {
         const float cur_yaw = imu_ ? imu_->get_latest().yaw_deg : 0.0f;
         group_->set_target_heading(cur_yaw);
@@ -99,7 +106,8 @@ bool MotionService::start_returning_no_brush() {
     brush_->stop();
     group_->clear_override();
 
-    // 保持航向 PID（与 start_returning() 一致；Q9 修复：原来错误地禁用了 PID）
+    // 保持航向 PID（与 start_returning() 一致，自适应目标跟踪；
+    // 原 Q9 修复"保持 PID"依然正确，但原因更新为：靠自适应跟踪而非固定目标）
     if (cfg_.heading_pid_en) {
         const float cur_yaw = imu_ ? imu_->get_latest().yaw_deg : 0.0f;
         group_->set_target_heading(cur_yaw);

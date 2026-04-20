@@ -42,6 +42,16 @@ float HeadingPidController::compute(float yaw_deg, float dt_s) {
         initialized_ = true;
     }
 
+    // 自适应目标跟踪（alpha < 1.0 时生效）：
+    //   target += (1 - alpha) × norm_angle(yaw - target)
+    // 作用：轨道几何引起的慢速漂移（速率 << 1/τ）自动被目标吸收，不产生大误差；
+    //       突发偏转（速率 >> 1/τ，如出轨）目标跟不上，PID 立即响应纠正。
+    // 时间常数 τ ≈ -T / ln(alpha)，T = 0.02s；alpha=0.99 → τ ≈ 2s
+    if (params_.target_tracking_alpha < 1.0f - 1e-4f) {
+        float track_diff = norm_angle(yaw_deg - target_);
+        target_ += (1.0f - params_.target_tracking_alpha) * track_diff;
+    }
+
     float err = norm_angle(target_ - yaw_deg);
 
     // Fix 1：误差过零（航向越过目标）时清零积分，防止收敛阶段累积的正/负积分

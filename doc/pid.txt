@@ -1,0 +1,1307 @@
+root@SBC3576:~/pv_cleaning_robot/bin# ./hw_tests "[hw_system][pid_combined]"
+Filters: [hw_system][pid_combined]
+[2026-04-20 18:19:49.200] [warning] [hw_system][pid_combined] ====================================
+[2026-04-20 18:19:49.200] [warning] [hw_system][pid_combined] ⚠ 机器人将运动 2.0 趟（4 段）！
+[2026-04-20 18:19:49.200] [warning] [hw_system][pid_combined] PID kp=1.50 ki=0.050 kd=0.300 deadband=1.0°
+[2026-04-20 18:19:49.200] [warning] [hw_system][pid_combined] 健康数据: /tmp/hw_system_test_health.jsonl
+[2026-04-20 18:19:49.200] [warning] [hw_system][pid_combined] PID 指标: /tmp/hw_pid_test_metrics.jsonl
+[2026-04-20 18:19:49.200] [warning] [hw_system][pid_combined] 最大漂移警告阈值: 15.0°
+[2026-04-20 18:19:49.200] [warning] [hw_system][pid_combined] 请确保：导轨就位，轨道无人员/障碍物
+[2026-04-20 18:19:49.200] [warning] [hw_system][pid_combined] ====================================
+[2026-04-20 18:19:49.200] [info] [LinuxCanSocket] opened: can0
+[2026-04-20 18:19:49.200] [info] [WalkMotorGroup] comm_timeout set to 500 ms for motors 1-4
+[2026-04-20 18:19:49.200] [info] [LibSerialPort] opened: /dev/ttyS1 @ 9600 baud 8N1
+[2026-04-20 18:19:49.201] [info] [LibSerialPort] opened: /dev/ttyS8 @ 9600 baud 8N1
+[2026-04-20 18:19:49.201] [info] [BMS] 唤醒帧 1/4 已发送 (cmd=0x05)
+[2026-04-20 18:19:49.700] [info] [BMS] 唤醒帧 1/4 超时 (rx_bytes=0)，等待 200 ms 后重试
+[2026-04-20 18:19:49.901] [info] [BMS] 唤醒帧 2/4 已发送 (cmd=0x05)
+[2026-04-20 18:19:50.001] [info] [BMS] 帧接收成功 attempt=2/4 rx_bytes=22
+[2026-04-20 18:19:50.001] [info] [BMS] 硬件版本: OH17SA01P17S40A
+[2026-04-20 18:19:50.101] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:50.101] [info] [LibGpiodPin] opened gpiochip5/0 as INPUT (Bias: 1, Debounce: 2ms)
+[2026-04-20 18:19:50.102] [info] [LibGpiodPin] opened gpiochip5/1 as INPUT (Bias: 1, Debounce: 2ms)
+[2026-04-20 18:19:50.102] [info] [LibGpiodPin] polling-mode started: gpiochip5/0 (1ms period)
+[2026-04-20 18:19:50.102] [info] [LibGpiodPin] polling-mode started: gpiochip5/1 (1ms period)
+[2026-04-20 18:19:50.103] [info] [LibModbusMaster] opened: /dev/ttyS9 @ 9600 baud
+[2026-04-20 18:19:50.103] [info] [FullSystemFixture] 距离传感器已打开: /dev/ttyS9
+[2026-04-20 18:19:50.104] [info] [FullSystemFixture] HealthService 已创建: /tmp/hw_system_test_health.jsonl
+[2026-04-20 18:19:50.104] [info] [FSM] → Idle
+[2026-04-20 18:19:50.108] [info] [hw_system][pid_combined] 传感器: at_home=true at_front=false
+[2026-04-20 18:19:50.108] [info] [hw_system][pid_combined] target_yaw=136.02°
+[2026-04-20 18:19:50.108] [info] [FSM] → SelfCheck（趟数=2.0，目标半趟=4）
+[2026-04-20 18:19:50.108] [info] [FSM] → CleanFwd（自检通过，从停机位出发）
+[2026-04-20 18:19:50.108] [info] [WalkMotorGroup] clear_override requested
+[2026-04-20 18:19:50.108] [warning] [hw_system][pid_combined] 段 1: CleanFwd → 等待【前端】限位（最多 2400s）...
+[2026-04-20 18:19:50.152] [info] [WalkMotorGroup] clear_override applied
+[2026-04-20 18:19:50.208] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:50.208] [info] [hw_system][pid_combined] #1 seg=1 yaw=136.02° err=0.00° LT=0.0 RT=0.0 LB=0.0 RB=0.0rpm state=CleanFwd
+[2026-04-20 18:19:50.314] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:50.314] [info] [hw_system][pid_combined] #2 seg=1 yaw=136.01° err=0.01° LT=4.7 RT=5.2 LB=-6.2 RB=-10.5rpm state=CleanFwd
+[2026-04-20 18:19:50.419] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:50.420] [info] [hw_system][pid_combined] #3 seg=1 yaw=135.47° err=0.55° LT=19.9 RT=20.0 LB=-19.0 RB=-20.0rpm state=CleanFwd
+[2026-04-20 18:19:50.525] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:50.625] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:19:50.626] [info] [hw_system][pid_combined] #4 seg=1 yaw=135.74° err=0.28° LT=18.5 RT=18.6 LB=-19.0 RB=-18.9rpm state=CleanFwd
+[2026-04-20 18:19:50.731] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:50.732] [info] [hw_system][pid_combined] #5 seg=1 yaw=135.42° err=0.60° LT=19.8 RT=19.9 LB=-19.7 RB=-19.7rpm state=CleanFwd
+[2026-04-20 18:19:50.837] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:50.837] [info] [hw_system][pid_combined] #6 seg=1 yaw=135.44° err=0.58° LT=20.9 RT=20.8 LB=-20.2 RB=-20.3rpm state=CleanFwd
+[2026-04-20 18:19:50.943] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:50.943] [info] [hw_system][pid_combined] #7 seg=1 yaw=135.47° err=0.55° LT=19.1 RT=19.2 LB=-19.5 RB=-19.3rpm state=CleanFwd
+[2026-04-20 18:19:51.048] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:51.148] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:19:51.149] [info] [hw_system][pid_combined] #8 seg=1 yaw=135.38° err=0.64° LT=20.4 RT=20.2 LB=-19.9 RB=-20.0rpm state=CleanFwd
+[2026-04-20 18:19:51.354] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:51.355] [info] [hw_system][pid_combined] #9 seg=1 yaw=135.16° err=0.86° LT=20.8 RT=20.2 LB=-20.1 RB=-20.0rpm state=CleanFwd
+[2026-04-20 18:19:51.560] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:51.561] [info] [hw_system][pid_combined] #10 seg=1 yaw=135.21° err=0.81° LT=19.8 RT=19.6 LB=-19.8 RB=-19.8rpm state=CleanFwd
+[2026-04-20 18:19:51.666] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:51.667] [info] [hw_system][pid_combined] #11 seg=1 yaw=135.07° err=0.95° LT=20.5 RT=20.4 LB=-20.0 RB=-20.2rpm state=CleanFwd
+[2026-04-20 18:19:51.872] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:51.972] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:19:51.973] [info] [hw_system][pid_combined] #12 seg=1 yaw=134.92° err=1.10° LT=20.3 RT=20.2 LB=-20.1 RB=-20.0rpm state=CleanFwd
+[2026-04-20 18:19:52.078] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:52.078] [info] [hw_system][pid_combined] #13 seg=1 yaw=134.87° err=1.15° LT=21.5 RT=21.8 LB=-17.9 RB=-17.6rpm state=CleanFwd
+[2026-04-20 18:19:52.184] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:52.184] [info] [hw_system][pid_combined] #14 seg=1 yaw=134.93° err=1.09° LT=21.4 RT=21.4 LB=-18.7 RB=-18.7rpm state=CleanFwd
+[2026-04-20 18:19:52.289] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:52.290] [info] [hw_system][pid_combined] #15 seg=1 yaw=134.83° err=1.19° LT=21.1 RT=21.5 LB=-18.5 RB=-18.8rpm state=CleanFwd
+[2026-04-20 18:19:52.495] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:52.595] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:19:52.596] [info] [hw_system][pid_combined] #16 seg=1 yaw=134.73° err=1.30° LT=21.5 RT=21.9 LB=-18.4 RB=-18.7rpm state=CleanFwd
+[2026-04-20 18:19:52.701] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:52.702] [info] [hw_system][pid_combined] #17 seg=1 yaw=134.65° err=1.37° LT=21.5 RT=21.7 LB=-18.2 RB=-18.6rpm state=CleanFwd
+[2026-04-20 18:19:52.807] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:52.807] [info] [hw_system][pid_combined] #18 seg=1 yaw=134.62° err=1.41° LT=21.7 RT=21.9 LB=-18.2 RB=-18.6rpm state=CleanFwd
+[2026-04-20 18:19:52.912] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:52.913] [info] [hw_system][pid_combined] #19 seg=1 yaw=134.62° err=1.40° LT=21.7 RT=21.8 LB=-18.1 RB=-18.5rpm state=CleanFwd
+[2026-04-20 18:19:53.018] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:53.118] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:19:53.119] [info] [hw_system][pid_combined] #20 seg=1 yaw=134.50° err=1.52° LT=21.6 RT=22.2 LB=-17.9 RB=-18.3rpm state=CleanFwd
+[2026-04-20 18:19:53.224] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:53.225] [info] [hw_system][pid_combined] #21 seg=1 yaw=134.43° err=1.59° LT=21.7 RT=22.3 LB=-17.8 RB=-18.2rpm state=CleanFwd
+[2026-04-20 18:19:53.330] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:53.330] [info] [hw_system][pid_combined] #22 seg=1 yaw=134.37° err=1.65° LT=22.0 RT=22.5 LB=-17.8 RB=-18.1rpm state=CleanFwd
+[2026-04-20 18:19:53.436] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:53.436] [info] [hw_system][pid_combined] #23 seg=1 yaw=134.28° err=1.74° LT=22.0 RT=22.8 LB=-17.5 RB=-17.8rpm state=CleanFwd
+[2026-04-20 18:19:53.541] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:53.641] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:19:53.642] [info] [hw_system][pid_combined] #24 seg=1 yaw=134.08° err=1.94° LT=22.5 RT=23.1 LB=-17.1 RB=-17.2rpm state=CleanFwd
+[2026-04-20 18:19:53.747] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:53.748] [info] [hw_system][pid_combined] #25 seg=1 yaw=133.95° err=2.08° LT=22.9 RT=23.3 LB=-17.2 RB=-16.5rpm state=CleanFwd
+[2026-04-20 18:19:53.953] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:53.954] [info] [hw_system][pid_combined] #26 seg=1 yaw=134.01° err=2.01° LT=22.7 RT=23.0 LB=-17.3 RB=-16.9rpm state=CleanFwd
+[2026-04-20 18:19:54.059] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:54.059] [info] [hw_system][pid_combined] #27 seg=1 yaw=133.87° err=2.15° LT=23.4 RT=23.5 LB=-16.9 RB=-16.7rpm state=CleanFwd
+[2026-04-20 18:19:54.165] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:54.265] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:19:54.265] [info] [hw_system][pid_combined] #28 seg=1 yaw=133.53° err=2.49° LT=23.8 RT=23.8 LB=-16.2 RB=-16.2rpm state=CleanFwd
+[2026-04-20 18:19:54.370] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:54.371] [info] [hw_system][pid_combined] #29 seg=1 yaw=133.50° err=2.52° LT=24.0 RT=23.9 LB=-16.2 RB=-16.1rpm state=CleanFwd
+[2026-04-20 18:19:54.476] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:54.477] [info] [hw_system][pid_combined] #30 seg=1 yaw=133.41° err=2.61° LT=24.1 RT=24.0 LB=-16.2 RB=-16.3rpm state=CleanFwd
+[2026-04-20 18:19:54.582] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:54.583] [info] [hw_system][pid_combined] #31 seg=1 yaw=133.26° err=2.76° LT=24.2 RT=24.3 LB=-15.6 RB=-15.8rpm state=CleanFwd
+[2026-04-20 18:19:54.688] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:54.788] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:19:54.788] [info] [hw_system][pid_combined] #32 seg=1 yaw=133.14° err=2.88° LT=22.9 RT=24.6 LB=-15.4 RB=-16.1rpm state=CleanFwd
+[2026-04-20 18:19:54.894] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:54.894] [info] [hw_system][pid_combined] #33 seg=1 yaw=132.71° err=3.31° LT=25.0 RT=25.9 LB=-15.4 RB=-14.9rpm state=CleanFwd
+[2026-04-20 18:19:54.999] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:55.000] [info] [hw_system][pid_combined] #34 seg=1 yaw=132.73° err=3.30° LT=24.9 RT=25.0 LB=-14.4 RB=-14.9rpm state=CleanFwd
+[2026-04-20 18:19:55.105] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:55.106] [info] [hw_system][pid_combined] #35 seg=1 yaw=132.74° err=3.28° LT=25.0 RT=25.3 LB=-14.8 RB=-14.9rpm state=CleanFwd
+[2026-04-20 18:19:55.211] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:55.311] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:19:55.311] [info] [hw_system][pid_combined] #36 seg=1 yaw=132.60° err=3.42° LT=26.3 RT=26.0 LB=-14.0 RB=-14.3rpm state=CleanFwd
+[2026-04-20 18:19:55.417] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:55.417] [info] [hw_system][pid_combined] #37 seg=1 yaw=132.85° err=3.17° LT=25.1 RT=24.7 LB=-15.2 RB=-14.8rpm state=CleanFwd
+[2026-04-20 18:19:55.522] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:55.523] [info] [hw_system][pid_combined] #38 seg=1 yaw=132.80° err=3.22° LT=25.1 RT=24.9 LB=-15.0 RB=-14.5rpm state=CleanFwd
+[2026-04-20 18:19:55.628] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:55.629] [info] [hw_system][pid_combined] #39 seg=1 yaw=132.98° err=3.04° LT=25.4 RT=25.0 LB=-15.4 RB=-15.0rpm state=CleanFwd
+[2026-04-20 18:19:55.734] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:55.834] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:19:55.835] [info] [hw_system][pid_combined] #40 seg=1 yaw=133.03° err=2.99° LT=25.1 RT=24.8 LB=-15.3 RB=-14.7rpm state=CleanFwd
+[2026-04-20 18:19:55.940] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:55.940] [info] [hw_system][pid_combined] #41 seg=1 yaw=133.27° err=2.75° LT=25.1 RT=24.8 LB=-16.0 RB=-15.1rpm state=CleanFwd
+[2026-04-20 18:19:56.046] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:56.046] [info] [hw_system][pid_combined] #42 seg=1 yaw=133.50° err=2.52° LT=24.2 RT=24.1 LB=-15.9 RB=-15.5rpm state=CleanFwd
+[2026-04-20 18:19:56.251] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:56.252] [info] [hw_system][pid_combined] #43 seg=1 yaw=133.76° err=2.26° LT=24.0 RT=23.7 LB=-16.2 RB=-16.1rpm state=CleanFwd
+[2026-04-20 18:19:56.357] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:56.457] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:19:56.458] [info] [hw_system][pid_combined] #44 seg=1 yaw=134.00° err=2.02° LT=23.4 RT=23.1 LB=-16.5 RB=-16.5rpm state=CleanFwd
+[2026-04-20 18:19:56.563] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:56.564] [info] [hw_system][pid_combined] #45 seg=1 yaw=134.09° err=1.93° LT=23.3 RT=22.9 LB=-16.4 RB=-16.5rpm state=CleanFwd
+[2026-04-20 18:19:56.669] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:56.669] [info] [hw_system][pid_combined] #46 seg=1 yaw=134.31° err=1.71° LT=22.7 RT=23.0 LB=-16.6 RB=-16.9rpm state=CleanFwd
+[2026-04-20 18:19:56.775] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:56.775] [info] [hw_system][pid_combined] #47 seg=1 yaw=134.37° err=1.65° LT=23.3 RT=22.6 LB=-16.9 RB=-17.0rpm state=CleanFwd
+[2026-04-20 18:19:56.880] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:56.981] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:19:56.981] [info] [hw_system][pid_combined] #48 seg=1 yaw=134.73° err=1.29° LT=22.8 RT=22.5 LB=-17.3 RB=-17.2rpm state=CleanFwd
+[2026-04-20 18:19:57.086] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:57.087] [info] [hw_system][pid_combined] #49 seg=1 yaw=134.81° err=1.21° LT=22.9 RT=22.2 LB=-17.9 RB=-17.9rpm state=CleanFwd
+[2026-04-20 18:19:57.192] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:57.193] [info] [hw_system][pid_combined] #50 seg=1 yaw=134.94° err=1.08° LT=22.6 RT=22.2 LB=-18.0 RB=-18.0rpm state=CleanFwd
+[2026-04-20 18:19:57.298] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:57.298] [info] [hw_system][pid_combined] #51 seg=1 yaw=135.12° err=0.90° LT=21.8 RT=21.6 LB=-18.1 RB=-18.1rpm state=CleanFwd
+[2026-04-20 18:19:57.404] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:57.504] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:19:57.504] [info] [hw_system][pid_combined] #52 seg=1 yaw=135.32° err=0.70° LT=20.0 RT=20.5 LB=-19.3 RB=-19.4rpm state=CleanFwd
+[2026-04-20 18:19:57.609] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:57.610] [info] [hw_system][pid_combined] #53 seg=1 yaw=135.24° err=0.79° LT=19.2 RT=19.3 LB=-19.2 RB=-19.1rpm state=CleanFwd
+[2026-04-20 18:19:57.715] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:57.716] [info] [hw_system][pid_combined] #54 seg=1 yaw=135.27° err=0.75° LT=20.3 RT=20.1 LB=-19.9 RB=-19.8rpm state=CleanFwd
+[2026-04-20 18:19:57.821] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:57.822] [info] [hw_system][pid_combined] #55 seg=1 yaw=135.27° err=0.75° LT=21.4 RT=20.7 LB=-19.6 RB=-19.5rpm state=CleanFwd
+[2026-04-20 18:19:57.927] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:58.027] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:19:58.027] [info] [hw_system][pid_combined] #56 seg=1 yaw=135.54° err=0.48° LT=20.5 RT=19.7 LB=-19.5 RB=-19.3rpm state=CleanFwd
+[2026-04-20 18:19:58.133] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:58.133] [info] [hw_system][pid_combined] #57 seg=1 yaw=135.63° err=0.40° LT=21.2 RT=19.8 LB=-19.7 RB=-19.6rpm state=CleanFwd
+[2026-04-20 18:19:58.238] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:58.239] [info] [hw_system][pid_combined] #58 seg=1 yaw=135.81° err=0.21° LT=20.7 RT=19.7 LB=-19.9 RB=-19.9rpm state=CleanFwd
+[2026-04-20 18:19:58.344] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:58.345] [info] [hw_system][pid_combined] #59 seg=1 yaw=135.91° err=0.12° LT=20.1 RT=19.7 LB=-19.8 RB=-19.8rpm state=CleanFwd
+[2026-04-20 18:19:58.550] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:58.650] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:19:58.651] [info] [hw_system][pid_combined] #60 seg=1 yaw=136.20° err=-0.18° LT=20.4 RT=19.4 LB=-19.9 RB=-19.9rpm state=CleanFwd
+[2026-04-20 18:19:58.856] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:58.857] [info] [hw_system][pid_combined] #61 seg=1 yaw=136.46° err=-0.44° LT=20.1 RT=19.9 LB=-20.0 RB=-19.9rpm state=CleanFwd
+[2026-04-20 18:19:59.062] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:59.063] [info] [hw_system][pid_combined] #62 seg=1 yaw=136.62° err=-0.60° LT=20.4 RT=20.1 LB=-20.2 RB=-20.3rpm state=CleanFwd
+[2026-04-20 18:19:59.168] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:59.168] [info] [hw_system][pid_combined] #63 seg=1 yaw=136.74° err=-0.72° LT=19.8 RT=19.8 LB=-20.0 RB=-20.1rpm state=CleanFwd
+[2026-04-20 18:19:59.274] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:59.374] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:19:59.375] [info] [hw_system][pid_combined] #64 seg=1 yaw=136.86° err=-0.84° LT=19.8 RT=19.9 LB=-20.1 RB=-20.2rpm state=CleanFwd
+[2026-04-20 18:19:59.480] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:59.481] [info] [hw_system][pid_combined] #65 seg=1 yaw=136.97° err=-0.94° LT=19.6 RT=19.8 LB=-20.0 RB=-20.2rpm state=CleanFwd
+[2026-04-20 18:19:59.586] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:59.587] [info] [hw_system][pid_combined] #66 seg=1 yaw=137.03° err=-1.01° LT=19.6 RT=20.0 LB=-20.0 RB=-20.2rpm state=CleanFwd
+[2026-04-20 18:19:59.693] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:59.694] [info] [hw_system][pid_combined] #67 seg=1 yaw=137.15° err=-1.13° LT=19.5 RT=20.3 LB=-20.1 RB=-20.5rpm state=CleanFwd
+[2026-04-20 18:19:59.799] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:19:59.899] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:19:59.900] [info] [hw_system][pid_combined] #68 seg=1 yaw=137.22° err=-1.20° LT=18.0 RT=18.3 LB=-21.8 RB=-21.8rpm state=CleanFwd
+[2026-04-20 18:20:00.005] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:00.005] [info] [hw_system][pid_combined] #69 seg=1 yaw=136.98° err=-0.96° LT=18.5 RT=18.5 LB=-21.4 RB=-21.1rpm state=CleanFwd
+[2026-04-20 18:20:00.110] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:00.111] [info] [hw_system][pid_combined] #70 seg=1 yaw=137.09° err=-1.07° LT=17.2 RT=17.8 LB=-21.8 RB=-21.2rpm state=CleanFwd
+[2026-04-20 18:20:00.216] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:00.217] [info] [hw_system][pid_combined] #71 seg=1 yaw=137.00° err=-0.98° LT=17.9 RT=18.9 LB=-21.6 RB=-21.4rpm state=CleanFwd
+[2026-04-20 18:20:00.322] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:00.423] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:00.423] [info] [hw_system][pid_combined] #72 seg=1 yaw=136.90° err=-0.87° LT=20.1 RT=21.2 LB=-20.1 RB=-20.2rpm state=CleanFwd
+[2026-04-20 18:20:00.528] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:00.529] [info] [hw_system][pid_combined] #73 seg=1 yaw=137.26° err=-1.24° LT=19.8 RT=20.3 LB=-20.1 RB=-19.4rpm state=CleanFwd
+[2026-04-20 18:20:00.634] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:00.635] [info] [hw_system][pid_combined] #74 seg=1 yaw=137.41° err=-1.39° LT=18.1 RT=18.0 LB=-21.9 RB=-22.3rpm state=CleanFwd
+[2026-04-20 18:20:00.840] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:00.841] [info] [hw_system][pid_combined] #75 seg=1 yaw=137.17° err=-1.15° LT=18.5 RT=18.5 LB=-21.7 RB=-21.6rpm state=CleanFwd
+[2026-04-20 18:20:01.046] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:01.146] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:01.147] [info] [hw_system][pid_combined] #76 seg=1 yaw=137.04° err=-1.02° LT=18.9 RT=18.5 LB=-21.5 RB=-21.3rpm state=CleanFwd
+[2026-04-20 18:20:01.352] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:01.353] [info] [hw_system][pid_combined] #77 seg=1 yaw=137.02° err=-0.99° LT=18.8 RT=18.6 LB=-21.4 RB=-21.4rpm state=CleanFwd
+[2026-04-20 18:20:01.459] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:01.460] [info] [hw_system][pid_combined] #78 seg=1 yaw=137.07° err=-1.05° LT=18.6 RT=18.4 LB=-21.4 RB=-21.5rpm state=CleanFwd
+[2026-04-20 18:20:01.565] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:01.566] [info] [hw_system][pid_combined] #79 seg=1 yaw=137.10° err=-1.08° LT=18.7 RT=18.5 LB=-21.4 RB=-21.2rpm state=CleanFwd
+[2026-04-20 18:20:01.671] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:01.771] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:01.772] [info] [hw_system][pid_combined] #80 seg=1 yaw=137.18° err=-1.16° LT=18.6 RT=18.6 LB=-21.8 RB=-21.4rpm state=CleanFwd
+[2026-04-20 18:20:01.877] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:01.878] [info] [hw_system][pid_combined] #81 seg=1 yaw=137.20° err=-1.18° LT=18.6 RT=18.6 LB=-21.7 RB=-21.3rpm state=CleanFwd
+[2026-04-20 18:20:01.983] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:01.983] [info] [hw_system][pid_combined] #82 seg=1 yaw=137.24° err=-1.21° LT=18.6 RT=18.7 LB=-21.6 RB=-21.4rpm state=CleanFwd
+[2026-04-20 18:20:02.089] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:02.089] [info] [hw_system][pid_combined] #83 seg=1 yaw=137.30° err=-1.27° LT=18.4 RT=18.3 LB=-21.9 RB=-21.5rpm state=CleanFwd
+[2026-04-20 18:20:02.194] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:02.294] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:02.295] [info] [hw_system][pid_combined] #84 seg=1 yaw=137.44° err=-1.42° LT=18.2 RT=18.1 LB=-22.2 RB=-21.6rpm state=CleanFwd
+[2026-04-20 18:20:02.401] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:02.402] [info] [hw_system][pid_combined] #85 seg=1 yaw=137.52° err=-1.49° LT=18.0 RT=18.0 LB=-22.2 RB=-22.1rpm state=CleanFwd
+[2026-04-20 18:20:02.507] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:02.508] [info] [hw_system][pid_combined] #86 seg=1 yaw=137.59° err=-1.57° LT=17.6 RT=18.0 LB=-22.1 RB=-22.5rpm state=CleanFwd
+[2026-04-20 18:20:02.613] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:02.614] [info] [hw_system][pid_combined] #87 seg=1 yaw=137.59° err=-1.57° LT=17.5 RT=18.1 LB=-21.9 RB=-22.8rpm state=CleanFwd
+[2026-04-20 18:20:02.719] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:02.820] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:02.820] [info] [hw_system][pid_combined] #88 seg=1 yaw=138.02° err=-2.00° LT=16.8 RT=16.9 LB=-22.7 RB=-23.1rpm state=CleanFwd
+[2026-04-20 18:20:02.925] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:02.926] [info] [hw_system][pid_combined] #89 seg=1 yaw=138.18° err=-2.16° LT=16.6 RT=16.8 LB=-23.0 RB=-23.5rpm state=CleanFwd
+[2026-04-20 18:20:03.031] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:03.032] [info] [hw_system][pid_combined] #90 seg=1 yaw=138.33° err=-2.31° LT=16.4 RT=16.6 LB=-23.2 RB=-23.4rpm state=CleanFwd
+[2026-04-20 18:20:03.137] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:03.137] [info] [hw_system][pid_combined] #91 seg=1 yaw=138.38° err=-2.36° LT=16.4 RT=16.6 LB=-23.4 RB=-23.5rpm state=CleanFwd
+[2026-04-20 18:20:03.343] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:03.443] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:03.444] [info] [hw_system][pid_combined] #92 seg=1 yaw=138.78° err=-2.76° LT=15.7 RT=15.9 LB=-24.1 RB=-23.9rpm state=CleanFwd
+[2026-04-20 18:20:03.649] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:03.650] [info] [hw_system][pid_combined] #93 seg=1 yaw=138.81° err=-2.79° LT=15.4 RT=15.5 LB=-24.6 RB=-24.7rpm state=CleanFwd
+[2026-04-20 18:20:03.855] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:03.856] [info] [hw_system][pid_combined] #94 seg=1 yaw=139.04° err=-3.02° LT=15.3 RT=15.6 LB=-24.8 RB=-24.6rpm state=CleanFwd
+[2026-04-20 18:20:03.961] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:03.962] [info] [hw_system][pid_combined] #95 seg=1 yaw=139.16° err=-3.14° LT=15.0 RT=14.6 LB=-24.4 RB=-25.2rpm state=CleanFwd
+[2026-04-20 18:20:04.167] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:04.267] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:04.268] [info] [hw_system][pid_combined] #96 seg=1 yaw=139.57° err=-3.55° LT=14.8 RT=15.3 LB=-25.7 RB=-25.6rpm state=CleanFwd
+[2026-04-20 18:20:04.373] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:04.374] [info] [hw_system][pid_combined] #97 seg=1 yaw=139.49° err=-3.47° LT=14.6 RT=15.2 LB=-26.0 RB=-25.2rpm state=CleanFwd
+[2026-04-20 18:20:04.479] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:04.479] [info] [hw_system][pid_combined] #98 seg=1 yaw=139.43° err=-3.41° LT=14.4 RT=14.5 LB=-25.6 RB=-25.1rpm state=CleanFwd
+[2026-04-20 18:20:04.585] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:04.585] [info] [hw_system][pid_combined] #99 seg=1 yaw=139.30° err=-3.28° LT=14.8 RT=14.6 LB=-25.6 RB=-24.7rpm state=CleanFwd
+[2026-04-20 18:20:04.790] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:04.891] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:04.891] [info] [hw_system][pid_combined] #100 seg=1 yaw=139.61° err=-3.59° LT=14.4 RT=14.4 LB=-25.7 RB=-25.1rpm state=CleanFwd
+[2026-04-20 18:20:04.996] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:04.997] [info] [hw_system][pid_combined] #101 seg=1 yaw=139.66° err=-3.64° LT=14.2 RT=14.3 LB=-25.6 RB=-25.7rpm state=CleanFwd
+[2026-04-20 18:20:05.102] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:05.103] [info] [hw_system][pid_combined] #102 seg=1 yaw=139.63° err=-3.61° LT=14.4 RT=14.3 LB=-25.5 RB=-25.6rpm state=CleanFwd
+[2026-04-20 18:20:05.208] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:05.209] [info] [hw_system][pid_combined] #103 seg=1 yaw=139.70° err=-3.68° LT=14.2 RT=14.2 LB=-25.8 RB=-25.7rpm state=CleanFwd
+[2026-04-20 18:20:05.314] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:05.414] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:05.415] [info] [hw_system][pid_combined] #104 seg=1 yaw=139.91° err=-3.88° LT=14.0 RT=14.0 LB=-26.0 RB=-25.9rpm state=CleanFwd
+[2026-04-20 18:20:05.520] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:05.521] [info] [hw_system][pid_combined] #105 seg=1 yaw=139.94° err=-3.92° LT=13.9 RT=13.8 LB=-26.4 RB=-26.1rpm state=CleanFwd
+[2026-04-20 18:20:05.626] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:05.627] [info] [hw_system][pid_combined] #106 seg=1 yaw=139.95° err=-3.93° LT=13.9 RT=13.9 LB=-26.1 RB=-26.0rpm state=CleanFwd
+[2026-04-20 18:20:05.733] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:05.734] [info] [hw_system][pid_combined] #107 seg=1 yaw=139.98° err=-3.96° LT=13.8 RT=13.8 LB=-26.5 RB=-26.2rpm state=CleanFwd
+[2026-04-20 18:20:05.939] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:06.139] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:06.140] [info] [hw_system][pid_combined] #108 seg=1 yaw=140.11° err=-4.09° LT=13.7 RT=13.8 LB=-26.0 RB=-26.1rpm state=CleanFwd
+[2026-04-20 18:20:06.345] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:06.347] [info] [hw_system][pid_combined] #109 seg=1 yaw=140.21° err=-4.19° LT=13.6 RT=13.4 LB=-26.6 RB=-26.6rpm state=CleanFwd
+[2026-04-20 18:20:06.452] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:06.453] [info] [hw_system][pid_combined] #110 seg=1 yaw=140.31° err=-4.28° LT=13.4 RT=13.5 LB=-26.3 RB=-26.9rpm state=CleanFwd
+[2026-04-20 18:20:06.658] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:06.659] [info] [hw_system][pid_combined] #111 seg=1 yaw=140.35° err=-4.33° LT=13.4 RT=13.2 LB=-27.1 RB=-26.7rpm state=CleanFwd
+[2026-04-20 18:20:06.864] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:06.964] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:06.965] [info] [hw_system][pid_combined] #112 seg=1 yaw=140.48° err=-4.46° LT=13.2 RT=13.1 LB=-27.0 RB=-27.0rpm state=CleanFwd
+[2026-04-20 18:20:07.070] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:07.071] [info] [hw_system][pid_combined] #113 seg=1 yaw=140.52° err=-4.50° LT=13.0 RT=12.9 LB=-27.0 RB=-26.8rpm state=CleanFwd
+[2026-04-20 18:20:07.177] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:07.178] [info] [hw_system][pid_combined] #114 seg=1 yaw=140.61° err=-4.59° LT=12.8 RT=13.0 LB=-26.9 RB=-27.1rpm state=CleanFwd
+[2026-04-20 18:20:07.283] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:07.284] [info] [hw_system][pid_combined] #115 seg=1 yaw=140.67° err=-4.65° LT=12.8 RT=12.9 LB=-27.1 RB=-27.2rpm state=CleanFwd
+[2026-04-20 18:20:07.389] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:07.489] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:07.490] [info] [hw_system][pid_combined] #116 seg=1 yaw=140.77° err=-4.75° LT=12.6 RT=12.7 LB=-26.9 RB=-27.2rpm state=CleanFwd
+[2026-04-20 18:20:07.596] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:07.597] [info] [hw_system][pid_combined] #117 seg=1 yaw=140.85° err=-4.83° LT=12.5 RT=12.6 LB=-27.1 RB=-27.6rpm state=CleanFwd
+[2026-04-20 18:20:07.702] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:07.703] [info] [hw_system][pid_combined] #118 seg=1 yaw=140.91° err=-4.88° LT=12.4 RT=12.5 LB=-27.3 RB=-27.5rpm state=CleanFwd
+[2026-04-20 18:20:07.808] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:07.809] [info] [hw_system][pid_combined] #119 seg=1 yaw=140.91° err=-4.88° LT=12.5 RT=12.6 LB=-27.5 RB=-27.7rpm state=CleanFwd
+[2026-04-20 18:20:07.914] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:08.015] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:08.016] [info] [hw_system][pid_combined] #120 seg=1 yaw=140.96° err=-4.94° LT=12.2 RT=12.4 LB=-27.6 RB=-27.9rpm state=CleanFwd
+[2026-04-20 18:20:08.121] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:08.122] [info] [hw_system][pid_combined] #121 seg=1 yaw=140.99° err=-4.97° LT=12.1 RT=12.3 LB=-27.9 RB=-27.5rpm state=CleanFwd
+[2026-04-20 18:20:08.227] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:08.228] [info] [hw_system][pid_combined] #122 seg=1 yaw=141.00° err=-4.98° LT=12.1 RT=12.3 LB=-27.5 RB=-27.8rpm state=CleanFwd
+[2026-04-20 18:20:08.333] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:08.334] [info] [hw_system][pid_combined] #123 seg=1 yaw=141.02° err=-5.00° LT=12.2 RT=12.4 LB=-27.7 RB=-27.5rpm state=CleanFwd
+[2026-04-20 18:20:08.440] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:08.640] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:08.641] [info] [hw_system][pid_combined] #124 seg=1 yaw=141.15° err=-5.13° LT=11.9 RT=12.1 LB=-28.1 RB=-28.2rpm state=CleanFwd
+[2026-04-20 18:20:08.846] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:08.847] [info] [hw_system][pid_combined] #125 seg=1 yaw=141.20° err=-5.17° LT=11.9 RT=12.0 LB=-28.0 RB=-28.2rpm state=CleanFwd
+[2026-04-20 18:20:08.953] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:08.954] [info] [hw_system][pid_combined] #126 seg=1 yaw=141.28° err=-5.26° LT=11.6 RT=11.8 LB=-28.2 RB=-28.2rpm state=CleanFwd
+[2026-04-20 18:20:09.110] [warning] [WalkMotorGroup] emergency_override: vehicle_reverse_rpm=0.0
+[2026-04-20 18:20:09.159] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:09.160] [info] [hw_system][pid_combined] #127 seg=1 yaw=141.27° err=-5.25° LT=9.2 RT=9.4 LB=-22.5 RB=-23.4rpm state=CleanFwd
+[2026-04-20 18:20:09.294] [info] [FSM] 前端限位已稳定（已完成半趟 1/4）
+[2026-04-20 18:20:09.294] [info] [FSM] → CleanReturn（前端到达，刷反向返回）
+[2026-04-20 18:20:09.294] [info] [WalkMotorGroup] clear_override requested
+[2026-04-20 18:20:09.335] [info] [WalkMotorGroup] clear_override applied
+[2026-04-20 18:20:09.365] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:09.466] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:09.467] [info] [hw_system][pid_combined] #128 seg=1 yaw=142.27° err=-6.25° LT=-15.8 RT=-14.4 LB=16.2 RB=16.1rpm state=CleanReturn
+[2026-04-20 18:20:09.472] [info] [hw_system][pid_combined] ✓ 段 1 完成：CleanFwd → CleanReturn（已采集 128 条，耗时 19.4s）
+[2026-04-20 18:20:09.572] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:09.573] [info] [hw_system][pid_combined] #129 seg=1 yaw=143.08° err=-7.06° LT=-20.2 RT=-20.3 LB=19.9 RB=20.5rpm state=CleanReturn
+[2026-04-20 18:20:09.573] [warning] [hw_system][pid_combined] 段 2: CleanReturn → 等待【尾端】限位（最多 2400s）...
+[2026-04-20 18:20:09.673] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:09.674] [info] [hw_system][pid_combined] #130 seg=2 yaw=143.24° err=-7.22° LT=-21.9 RT=-22.1 LB=16.1 RB=17.7rpm state=CleanReturn
+[2026-04-20 18:20:09.780] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:09.781] [info] [hw_system][pid_combined] #131 seg=2 yaw=143.16° err=-7.14° LT=-21.4 RT=-21.9 LB=16.9 RB=17.1rpm state=CleanReturn
+[2026-04-20 18:20:09.986] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:10.086] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:10.087] [info] [hw_system][pid_combined] #132 seg=2 yaw=142.90° err=-6.88° LT=-22.0 RT=-21.6 LB=17.5 RB=17.5rpm state=CleanReturn
+[2026-04-20 18:20:10.192] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:10.193] [info] [hw_system][pid_combined] #133 seg=2 yaw=142.87° err=-6.85° LT=-22.2 RT=-22.0 LB=17.9 RB=17.8rpm state=CleanReturn
+[2026-04-20 18:20:10.299] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:10.300] [info] [hw_system][pid_combined] #134 seg=2 yaw=142.67° err=-6.65° LT=-21.9 RT=-21.5 LB=18.1 RB=18.0rpm state=CleanReturn
+[2026-04-20 18:20:10.405] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:10.406] [info] [hw_system][pid_combined] #135 seg=2 yaw=142.76° err=-6.73° LT=-22.4 RT=-21.9 LB=17.7 RB=17.8rpm state=CleanReturn
+[2026-04-20 18:20:10.511] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:10.611] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:10.612] [info] [hw_system][pid_combined] #136 seg=2 yaw=142.54° err=-6.51° LT=-21.8 RT=-21.6 LB=18.0 RB=17.9rpm state=CleanReturn
+[2026-04-20 18:20:10.718] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:10.719] [info] [hw_system][pid_combined] #137 seg=2 yaw=142.54° err=-6.52° LT=-22.0 RT=-21.5 LB=18.0 RB=18.1rpm state=CleanReturn
+[2026-04-20 18:20:10.824] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:10.825] [info] [hw_system][pid_combined] #138 seg=2 yaw=142.48° err=-6.46° LT=-22.0 RT=-21.6 LB=18.1 RB=18.2rpm state=CleanReturn
+[2026-04-20 18:20:10.930] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:10.931] [info] [hw_system][pid_combined] #139 seg=2 yaw=142.42° err=-6.39° LT=-22.0 RT=-22.0 LB=18.2 RB=18.4rpm state=CleanReturn
+[2026-04-20 18:20:11.137] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:11.337] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:11.338] [info] [hw_system][pid_combined] #140 seg=2 yaw=142.27° err=-6.25° LT=-21.6 RT=-21.7 LB=18.4 RB=18.4rpm state=CleanReturn
+[2026-04-20 18:20:11.443] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:11.444] [info] [hw_system][pid_combined] #141 seg=2 yaw=142.25° err=-6.23° LT=-21.5 RT=-21.8 LB=18.3 RB=18.5rpm state=CleanReturn
+[2026-04-20 18:20:11.649] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:11.651] [info] [hw_system][pid_combined] #142 seg=2 yaw=142.19° err=-6.17° LT=-21.5 RT=-21.6 LB=18.4 RB=18.5rpm state=CleanReturn
+[2026-04-20 18:20:11.856] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:11.857] [info] [hw_system][pid_combined] #143 seg=2 yaw=142.26° err=-6.24° LT=-19.8 RT=-20.0 LB=19.8 RB=19.8rpm state=CleanReturn
+[2026-04-20 18:20:11.962] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:12.062] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:12.063] [info] [hw_system][pid_combined] #144 seg=2 yaw=142.16° err=-6.14° LT=-20.3 RT=-20.3 LB=19.7 RB=19.7rpm state=CleanReturn
+[2026-04-20 18:20:12.169] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:12.170] [info] [hw_system][pid_combined] #145 seg=2 yaw=142.19° err=-6.17° LT=-20.1 RT=-20.1 LB=19.7 RB=19.8rpm state=CleanReturn
+[2026-04-20 18:20:12.275] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:12.276] [info] [hw_system][pid_combined] #146 seg=2 yaw=142.19° err=-6.16° LT=-20.0 RT=-20.2 LB=19.8 RB=19.7rpm state=CleanReturn
+[2026-04-20 18:20:12.381] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:12.382] [info] [hw_system][pid_combined] #147 seg=2 yaw=142.20° err=-6.18° LT=-20.0 RT=-20.2 LB=19.7 RB=19.7rpm state=CleanReturn
+[2026-04-20 18:20:12.487] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:12.587] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:12.588] [info] [hw_system][pid_combined] #148 seg=2 yaw=142.23° err=-6.21° LT=-20.0 RT=-19.5 LB=20.4 RB=19.8rpm state=CleanReturn
+[2026-04-20 18:20:12.694] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:12.695] [info] [hw_system][pid_combined] #149 seg=2 yaw=142.37° err=-6.34° LT=-20.2 RT=-19.7 LB=20.2 RB=19.9rpm state=CleanReturn
+[2026-04-20 18:20:12.800] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:12.801] [info] [hw_system][pid_combined] #150 seg=2 yaw=142.42° err=-6.39° LT=-23.5 RT=-22.0 LB=18.1 RB=18.3rpm state=CleanReturn
+[2026-04-20 18:20:12.906] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:12.907] [info] [hw_system][pid_combined] #151 seg=2 yaw=142.31° err=-6.28° LT=-22.2 RT=-21.8 LB=18.7 RB=18.5rpm state=CleanReturn
+[2026-04-20 18:20:13.012] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:13.113] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:13.114] [info] [hw_system][pid_combined] #152 seg=2 yaw=142.05° err=-6.03° LT=-20.3 RT=-20.3 LB=20.0 RB=19.9rpm state=CleanReturn
+[2026-04-20 18:20:13.219] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:13.220] [info] [hw_system][pid_combined] #153 seg=2 yaw=142.03° err=-6.01° LT=-20.1 RT=-20.3 LB=20.0 RB=19.9rpm state=CleanReturn
+[2026-04-20 18:20:13.325] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:13.326] [info] [hw_system][pid_combined] #154 seg=2 yaw=142.01° err=-5.99° LT=-20.0 RT=-20.1 LB=19.7 RB=19.6rpm state=CleanReturn
+[2026-04-20 18:20:13.431] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:13.432] [info] [hw_system][pid_combined] #155 seg=2 yaw=142.00° err=-5.98° LT=-20.2 RT=-20.2 LB=19.8 RB=19.9rpm state=CleanReturn
+[2026-04-20 18:20:13.637] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:13.738] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:13.739] [info] [hw_system][pid_combined] #156 seg=2 yaw=141.89° err=-5.87° LT=-20.5 RT=-20.3 LB=19.8 RB=19.8rpm state=CleanReturn
+[2026-04-20 18:20:13.944] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:13.945] [info] [hw_system][pid_combined] #157 seg=2 yaw=141.78° err=-5.76° LT=-19.8 RT=-20.0 LB=19.8 RB=19.9rpm state=CleanReturn
+[2026-04-20 18:20:14.150] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:14.151] [info] [hw_system][pid_combined] #158 seg=2 yaw=141.77° err=-5.75° LT=-20.1 RT=-20.4 LB=19.8 RB=19.8rpm state=CleanReturn
+[2026-04-20 18:20:14.257] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:14.258] [info] [hw_system][pid_combined] #159 seg=2 yaw=141.75° err=-5.73° LT=-20.0 RT=-20.3 LB=19.8 RB=19.9rpm state=CleanReturn
+[2026-04-20 18:20:14.463] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:14.563] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:14.564] [info] [hw_system][pid_combined] #160 seg=2 yaw=141.67° err=-5.65° LT=-20.0 RT=-20.3 LB=20.0 RB=19.8rpm state=CleanReturn
+[2026-04-20 18:20:14.669] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:14.670] [info] [hw_system][pid_combined] #161 seg=2 yaw=141.65° err=-5.63° LT=-20.0 RT=-20.2 LB=19.9 RB=19.8rpm state=CleanReturn
+[2026-04-20 18:20:14.776] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:14.777] [info] [hw_system][pid_combined] #162 seg=2 yaw=141.62° err=-5.60° LT=-20.0 RT=-20.2 LB=19.9 RB=19.8rpm state=CleanReturn
+[2026-04-20 18:20:14.882] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:14.883] [info] [hw_system][pid_combined] #163 seg=2 yaw=141.56° err=-5.54° LT=-20.2 RT=-20.2 LB=20.0 RB=19.8rpm state=CleanReturn
+[2026-04-20 18:20:14.988] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:15.088] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:15.089] [info] [hw_system][pid_combined] #164 seg=2 yaw=141.41° err=-5.39° LT=-20.0 RT=-19.9 LB=19.9 RB=19.9rpm state=CleanReturn
+[2026-04-20 18:20:15.195] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:15.196] [info] [hw_system][pid_combined] #165 seg=2 yaw=141.36° err=-5.33° LT=-20.0 RT=-19.8 LB=20.0 RB=20.0rpm state=CleanReturn
+[2026-04-20 18:20:15.301] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:15.302] [info] [hw_system][pid_combined] #166 seg=2 yaw=141.33° err=-5.31° LT=-20.0 RT=-19.7 LB=20.1 RB=20.1rpm state=CleanReturn
+[2026-04-20 18:20:15.407] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:15.408] [info] [hw_system][pid_combined] #167 seg=2 yaw=141.30° err=-5.28° LT=-20.0 RT=-19.7 LB=20.0 RB=20.0rpm state=CleanReturn
+[2026-04-20 18:20:15.513] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:15.613] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:15.614] [info] [hw_system][pid_combined] #168 seg=2 yaw=141.22° err=-5.20° LT=-20.0 RT=-19.8 LB=20.1 RB=20.2rpm state=CleanReturn
+[2026-04-20 18:20:15.720] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:15.721] [info] [hw_system][pid_combined] #169 seg=2 yaw=141.12° err=-5.10° LT=-20.0 RT=-19.7 LB=20.0 RB=20.2rpm state=CleanReturn
+[2026-04-20 18:20:15.826] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:15.827] [info] [hw_system][pid_combined] #170 seg=2 yaw=141.09° err=-5.07° LT=-18.5 RT=-19.2 LB=19.8 RB=20.0rpm state=CleanReturn
+[2026-04-20 18:20:16.032] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:16.033] [info] [hw_system][pid_combined] #171 seg=2 yaw=141.01° err=-4.99° LT=-20.2 RT=-20.5 LB=20.2 RB=19.8rpm state=CleanReturn
+[2026-04-20 18:20:16.239] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:16.439] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:16.440] [info] [hw_system][pid_combined] #172 seg=2 yaw=140.77° err=-4.75° LT=-20.5 RT=-19.1 LB=20.6 RB=20.5rpm state=CleanReturn
+[2026-04-20 18:20:16.646] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:16.647] [info] [hw_system][pid_combined] #173 seg=2 yaw=140.75° err=-4.73° LT=-20.8 RT=-19.1 LB=20.5 RB=20.1rpm state=CleanReturn
+[2026-04-20 18:20:16.752] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:16.753] [info] [hw_system][pid_combined] #174 seg=2 yaw=140.69° err=-4.66° LT=-20.5 RT=-19.5 LB=20.1 RB=19.9rpm state=CleanReturn
+[2026-04-20 18:20:16.958] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:16.959] [info] [hw_system][pid_combined] #175 seg=2 yaw=140.43° err=-4.41° LT=-20.0 RT=-19.6 LB=20.9 RB=19.7rpm state=CleanReturn
+[2026-04-20 18:20:17.065] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:17.165] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:17.166] [info] [hw_system][pid_combined] #176 seg=2 yaw=140.20° err=-4.18° LT=-19.6 RT=-19.6 LB=20.5 RB=19.9rpm state=CleanReturn
+[2026-04-20 18:20:17.271] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:17.272] [info] [hw_system][pid_combined] #177 seg=2 yaw=140.12° err=-4.10° LT=-19.9 RT=-19.6 LB=20.4 RB=19.9rpm state=CleanReturn
+[2026-04-20 18:20:17.377] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:17.378] [info] [hw_system][pid_combined] #178 seg=2 yaw=140.00° err=-3.98° LT=-17.4 RT=-19.4 LB=21.5 RB=22.1rpm state=CleanReturn
+[2026-04-20 18:20:17.484] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:17.485] [info] [hw_system][pid_combined] #179 seg=2 yaw=139.86° err=-3.83° LT=-18.3 RT=-18.2 LB=22.3 RB=22.1rpm state=CleanReturn
+[2026-04-20 18:20:17.590] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:17.690] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:17.691] [info] [hw_system][pid_combined] #180 seg=2 yaw=139.92° err=-3.89° LT=-18.2 RT=-18.1 LB=21.8 RB=22.0rpm state=CleanReturn
+[2026-04-20 18:20:17.796] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:17.797] [info] [hw_system][pid_combined] #181 seg=2 yaw=139.83° err=-3.81° LT=-18.1 RT=-18.3 LB=21.7 RB=22.1rpm state=CleanReturn
+[2026-04-20 18:20:17.903] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:17.904] [info] [hw_system][pid_combined] #182 seg=2 yaw=139.71° err=-3.69° LT=-17.8 RT=-18.1 LB=21.8 RB=22.2rpm state=CleanReturn
+[2026-04-20 18:20:18.009] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:18.010] [info] [hw_system][pid_combined] #183 seg=2 yaw=139.70° err=-3.67° LT=-17.7 RT=-18.2 LB=21.9 RB=22.4rpm state=CleanReturn
+[2026-04-20 18:20:18.115] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:18.215] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:18.216] [info] [hw_system][pid_combined] #184 seg=2 yaw=139.70° err=-3.68° LT=-17.5 RT=-18.6 LB=22.6 RB=22.5rpm state=CleanReturn
+[2026-04-20 18:20:18.322] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:18.323] [info] [hw_system][pid_combined] #185 seg=2 yaw=139.94° err=-3.92° LT=-16.6 RT=-19.1 LB=21.1 RB=21.5rpm state=CleanReturn
+[2026-04-20 18:20:18.428] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:18.429] [info] [hw_system][pid_combined] #186 seg=2 yaw=139.87° err=-3.85° LT=-17.3 RT=-18.7 LB=21.4 RB=21.8rpm state=CleanReturn
+[2026-04-20 18:20:18.634] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:18.635] [info] [hw_system][pid_combined] #187 seg=2 yaw=139.84° err=-3.82° LT=-18.2 RT=-18.5 LB=21.7 RB=21.7rpm state=CleanReturn
+[2026-04-20 18:20:18.741] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:18.841] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:18.842] [info] [hw_system][pid_combined] #188 seg=2 yaw=139.52° err=-3.49° LT=-18.1 RT=-17.3 LB=22.4 RB=22.0rpm state=CleanReturn
+[2026-04-20 18:20:18.947] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:18.948] [info] [hw_system][pid_combined] #189 seg=2 yaw=139.46° err=-3.44° LT=-18.1 RT=-17.6 LB=22.9 RB=21.9rpm state=CleanReturn
+[2026-04-20 18:20:19.053] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:19.054] [info] [hw_system][pid_combined] #190 seg=2 yaw=139.39° err=-3.37° LT=-17.6 RT=-17.1 LB=22.8 RB=22.1rpm state=CleanReturn
+[2026-04-20 18:20:19.160] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:19.161] [info] [hw_system][pid_combined] #191 seg=2 yaw=139.34° err=-3.32° LT=-17.5 RT=-16.9 LB=22.8 RB=22.2rpm state=CleanReturn
+[2026-04-20 18:20:19.266] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:19.366] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:19.367] [info] [hw_system][pid_combined] #192 seg=2 yaw=139.14° err=-3.12° LT=-17.3 RT=-16.7 LB=23.3 RB=22.7rpm state=CleanReturn
+[2026-04-20 18:20:19.472] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:19.474] [info] [hw_system][pid_combined] #193 seg=2 yaw=138.98° err=-2.96° LT=-16.9 RT=-16.4 LB=23.4 RB=23.1rpm state=CleanReturn
+[2026-04-20 18:20:19.679] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:19.680] [info] [hw_system][pid_combined] #194 seg=2 yaw=139.05° err=-3.03° LT=-16.6 RT=-16.2 LB=23.7 RB=23.5rpm state=CleanReturn
+[2026-04-20 18:20:19.785] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:19.786] [info] [hw_system][pid_combined] #195 seg=2 yaw=139.14° err=-3.12° LT=-16.5 RT=-16.5 LB=23.1 RB=23.3rpm state=CleanReturn
+[2026-04-20 18:20:19.891] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:19.992] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:19.993] [info] [hw_system][pid_combined] #196 seg=2 yaw=138.47° err=-2.44° LT=-15.7 RT=-15.6 LB=24.1 RB=24.1rpm state=CleanReturn
+[2026-04-20 18:20:20.098] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:20.099] [info] [hw_system][pid_combined] #197 seg=2 yaw=138.38° err=-2.36° LT=-15.7 RT=-15.5 LB=24.2 RB=24.6rpm state=CleanReturn
+[2026-04-20 18:20:20.204] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:20.205] [info] [hw_system][pid_combined] #198 seg=2 yaw=138.37° err=-2.35° LT=-15.6 RT=-15.5 LB=24.4 RB=24.4rpm state=CleanReturn
+[2026-04-20 18:20:20.310] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:20.311] [info] [hw_system][pid_combined] #199 seg=2 yaw=138.10° err=-2.08° LT=-15.3 RT=-15.4 LB=24.6 RB=24.5rpm state=CleanReturn
+[2026-04-20 18:20:20.417] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:20.517] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:20.518] [info] [hw_system][pid_combined] #200 seg=2 yaw=137.93° err=-1.91° LT=-15.2 RT=-14.8 LB=25.5 RB=24.8rpm state=CleanReturn
+[2026-04-20 18:20:20.623] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:20.624] [info] [hw_system][pid_combined] #201 seg=2 yaw=137.75° err=-1.72° LT=-14.6 RT=-14.6 LB=25.4 RB=25.4rpm state=CleanReturn
+[2026-04-20 18:20:20.830] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:20.831] [info] [hw_system][pid_combined] #202 seg=2 yaw=136.96° err=-0.94° LT=-13.4 RT=-13.2 LB=26.8 RB=26.8rpm state=CleanReturn
+[2026-04-20 18:20:21.036] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:21.037] [info] [hw_system][pid_combined] #203 seg=2 yaw=136.43° err=-0.41° LT=-12.2 RT=-12.5 LB=27.6 RB=27.4rpm state=CleanReturn
+[2026-04-20 18:20:21.142] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:21.243] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:21.244] [info] [hw_system][pid_combined] #204 seg=2 yaw=135.93° err=0.09° LT=-11.8 RT=-11.9 LB=28.4 RB=27.9rpm state=CleanReturn
+[2026-04-20 18:20:21.349] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:21.350] [info] [hw_system][pid_combined] #205 seg=2 yaw=135.76° err=0.26° LT=-11.6 RT=-11.6 LB=28.5 RB=28.4rpm state=CleanReturn
+[2026-04-20 18:20:21.455] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:21.456] [info] [hw_system][pid_combined] #206 seg=2 yaw=135.55° err=0.47° LT=-11.4 RT=-11.6 LB=28.2 RB=28.7rpm state=CleanReturn
+[2026-04-20 18:20:21.561] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:21.562] [info] [hw_system][pid_combined] #207 seg=2 yaw=135.32° err=0.70° LT=-11.1 RT=-11.2 LB=29.0 RB=28.7rpm state=CleanReturn
+[2026-04-20 18:20:21.668] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:21.768] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:21.769] [info] [hw_system][pid_combined] #208 seg=2 yaw=135.02° err=1.00° LT=-10.3 RT=-10.3 LB=29.5 RB=29.4rpm state=CleanReturn
+[2026-04-20 18:20:21.874] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:21.875] [info] [hw_system][pid_combined] #209 seg=2 yaw=134.95° err=1.07° LT=-10.1 RT=-10.1 LB=29.9 RB=29.4rpm state=CleanReturn
+[2026-04-20 18:20:21.980] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:21.981] [info] [hw_system][pid_combined] #210 seg=2 yaw=134.84° err=1.18° LT=-10.2 RT=-10.2 LB=29.8 RB=29.8rpm state=CleanReturn
+[2026-04-20 18:20:22.087] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:22.088] [info] [hw_system][pid_combined] #211 seg=2 yaw=134.71° err=1.31° LT=-10.1 RT=-10.2 LB=29.7 RB=29.6rpm state=CleanReturn
+[2026-04-20 18:20:22.193] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:22.293] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:22.294] [info] [hw_system][pid_combined] #212 seg=2 yaw=134.60° err=1.42° LT=-10.1 RT=-9.9 LB=30.0 RB=29.9rpm state=CleanReturn
+[2026-04-20 18:20:22.399] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:22.401] [info] [hw_system][pid_combined] #213 seg=2 yaw=134.60° err=1.42° LT=-9.9 RT=-10.0 LB=30.0 RB=29.9rpm state=CleanReturn
+[2026-04-20 18:20:22.506] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:22.507] [info] [hw_system][pid_combined] #214 seg=2 yaw=134.53° err=1.49° LT=-9.9 RT=-10.0 LB=30.3 RB=30.0rpm state=CleanReturn
+[2026-04-20 18:20:22.612] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:22.613] [info] [hw_system][pid_combined] #215 seg=2 yaw=134.46° err=1.57° LT=-9.1 RT=-10.1 LB=29.8 RB=30.0rpm state=CleanReturn
+[2026-04-20 18:20:22.718] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:22.818] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:22.823] [info] [hw_system][pid_combined] #216 seg=2 yaw=134.19° err=1.83° LT=-10.6 RT=-10.2 LB=30.3 RB=30.0rpm state=CleanReturn
+[2026-04-20 18:20:22.928] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:22.929] [info] [hw_system][pid_combined] #217 seg=2 yaw=133.96° err=2.06° LT=-10.4 RT=-10.2 LB=30.1 RB=29.9rpm state=CleanReturn
+[2026-04-20 18:20:23.134] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:23.136] [info] [hw_system][pid_combined] #218 seg=2 yaw=133.82° err=2.20° LT=-9.4 RT=-10.0 LB=30.1 RB=29.8rpm state=CleanReturn
+[2026-04-20 18:20:23.241] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:23.242] [info] [hw_system][pid_combined] #219 seg=2 yaw=134.06° err=1.97° LT=-10.1 RT=-10.2 LB=30.0 RB=29.9rpm state=CleanReturn
+[2026-04-20 18:20:23.447] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:23.547] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:23.548] [info] [hw_system][pid_combined] #220 seg=2 yaw=133.97° err=2.05° LT=-10.8 RT=-10.1 LB=29.8 RB=30.1rpm state=CleanReturn
+[2026-04-20 18:20:23.654] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:23.655] [info] [hw_system][pid_combined] #221 seg=2 yaw=133.73° err=2.30° LT=-11.4 RT=-10.3 LB=29.6 RB=30.1rpm state=CleanReturn
+[2026-04-20 18:20:23.760] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:23.761] [info] [hw_system][pid_combined] #222 seg=2 yaw=133.90° err=2.13° LT=-10.5 RT=-9.9 LB=29.5 RB=30.3rpm state=CleanReturn
+[2026-04-20 18:20:23.866] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:23.867] [info] [hw_system][pid_combined] #223 seg=2 yaw=134.64° err=1.38° LT=-9.9 RT=-9.9 LB=29.8 RB=30.1rpm state=CleanReturn
+[2026-04-20 18:20:23.972] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:24.073] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:24.074] [info] [hw_system][pid_combined] #224 seg=2 yaw=134.74° err=1.28° LT=-9.7 RT=-9.6 LB=29.8 RB=30.0rpm state=CleanReturn
+[2026-04-20 18:20:24.179] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:24.180] [info] [hw_system][pid_combined] #225 seg=2 yaw=134.59° err=1.43° LT=-9.6 RT=-9.8 LB=29.9 RB=30.1rpm state=CleanReturn
+[2026-04-20 18:20:24.285] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:24.286] [info] [hw_system][pid_combined] #226 seg=2 yaw=134.54° err=1.48° LT=-9.7 RT=-9.9 LB=29.9 RB=30.2rpm state=CleanReturn
+[2026-04-20 18:20:24.392] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:24.393] [info] [hw_system][pid_combined] #227 seg=2 yaw=134.55° err=1.47° LT=-9.9 RT=-9.9 LB=29.8 RB=30.0rpm state=CleanReturn
+[2026-04-20 18:20:24.498] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:24.598] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:24.599] [info] [hw_system][pid_combined] #228 seg=2 yaw=134.56° err=1.47° LT=-9.9 RT=-9.9 LB=29.9 RB=30.0rpm state=CleanReturn
+[2026-04-20 18:20:24.704] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:24.705] [info] [hw_system][pid_combined] #229 seg=2 yaw=134.53° err=1.49° LT=-10.1 RT=-10.1 LB=29.4 RB=29.9rpm state=CleanReturn
+[2026-04-20 18:20:24.811] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:24.812] [info] [hw_system][pid_combined] #230 seg=2 yaw=134.64° err=1.38° LT=-10.2 RT=-10.2 LB=30.8 RB=29.8rpm state=CleanReturn
+[2026-04-20 18:20:24.917] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:24.918] [info] [hw_system][pid_combined] #231 seg=2 yaw=134.91° err=1.12° LT=-10.3 RT=-10.2 LB=30.5 RB=29.5rpm state=CleanReturn
+[2026-04-20 18:20:25.023] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:25.123] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:25.125] [info] [hw_system][pid_combined] #232 seg=2 yaw=134.41° err=1.61° LT=-9.6 RT=-10.1 LB=30.3 RB=30.0rpm state=CleanReturn
+[2026-04-20 18:20:25.230] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:25.231] [info] [hw_system][pid_combined] #233 seg=2 yaw=134.00° err=2.02° LT=-9.9 RT=-10.0 LB=30.0 RB=29.6rpm state=CleanReturn
+[2026-04-20 18:20:25.436] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:25.437] [info] [hw_system][pid_combined] #234 seg=2 yaw=133.96° err=2.07° LT=-10.2 RT=-10.1 LB=29.9 RB=29.9rpm state=CleanReturn
+[2026-04-20 18:20:25.643] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:25.644] [info] [hw_system][pid_combined] #235 seg=2 yaw=134.31° err=1.71° LT=-9.9 RT=-10.0 LB=30.1 RB=29.9rpm state=CleanReturn
+[2026-04-20 18:20:25.749] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:25.849] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:25.850] [info] [hw_system][pid_combined] #236 seg=2 yaw=134.09° err=1.93° LT=-9.9 RT=-10.0 LB=30.1 RB=30.0rpm state=CleanReturn
+[2026-04-20 18:20:25.955] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:25.956] [info] [hw_system][pid_combined] #237 seg=2 yaw=134.27° err=1.75° LT=-10.2 RT=-10.1 LB=30.1 RB=30.1rpm state=CleanReturn
+[2026-04-20 18:20:26.062] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:26.063] [info] [hw_system][pid_combined] #238 seg=2 yaw=134.42° err=1.60° LT=-10.1 RT=-9.9 LB=30.1 RB=30.0rpm state=CleanReturn
+[2026-04-20 18:20:26.168] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:26.169] [info] [hw_system][pid_combined] #239 seg=2 yaw=134.47° err=1.55° LT=-9.9 RT=-9.9 LB=30.1 RB=30.0rpm state=CleanReturn
+[2026-04-20 18:20:26.374] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:26.474] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:26.475] [info] [hw_system][pid_combined] #240 seg=2 yaw=134.45° err=1.58° LT=-9.9 RT=-10.0 LB=29.9 RB=30.0rpm state=CleanReturn
+[2026-04-20 18:20:26.581] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:26.582] [info] [hw_system][pid_combined] #241 seg=2 yaw=134.51° err=1.51° LT=-10.1 RT=-9.9 LB=29.9 RB=29.8rpm state=CleanReturn
+[2026-04-20 18:20:26.687] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:26.688] [info] [hw_system][pid_combined] #242 seg=2 yaw=134.69° err=1.33° LT=-10.0 RT=-9.9 LB=30.0 RB=30.0rpm state=CleanReturn
+[2026-04-20 18:20:26.793] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:26.794] [info] [hw_system][pid_combined] #243 seg=2 yaw=134.77° err=1.25° LT=-9.9 RT=-10.0 LB=30.0 RB=30.0rpm state=CleanReturn
+[2026-04-20 18:20:26.899] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:27.000] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:27.000] [info] [hw_system][pid_combined] #244 seg=2 yaw=134.68° err=1.34° LT=-9.9 RT=-10.0 LB=29.9 RB=30.2rpm state=CleanReturn
+[2026-04-20 18:20:27.105] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:27.106] [info] [hw_system][pid_combined] #245 seg=2 yaw=134.74° err=1.28° LT=-10.1 RT=-10.1 LB=29.9 RB=30.3rpm state=CleanReturn
+[2026-04-20 18:20:27.211] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:27.212] [info] [hw_system][pid_combined] #246 seg=2 yaw=134.90° err=1.13° LT=-10.3 RT=-10.3 LB=30.0 RB=29.9rpm state=CleanReturn
+[2026-04-20 18:20:27.317] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:27.317] [info] [hw_system][pid_combined] #247 seg=2 yaw=134.98° err=1.04° LT=-10.4 RT=-10.4 LB=29.5 RB=29.5rpm state=CleanReturn
+[2026-04-20 18:20:27.423] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:27.523] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:27.524] [info] [hw_system][pid_combined] #248 seg=2 yaw=135.06° err=0.96° LT=-10.5 RT=-10.4 LB=29.7 RB=29.8rpm state=CleanReturn
+[2026-04-20 18:20:27.729] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:27.730] [info] [hw_system][pid_combined] #249 seg=2 yaw=135.26° err=0.76° LT=-10.8 RT=-10.7 LB=29.3 RB=29.2rpm state=CleanReturn
+[2026-04-20 18:20:27.935] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:27.940] [info] [hw_system][pid_combined] #250 seg=2 yaw=135.38° err=0.64° LT=-10.9 RT=-10.7 LB=29.2 RB=29.0rpm state=CleanReturn
+[2026-04-20 18:20:28.045] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:28.046] [info] [hw_system][pid_combined] #251 seg=2 yaw=135.43° err=0.59° LT=-11.0 RT=-10.9 LB=29.2 RB=29.0rpm state=CleanReturn
+[2026-04-20 18:20:28.251] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:28.351] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:28.352] [info] [hw_system][pid_combined] #252 seg=2 yaw=135.52° err=0.50° LT=-11.1 RT=-11.1 LB=28.7 RB=28.9rpm state=CleanReturn
+[2026-04-20 18:20:28.458] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:28.459] [info] [hw_system][pid_combined] #253 seg=2 yaw=135.62° err=0.41° LT=-11.1 RT=-11.1 LB=28.9 RB=28.8rpm state=CleanReturn
+[2026-04-20 18:20:28.564] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:28.565] [info] [hw_system][pid_combined] #254 seg=2 yaw=135.64° err=0.38° LT=-11.3 RT=-11.2 LB=28.6 RB=28.7rpm state=CleanReturn
+[2026-04-20 18:20:28.670] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:28.671] [info] [hw_system][pid_combined] #255 seg=2 yaw=135.69° err=0.34° LT=-11.2 RT=-11.2 LB=28.5 RB=28.4rpm state=CleanReturn
+[2026-04-20 18:20:28.776] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:28.876] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:28.877] [info] [hw_system][pid_combined] #256 seg=2 yaw=135.82° err=0.20° LT=-11.6 RT=-11.5 LB=28.1 RB=28.3rpm state=CleanReturn
+[2026-04-20 18:20:28.982] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:28.983] [info] [hw_system][pid_combined] #257 seg=2 yaw=135.85° err=0.18° LT=-11.6 RT=-11.6 LB=28.5 RB=28.2rpm state=CleanReturn
+[2026-04-20 18:20:29.088] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:29.089] [info] [hw_system][pid_combined] #258 seg=2 yaw=135.90° err=0.12° LT=-11.6 RT=-11.6 LB=28.1 RB=28.2rpm state=CleanReturn
+[2026-04-20 18:20:29.194] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:29.194] [info] [hw_system][pid_combined] #259 seg=2 yaw=135.97° err=0.05° LT=-11.6 RT=-11.6 LB=28.1 RB=28.2rpm state=CleanReturn
+[2026-04-20 18:20:29.300] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:29.400] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:29.401] [info] [hw_system][pid_combined] #260 seg=2 yaw=136.17° err=-0.15° LT=-12.1 RT=-12.1 LB=27.8 RB=27.9rpm state=CleanReturn
+[2026-04-20 18:20:29.506] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:29.507] [info] [hw_system][pid_combined] #261 seg=2 yaw=136.19° err=-0.17° LT=-12.1 RT=-12.1 LB=27.9 RB=28.0rpm state=CleanReturn
+[2026-04-20 18:20:29.612] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:29.613] [info] [hw_system][pid_combined] #262 seg=2 yaw=136.24° err=-0.22° LT=-12.0 RT=-12.0 LB=27.6 RB=28.2rpm state=CleanReturn
+[2026-04-20 18:20:29.718] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:29.719] [info] [hw_system][pid_combined] #263 seg=2 yaw=136.33° err=-0.31° LT=-12.4 RT=-12.2 LB=27.8 RB=28.1rpm state=CleanReturn
+[2026-04-20 18:20:29.924] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:30.024] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:30.025] [info] [hw_system][pid_combined] #264 seg=2 yaw=136.53° err=-0.51° LT=-12.8 RT=-12.4 LB=27.0 RB=27.3rpm state=CleanReturn
+[2026-04-20 18:20:30.230] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:30.231] [info] [hw_system][pid_combined] #265 seg=2 yaw=136.80° err=-0.77° LT=-12.9 RT=-13.0 LB=27.1 RB=27.0rpm state=CleanReturn
+[2026-04-20 18:20:30.436] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:30.437] [info] [hw_system][pid_combined] #266 seg=2 yaw=136.96° err=-0.93° LT=-13.3 RT=-13.2 LB=26.7 RB=26.7rpm state=CleanReturn
+[2026-04-20 18:20:30.542] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:30.543] [info] [hw_system][pid_combined] #267 seg=2 yaw=137.04° err=-1.02° LT=-13.3 RT=-13.2 LB=26.8 RB=26.7rpm state=CleanReturn
+[2026-04-20 18:20:30.749] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:30.849] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:30.850] [info] [hw_system][pid_combined] #268 seg=2 yaw=137.11° err=-1.09° LT=-13.1 RT=-13.2 LB=26.3 RB=26.3rpm state=CleanReturn
+[2026-04-20 18:20:30.955] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:30.956] [info] [hw_system][pid_combined] #269 seg=2 yaw=137.10° err=-1.08° LT=-13.5 RT=-13.5 LB=26.2 RB=26.4rpm state=CleanReturn
+[2026-04-20 18:20:31.061] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:31.062] [info] [hw_system][pid_combined] #270 seg=2 yaw=137.10° err=-1.08° LT=-13.7 RT=-13.7 LB=26.2 RB=26.2rpm state=CleanReturn
+[2026-04-20 18:20:31.168] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:31.169] [info] [hw_system][pid_combined] #271 seg=2 yaw=137.31° err=-1.29° LT=-14.2 RT=-13.8 LB=26.2 RB=25.8rpm state=CleanReturn
+[2026-04-20 18:20:31.374] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:31.474] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:31.475] [info] [hw_system][pid_combined] #272 seg=2 yaw=137.72° err=-1.70° LT=-12.9 RT=-14.6 LB=25.9 RB=25.1rpm state=CleanReturn
+[2026-04-20 18:20:31.580] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:31.581] [info] [hw_system][pid_combined] #273 seg=2 yaw=137.98° err=-1.96° LT=-11.6 RT=-14.9 LB=24.9 RB=23.8rpm state=CleanReturn
+[2026-04-20 18:20:31.687] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:31.688] [info] [hw_system][pid_combined] #274 seg=2 yaw=137.49° err=-1.47° LT=-11.1 RT=-14.9 LB=24.9 RB=25.1rpm state=CleanReturn
+[2026-04-20 18:20:31.698] [warning] [WalkMotorGroup] emergency_override: vehicle_reverse_rpm=0.0
+[2026-04-20 18:20:31.793] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:31.794] [info] [hw_system][pid_combined] #275 seg=2 yaw=136.71° err=-0.69° LT=-3.5 RT=-3.0 LB=13.4 RB=15.6rpm state=CleanReturn
+[2026-04-20 18:20:31.879] [info] [FSM] 尾端限位已稳定（已完成半趟 2/4）
+[2026-04-20 18:20:31.879] [info] [FSM] → CleanFwd（回到停机位，继续正向清扫）
+[2026-04-20 18:20:31.879] [info] [WalkMotorGroup] clear_override requested
+[2026-04-20 18:20:31.899] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:31.924] [info] [WalkMotorGroup] clear_override applied
+[2026-04-20 18:20:31.999] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:32.000] [info] [hw_system][pid_combined] #276 seg=2 yaw=134.93° err=1.09° LT=7.6 RT=8.1 LB=-8.9 RB=-7.6rpm state=CleanFwd
+[2026-04-20 18:20:32.005] [info] [hw_system][pid_combined] ✓ 段 2 完成：CleanReturn → CleanFwd（已采集 276 条，耗时 22.4s）
+[2026-04-20 18:20:32.105] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:32.106] [info] [hw_system][pid_combined] #277 seg=2 yaw=135.11° err=0.91° LT=17.8 RT=19.7 LB=-20.4 RB=-20.9rpm state=CleanFwd
+[2026-04-20 18:20:32.106] [warning] [hw_system][pid_combined] 段 3: CleanFwd → 等待【前端】限位（最多 2400s）...
+[2026-04-20 18:20:32.206] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:32.207] [info] [hw_system][pid_combined] #278 seg=3 yaw=134.44° err=1.58° LT=20.4 RT=21.6 LB=-17.2 RB=-18.5rpm state=CleanFwd
+[2026-04-20 18:20:32.312] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:32.313] [info] [hw_system][pid_combined] #279 seg=3 yaw=134.63° err=1.40° LT=21.9 RT=22.2 LB=-16.6 RB=-17.3rpm state=CleanFwd
+[2026-04-20 18:20:32.418] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:32.519] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:32.519] [info] [hw_system][pid_combined] #280 seg=3 yaw=134.95° err=1.07° LT=22.4 RT=22.4 LB=-17.8 RB=-17.9rpm state=CleanFwd
+[2026-04-20 18:20:32.725] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:32.725] [info] [hw_system][pid_combined] #281 seg=3 yaw=135.04° err=0.98° LT=21.6 RT=21.7 LB=-17.7 RB=-18.0rpm state=CleanFwd
+[2026-04-20 18:20:32.930] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:32.931] [info] [hw_system][pid_combined] #282 seg=3 yaw=135.29° err=0.74° LT=21.6 RT=21.6 LB=-18.1 RB=-18.2rpm state=CleanFwd
+[2026-04-20 18:20:33.036] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:33.040] [info] [hw_system][pid_combined] #283 seg=3 yaw=135.31° err=0.71° LT=21.7 RT=21.7 LB=-18.1 RB=-18.3rpm state=CleanFwd
+[2026-04-20 18:20:33.245] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:33.345] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:33.346] [info] [hw_system][pid_combined] #284 seg=3 yaw=135.33° err=0.69° LT=21.6 RT=21.7 LB=-18.3 RB=-18.3rpm state=CleanFwd
+[2026-04-20 18:20:33.451] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:33.451] [info] [hw_system][pid_combined] #285 seg=3 yaw=135.32° err=0.70° LT=21.7 RT=21.9 LB=-18.1 RB=-18.3rpm state=CleanFwd
+[2026-04-20 18:20:33.557] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:33.557] [info] [hw_system][pid_combined] #286 seg=3 yaw=135.31° err=0.71° LT=21.6 RT=21.9 LB=-18.2 RB=-18.2rpm state=CleanFwd
+[2026-04-20 18:20:33.662] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:33.663] [info] [hw_system][pid_combined] #287 seg=3 yaw=135.29° err=0.74° LT=21.7 RT=22.0 LB=-18.2 RB=-18.1rpm state=CleanFwd
+[2026-04-20 18:20:33.768] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:33.868] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:33.869] [info] [hw_system][pid_combined] #288 seg=3 yaw=135.15° err=0.87° LT=22.0 RT=21.9 LB=-17.9 RB=-18.0rpm state=CleanFwd
+[2026-04-20 18:20:33.974] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:33.975] [info] [hw_system][pid_combined] #289 seg=3 yaw=135.13° err=0.90° LT=22.1 RT=22.1 LB=-18.1 RB=-18.0rpm state=CleanFwd
+[2026-04-20 18:20:34.080] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:34.080] [info] [hw_system][pid_combined] #290 seg=3 yaw=135.06° err=0.96° LT=22.1 RT=22.2 LB=-17.8 RB=-17.9rpm state=CleanFwd
+[2026-04-20 18:20:34.185] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:34.186] [info] [hw_system][pid_combined] #291 seg=3 yaw=135.02° err=1.00° LT=22.1 RT=22.1 LB=-17.9 RB=-17.8rpm state=CleanFwd
+[2026-04-20 18:20:34.291] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:34.391] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:34.392] [info] [hw_system][pid_combined] #292 seg=3 yaw=134.91° err=1.12° LT=22.4 RT=22.5 LB=-17.7 RB=-17.5rpm state=CleanFwd
+[2026-04-20 18:20:34.497] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:34.498] [info] [hw_system][pid_combined] #293 seg=3 yaw=134.82° err=1.20° LT=22.6 RT=22.8 LB=-17.5 RB=-17.5rpm state=CleanFwd
+[2026-04-20 18:20:34.603] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:34.603] [info] [hw_system][pid_combined] #294 seg=3 yaw=134.75° err=1.27° LT=22.7 RT=22.8 LB=-17.3 RB=-17.3rpm state=CleanFwd
+[2026-04-20 18:20:34.709] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:34.709] [info] [hw_system][pid_combined] #295 seg=3 yaw=134.69° err=1.33° LT=22.6 RT=22.8 LB=-17.2 RB=-17.5rpm state=CleanFwd
+[2026-04-20 18:20:34.814] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:34.915] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:34.915] [info] [hw_system][pid_combined] #296 seg=3 yaw=134.53° err=1.49° LT=22.9 RT=23.1 LB=-16.9 RB=-16.9rpm state=CleanFwd
+[2026-04-20 18:20:35.120] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:35.121] [info] [hw_system][pid_combined] #297 seg=3 yaw=134.32° err=1.70° LT=23.4 RT=23.3 LB=-16.3 RB=-16.7rpm state=CleanFwd
+[2026-04-20 18:20:35.326] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:35.327] [info] [hw_system][pid_combined] #298 seg=3 yaw=134.12° err=1.91° LT=23.7 RT=23.7 LB=-16.7 RB=-15.8rpm state=CleanFwd
+[2026-04-20 18:20:35.432] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:35.433] [info] [hw_system][pid_combined] #299 seg=3 yaw=134.25° err=1.77° LT=23.5 RT=23.7 LB=-17.1 RB=-15.8rpm state=CleanFwd
+[2026-04-20 18:20:35.538] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:35.638] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:35.639] [info] [hw_system][pid_combined] #300 seg=3 yaw=134.27° err=1.75° LT=23.8 RT=23.4 LB=-16.5 RB=-16.4rpm state=CleanFwd
+[2026-04-20 18:20:35.744] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:35.744] [info] [hw_system][pid_combined] #301 seg=3 yaw=133.97° err=2.05° LT=24.3 RT=24.1 LB=-16.4 RB=-16.1rpm state=CleanFwd
+[2026-04-20 18:20:35.850] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:35.850] [info] [hw_system][pid_combined] #302 seg=3 yaw=133.82° err=2.20° LT=24.2 RT=24.0 LB=-15.9 RB=-15.7rpm state=CleanFwd
+[2026-04-20 18:20:35.955] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:35.956] [info] [hw_system][pid_combined] #303 seg=3 yaw=133.77° err=2.25° LT=24.2 RT=24.3 LB=-15.4 RB=-15.5rpm state=CleanFwd
+[2026-04-20 18:20:36.061] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:36.161] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:36.162] [info] [hw_system][pid_combined] #304 seg=3 yaw=133.61° err=2.41° LT=24.5 RT=24.6 LB=-15.5 RB=-15.4rpm state=CleanFwd
+[2026-04-20 18:20:36.267] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:36.268] [info] [hw_system][pid_combined] #305 seg=3 yaw=133.53° err=2.49° LT=22.2 RT=24.4 LB=-15.0 RB=-15.8rpm state=CleanFwd
+[2026-04-20 18:20:36.373] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:36.373] [info] [hw_system][pid_combined] #306 seg=3 yaw=133.30° err=2.72° LT=23.3 RT=24.9 LB=-14.9 RB=-15.7rpm state=CleanFwd
+[2026-04-20 18:20:36.478] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:36.479] [info] [hw_system][pid_combined] #307 seg=3 yaw=132.84° err=3.19° LT=25.4 RT=26.0 LB=-14.5 RB=-14.8rpm state=CleanFwd
+[2026-04-20 18:20:36.584] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:36.684] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:36.685] [info] [hw_system][pid_combined] #308 seg=3 yaw=132.89° err=3.13° LT=25.4 RT=25.6 LB=-14.2 RB=-14.5rpm state=CleanFwd
+[2026-04-20 18:20:36.790] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:36.791] [info] [hw_system][pid_combined] #309 seg=3 yaw=132.63° err=3.39° LT=26.4 RT=26.9 LB=-14.0 RB=-14.1rpm state=CleanFwd
+[2026-04-20 18:20:36.896] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:36.897] [info] [hw_system][pid_combined] #310 seg=3 yaw=133.21° err=2.81° LT=26.5 RT=25.9 LB=-14.3 RB=-14.3rpm state=CleanFwd
+[2026-04-20 18:20:37.002] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:37.002] [info] [hw_system][pid_combined] #311 seg=3 yaw=133.19° err=2.83° LT=24.7 RT=24.8 LB=-15.1 RB=-14.8rpm state=CleanFwd
+[2026-04-20 18:20:37.107] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:37.208] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:37.208] [info] [hw_system][pid_combined] #312 seg=3 yaw=133.30° err=2.72° LT=25.4 RT=25.4 LB=-15.2 RB=-14.9rpm state=CleanFwd
+[2026-04-20 18:20:37.313] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:37.314] [info] [hw_system][pid_combined] #313 seg=3 yaw=133.17° err=2.86° LT=25.4 RT=25.1 LB=-15.0 RB=-14.5rpm state=CleanFwd
+[2026-04-20 18:20:37.419] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:37.420] [info] [hw_system][pid_combined] #314 seg=3 yaw=133.09° err=2.93° LT=25.5 RT=25.2 LB=-14.9 RB=-14.4rpm state=CleanFwd
+[2026-04-20 18:20:37.625] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:37.626] [info] [hw_system][pid_combined] #315 seg=3 yaw=133.23° err=2.79° LT=25.4 RT=24.8 LB=-14.9 RB=-14.8rpm state=CleanFwd
+[2026-04-20 18:20:37.731] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:37.831] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:37.832] [info] [hw_system][pid_combined] #316 seg=3 yaw=133.57° err=2.45° LT=25.1 RT=24.5 LB=-15.3 RB=-15.1rpm state=CleanFwd
+[2026-04-20 18:20:37.937] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:37.937] [info] [hw_system][pid_combined] #317 seg=3 yaw=133.73° err=2.30° LT=24.8 RT=24.3 LB=-15.5 RB=-15.4rpm state=CleanFwd
+[2026-04-20 18:20:38.042] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:38.043] [info] [hw_system][pid_combined] #318 seg=3 yaw=133.86° err=2.16° LT=24.4 RT=24.0 LB=-15.5 RB=-15.5rpm state=CleanFwd
+[2026-04-20 18:20:38.148] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:38.149] [info] [hw_system][pid_combined] #319 seg=3 yaw=134.15° err=1.87° LT=24.0 RT=23.7 LB=-15.8 RB=-16.0rpm state=CleanFwd
+[2026-04-20 18:20:38.254] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:38.354] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:38.355] [info] [hw_system][pid_combined] #320 seg=3 yaw=134.58° err=1.44° LT=24.0 RT=23.4 LB=-16.4 RB=-16.8rpm state=CleanFwd
+[2026-04-20 18:20:38.460] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:38.461] [info] [hw_system][pid_combined] #321 seg=3 yaw=134.77° err=1.25° LT=22.7 RT=23.0 LB=-16.9 RB=-17.0rpm state=CleanFwd
+[2026-04-20 18:20:38.566] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:38.566] [info] [hw_system][pid_combined] #322 seg=3 yaw=134.91° err=1.11° LT=22.8 RT=22.6 LB=-17.1 RB=-17.0rpm state=CleanFwd
+[2026-04-20 18:20:38.672] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:38.672] [info] [hw_system][pid_combined] #323 seg=3 yaw=135.13° err=0.90° LT=22.9 RT=22.5 LB=-17.3 RB=-17.6rpm state=CleanFwd
+[2026-04-20 18:20:38.777] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:38.877] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:38.878] [info] [hw_system][pid_combined] #324 seg=3 yaw=135.48° err=0.54° LT=21.9 RT=21.9 LB=-18.2 RB=-18.1rpm state=CleanFwd
+[2026-04-20 18:20:38.983] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:38.984] [info] [hw_system][pid_combined] #325 seg=3 yaw=135.60° err=0.42° LT=21.6 RT=21.5 LB=-18.1 RB=-18.3rpm state=CleanFwd
+[2026-04-20 18:20:39.089] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:39.090] [info] [hw_system][pid_combined] #326 seg=3 yaw=135.70° err=0.32° LT=20.7 RT=20.7 LB=-18.2 RB=-18.2rpm state=CleanFwd
+[2026-04-20 18:20:39.195] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:39.195] [info] [hw_system][pid_combined] #327 seg=3 yaw=135.73° err=0.29° LT=19.8 RT=19.6 LB=-20.0 RB=-20.0rpm state=CleanFwd
+[2026-04-20 18:20:39.300] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:39.401] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:39.401] [info] [hw_system][pid_combined] #328 seg=3 yaw=135.82° err=0.20° LT=21.1 RT=20.4 LB=-19.8 RB=-19.7rpm state=CleanFwd
+[2026-04-20 18:20:39.506] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:39.507] [info] [hw_system][pid_combined] #329 seg=3 yaw=135.98° err=0.04° LT=20.2 RT=19.4 LB=-19.9 RB=-19.9rpm state=CleanFwd
+[2026-04-20 18:20:39.612] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:39.613] [info] [hw_system][pid_combined] #330 seg=3 yaw=136.02° err=0.00° LT=20.7 RT=19.7 LB=-19.3 RB=-19.2rpm state=CleanFwd
+[2026-04-20 18:20:39.718] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:39.718] [info] [hw_system][pid_combined] #331 seg=3 yaw=136.14° err=-0.12° LT=21.2 RT=19.7 LB=-20.0 RB=-20.0rpm state=CleanFwd
+[2026-04-20 18:20:39.924] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:40.024] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:40.025] [info] [hw_system][pid_combined] #332 seg=3 yaw=136.33° err=-0.31° LT=20.5 RT=19.7 LB=-19.7 RB=-19.8rpm state=CleanFwd
+[2026-04-20 18:20:40.230] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:40.230] [info] [hw_system][pid_combined] #333 seg=3 yaw=136.52° err=-0.49° LT=20.5 RT=19.9 LB=-19.9 RB=-19.9rpm state=CleanFwd
+[2026-04-20 18:20:40.336] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:40.336] [info] [hw_system][pid_combined] #334 seg=3 yaw=136.68° err=-0.66° LT=20.1 RT=20.1 LB=-19.9 RB=-19.8rpm state=CleanFwd
+[2026-04-20 18:20:40.441] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:40.442] [info] [hw_system][pid_combined] #335 seg=3 yaw=136.80° err=-0.78° LT=20.3 RT=20.0 LB=-19.9 RB=-19.8rpm state=CleanFwd
+[2026-04-20 18:20:40.547] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:40.647] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:40.648] [info] [hw_system][pid_combined] #336 seg=3 yaw=136.99° err=-0.97° LT=19.9 RT=20.0 LB=-20.0 RB=-20.0rpm state=CleanFwd
+[2026-04-20 18:20:40.753] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:40.754] [info] [hw_system][pid_combined] #337 seg=3 yaw=137.06° err=-1.04° LT=19.8 RT=20.1 LB=-20.2 RB=-20.3rpm state=CleanFwd
+[2026-04-20 18:20:40.859] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:40.859] [info] [hw_system][pid_combined] #338 seg=3 yaw=137.09° err=-1.07° LT=19.7 RT=20.0 LB=-20.1 RB=-20.2rpm state=CleanFwd
+[2026-04-20 18:20:40.965] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:40.965] [info] [hw_system][pid_combined] #339 seg=3 yaw=137.16° err=-1.14° LT=19.8 RT=20.0 LB=-19.9 RB=-20.0rpm state=CleanFwd
+[2026-04-20 18:20:41.070] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:41.171] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:41.171] [info] [hw_system][pid_combined] #340 seg=3 yaw=137.28° err=-1.26° LT=19.6 RT=20.1 LB=-20.1 RB=-20.2rpm state=CleanFwd
+[2026-04-20 18:20:41.276] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:41.277] [info] [hw_system][pid_combined] #341 seg=3 yaw=137.30° err=-1.28° LT=19.7 RT=20.2 LB=-20.1 RB=-20.2rpm state=CleanFwd
+[2026-04-20 18:20:41.382] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:41.383] [info] [hw_system][pid_combined] #342 seg=3 yaw=137.37° err=-1.35° LT=19.6 RT=20.2 LB=-19.9 RB=-20.1rpm state=CleanFwd
+[2026-04-20 18:20:41.488] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:41.488] [info] [hw_system][pid_combined] #343 seg=3 yaw=137.40° err=-1.37° LT=19.5 RT=20.3 LB=-20.0 RB=-20.2rpm state=CleanFwd
+[2026-04-20 18:20:41.594] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:41.694] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:41.694] [info] [hw_system][pid_combined] #344 seg=3 yaw=137.49° err=-1.47° LT=19.0 RT=20.0 LB=-19.9 RB=-20.7rpm state=CleanFwd
+[2026-04-20 18:20:41.800] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:41.800] [info] [hw_system][pid_combined] #345 seg=3 yaw=137.32° err=-1.30° LT=19.2 RT=20.4 LB=-20.0 RB=-20.2rpm state=CleanFwd
+[2026-04-20 18:20:41.905] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:41.906] [info] [hw_system][pid_combined] #346 seg=3 yaw=137.42° err=-1.40° LT=20.4 RT=21.2 LB=-20.2 RB=-20.5rpm state=CleanFwd
+[2026-04-20 18:20:42.011] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:42.012] [info] [hw_system][pid_combined] #347 seg=3 yaw=137.52° err=-1.49° LT=21.7 RT=20.9 LB=-20.0 RB=-19.7rpm state=CleanFwd
+[2026-04-20 18:20:42.217] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:42.317] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:42.318] [info] [hw_system][pid_combined] #348 seg=3 yaw=137.57° err=-1.55° LT=18.3 RT=18.0 LB=-21.8 RB=-21.2rpm state=CleanFwd
+[2026-04-20 18:20:42.523] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:42.524] [info] [hw_system][pid_combined] #349 seg=3 yaw=137.54° err=-1.52° LT=18.7 RT=18.5 LB=-21.4 RB=-21.3rpm state=CleanFwd
+[2026-04-20 18:20:42.729] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:42.730] [info] [hw_system][pid_combined] #350 seg=3 yaw=137.53° err=-1.51° LT=18.6 RT=18.4 LB=-21.4 RB=-21.1rpm state=CleanFwd
+[2026-04-20 18:20:42.835] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:42.835] [info] [hw_system][pid_combined] #351 seg=3 yaw=137.55° err=-1.53° LT=18.9 RT=18.5 LB=-21.3 RB=-21.2rpm state=CleanFwd
+[2026-04-20 18:20:43.041] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:43.141] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:43.141] [info] [hw_system][pid_combined] #352 seg=3 yaw=137.56° err=-1.54° LT=18.8 RT=18.7 LB=-21.4 RB=-21.0rpm state=CleanFwd
+[2026-04-20 18:20:43.247] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:43.247] [info] [hw_system][pid_combined] #353 seg=3 yaw=137.61° err=-1.59° LT=18.9 RT=18.6 LB=-21.4 RB=-21.2rpm state=CleanFwd
+[2026-04-20 18:20:43.352] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:43.353] [info] [hw_system][pid_combined] #354 seg=3 yaw=137.66° err=-1.64° LT=18.8 RT=18.3 LB=-21.7 RB=-21.3rpm state=CleanFwd
+[2026-04-20 18:20:43.458] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:43.459] [info] [hw_system][pid_combined] #355 seg=3 yaw=137.71° err=-1.69° LT=19.0 RT=18.4 LB=-21.6 RB=-21.2rpm state=CleanFwd
+[2026-04-20 18:20:43.664] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:43.764] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:43.765] [info] [hw_system][pid_combined] #356 seg=3 yaw=137.81° err=-1.79° LT=18.4 RT=18.3 LB=-22.1 RB=-21.4rpm state=CleanFwd
+[2026-04-20 18:20:43.870] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:43.871] [info] [hw_system][pid_combined] #357 seg=3 yaw=137.84° err=-1.82° LT=18.3 RT=18.4 LB=-22.0 RB=-21.6rpm state=CleanFwd
+[2026-04-20 18:20:43.976] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:43.976] [info] [hw_system][pid_combined] #358 seg=3 yaw=137.94° err=-1.92° LT=18.1 RT=18.4 LB=-22.1 RB=-22.1rpm state=CleanFwd
+[2026-04-20 18:20:44.081] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:44.082] [info] [hw_system][pid_combined] #359 seg=3 yaw=137.99° err=-1.97° LT=17.8 RT=18.3 LB=-21.9 RB=-22.1rpm state=CleanFwd
+[2026-04-20 18:20:44.187] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:44.287] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:44.288] [info] [hw_system][pid_combined] #360 seg=3 yaw=138.20° err=-2.18° LT=17.1 RT=17.6 LB=-22.2 RB=-22.6rpm state=CleanFwd
+[2026-04-20 18:20:44.393] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:44.394] [info] [hw_system][pid_combined] #361 seg=3 yaw=138.38° err=-2.36° LT=16.9 RT=17.0 LB=-22.7 RB=-22.8rpm state=CleanFwd
+[2026-04-20 18:20:44.499] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:44.500] [info] [hw_system][pid_combined] #362 seg=3 yaw=138.49° err=-2.47° LT=16.9 RT=17.1 LB=-22.8 RB=-22.9rpm state=CleanFwd
+[2026-04-20 18:20:44.605] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:44.605] [info] [hw_system][pid_combined] #363 seg=3 yaw=138.59° err=-2.57° LT=16.7 RT=17.0 LB=-23.2 RB=-23.0rpm state=CleanFwd
+[2026-04-20 18:20:44.710] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:44.811] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:44.811] [info] [hw_system][pid_combined] #364 seg=3 yaw=138.76° err=-2.74° LT=16.2 RT=16.6 LB=-23.6 RB=-23.6rpm state=CleanFwd
+[2026-04-20 18:20:45.017] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:45.017] [info] [hw_system][pid_combined] #365 seg=3 yaw=139.05° err=-3.03° LT=16.1 RT=16.3 LB=-24.0 RB=-24.0rpm state=CleanFwd
+[2026-04-20 18:20:45.222] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:45.223] [info] [hw_system][pid_combined] #366 seg=3 yaw=139.27° err=-3.25° LT=15.6 RT=15.6 LB=-24.1 RB=-24.2rpm state=CleanFwd
+[2026-04-20 18:20:45.328] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:45.329] [info] [hw_system][pid_combined] #367 seg=3 yaw=139.37° err=-3.35° LT=15.7 RT=15.7 LB=-24.5 RB=-24.4rpm state=CleanFwd
+[2026-04-20 18:20:45.534] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:45.634] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:45.635] [info] [hw_system][pid_combined] #368 seg=3 yaw=139.72° err=-3.70° LT=15.5 RT=16.0 LB=-24.9 RB=-24.7rpm state=CleanFwd
+[2026-04-20 18:20:45.740] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:45.741] [info] [hw_system][pid_combined] #369 seg=3 yaw=139.88° err=-3.86° LT=15.0 RT=15.7 LB=-25.2 RB=-25.4rpm state=CleanFwd
+[2026-04-20 18:20:45.846] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:45.846] [info] [hw_system][pid_combined] #370 seg=3 yaw=139.81° err=-3.78° LT=15.0 RT=15.4 LB=-25.6 RB=-25.0rpm state=CleanFwd
+[2026-04-20 18:20:45.952] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:45.952] [info] [hw_system][pid_combined] #371 seg=3 yaw=139.80° err=-3.77° LT=14.9 RT=14.7 LB=-25.6 RB=-25.0rpm state=CleanFwd
+[2026-04-20 18:20:46.057] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:46.157] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:46.158] [info] [hw_system][pid_combined] #372 seg=3 yaw=139.87° err=-3.85° LT=14.9 RT=14.7 LB=-25.1 RB=-24.6rpm state=CleanFwd
+[2026-04-20 18:20:46.363] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:46.364] [info] [hw_system][pid_combined] #373 seg=3 yaw=140.04° err=-4.02° LT=14.5 RT=14.3 LB=-25.6 RB=-25.2rpm state=CleanFwd
+[2026-04-20 18:20:46.469] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:46.470] [info] [hw_system][pid_combined] #374 seg=3 yaw=140.10° err=-4.08° LT=14.4 RT=14.2 LB=-25.6 RB=-25.3rpm state=CleanFwd
+[2026-04-20 18:20:46.575] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:46.576] [info] [hw_system][pid_combined] #375 seg=3 yaw=140.17° err=-4.15° LT=14.3 RT=14.2 LB=-25.6 RB=-25.8rpm state=CleanFwd
+[2026-04-20 18:20:46.681] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:46.781] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:46.781] [info] [hw_system][pid_combined] #376 seg=3 yaw=140.30° err=-4.27° LT=14.1 RT=14.1 LB=-26.0 RB=-25.9rpm state=CleanFwd
+[2026-04-20 18:20:46.887] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:46.887] [info] [hw_system][pid_combined] #377 seg=3 yaw=140.32° err=-4.30° LT=14.0 RT=14.0 LB=-25.8 RB=-25.8rpm state=CleanFwd
+[2026-04-20 18:20:46.992] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:46.993] [info] [hw_system][pid_combined] #378 seg=3 yaw=140.33° err=-4.31° LT=14.0 RT=13.9 LB=-26.0 RB=-26.0rpm state=CleanFwd
+[2026-04-20 18:20:47.098] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:47.099] [info] [hw_system][pid_combined] #379 seg=3 yaw=140.37° err=-4.35° LT=14.0 RT=13.8 LB=-26.3 RB=-25.9rpm state=CleanFwd
+[2026-04-20 18:20:47.204] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:47.304] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:47.305] [info] [hw_system][pid_combined] #380 seg=3 yaw=140.45° err=-4.43° LT=14.0 RT=13.7 LB=-26.2 RB=-26.3rpm state=CleanFwd
+[2026-04-20 18:20:47.410] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:47.410] [info] [hw_system][pid_combined] #381 seg=3 yaw=140.50° err=-4.48° LT=13.9 RT=13.6 LB=-26.2 RB=-26.0rpm state=CleanFwd
+[2026-04-20 18:20:47.616] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:47.616] [info] [hw_system][pid_combined] #382 seg=3 yaw=140.53° err=-4.50° LT=13.6 RT=13.6 LB=-26.2 RB=-26.4rpm state=CleanFwd
+[2026-04-20 18:20:47.722] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:47.722] [info] [hw_system][pid_combined] #383 seg=3 yaw=140.56° err=-4.54° LT=13.7 RT=13.7 LB=-26.3 RB=-26.5rpm state=CleanFwd
+[2026-04-20 18:20:47.827] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:47.928] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:47.928] [info] [hw_system][pid_combined] #384 seg=3 yaw=140.70° err=-4.67° LT=13.4 RT=13.5 LB=-26.6 RB=-26.6rpm state=CleanFwd
+[2026-04-20 18:20:48.033] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:48.034] [info] [hw_system][pid_combined] #385 seg=3 yaw=140.72° err=-4.70° LT=13.3 RT=13.4 LB=-26.4 RB=-26.8rpm state=CleanFwd
+[2026-04-20 18:20:48.239] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:48.240] [info] [hw_system][pid_combined] #386 seg=3 yaw=140.81° err=-4.79° LT=13.3 RT=13.4 LB=-27.1 RB=-26.7rpm state=CleanFwd
+[2026-04-20 18:20:48.345] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:48.346] [info] [hw_system][pid_combined] #387 seg=3 yaw=140.86° err=-4.84° LT=13.2 RT=13.2 LB=-27.0 RB=-26.5rpm state=CleanFwd
+[2026-04-20 18:20:48.451] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:48.551] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:48.552] [info] [hw_system][pid_combined] #388 seg=3 yaw=140.89° err=-4.87° LT=13.0 RT=13.1 LB=-26.7 RB=-26.8rpm state=CleanFwd
+[2026-04-20 18:20:48.657] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:48.657] [info] [hw_system][pid_combined] #389 seg=3 yaw=140.91° err=-4.89° LT=13.1 RT=13.2 LB=-27.0 RB=-26.5rpm state=CleanFwd
+[2026-04-20 18:20:48.863] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:48.863] [info] [hw_system][pid_combined] #390 seg=3 yaw=141.00° err=-4.98° LT=12.8 RT=13.1 LB=-26.9 RB=-27.1rpm state=CleanFwd
+[2026-04-20 18:20:48.968] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:48.969] [info] [hw_system][pid_combined] #391 seg=3 yaw=141.05° err=-5.03° LT=12.7 RT=12.9 LB=-26.8 RB=-27.1rpm state=CleanFwd
+[2026-04-20 18:20:49.074] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:49.174] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:49.175] [info] [hw_system][pid_combined] #392 seg=3 yaw=141.13° err=-5.11° LT=12.7 RT=12.9 LB=-27.2 RB=-27.4rpm state=CleanFwd
+[2026-04-20 18:20:49.280] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:49.281] [info] [hw_system][pid_combined] #393 seg=3 yaw=141.20° err=-5.18° LT=12.6 RT=12.7 LB=-27.2 RB=-27.2rpm state=CleanFwd
+[2026-04-20 18:20:49.386] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:49.387] [info] [hw_system][pid_combined] #394 seg=3 yaw=141.26° err=-5.24° LT=12.7 RT=12.8 LB=-27.1 RB=-27.4rpm state=CleanFwd
+[2026-04-20 18:20:49.492] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:49.492] [info] [hw_system][pid_combined] #395 seg=3 yaw=141.36° err=-5.33° LT=12.4 RT=12.4 LB=-27.4 RB=-27.5rpm state=CleanFwd
+[2026-04-20 18:20:49.597] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:49.698] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:49.698] [info] [hw_system][pid_combined] #396 seg=3 yaw=141.44° err=-5.42° LT=12.3 RT=12.4 LB=-27.8 RB=-27.3rpm state=CleanFwd
+[2026-04-20 18:20:49.803] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:49.804] [info] [hw_system][pid_combined] #397 seg=3 yaw=141.47° err=-5.44° LT=12.5 RT=12.4 LB=-27.7 RB=-27.7rpm state=CleanFwd
+[2026-04-20 18:20:49.909] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:49.910] [info] [hw_system][pid_combined] #398 seg=3 yaw=141.50° err=-5.48° LT=12.2 RT=12.2 LB=-27.7 RB=-27.5rpm state=CleanFwd
+[2026-04-20 18:20:50.115] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:50.116] [info] [hw_system][pid_combined] #399 seg=3 yaw=141.60° err=-5.58° LT=12.2 RT=12.2 LB=-27.8 RB=-27.8rpm state=CleanFwd
+[2026-04-20 18:20:50.221] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:50.321] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:50.322] [info] [hw_system][pid_combined] #400 seg=3 yaw=141.72° err=-5.70° LT=11.9 RT=11.9 LB=-27.8 RB=-28.1rpm state=CleanFwd
+[2026-04-20 18:20:50.527] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:50.528] [info] [hw_system][pid_combined] #401 seg=3 yaw=141.81° err=-5.78° LT=11.9 RT=11.9 LB=-28.1 RB=-28.2rpm state=CleanFwd
+[2026-04-20 18:20:50.613] [warning] [WalkMotorGroup] emergency_override: vehicle_reverse_rpm=0.0
+[2026-04-20 18:20:50.733] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:50.733] [info] [hw_system][pid_combined] #402 seg=3 yaw=141.87° err=-5.85° LT=0.3 RT=1.0 LB=-12.9 RB=-13.4rpm state=CleanFwd
+[2026-04-20 18:20:50.796] [info] [FSM] 前端限位已稳定（已完成半趟 3/4）
+[2026-04-20 18:20:50.796] [info] [FSM] → CleanReturn（前端到达，刷反向返回）
+[2026-04-20 18:20:50.796] [info] [WalkMotorGroup] clear_override requested
+[2026-04-20 18:20:50.805] [info] [WalkMotorGroup] clear_override applied
+[2026-04-20 18:20:50.839] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:50.839] [info] [hw_system][pid_combined] #403 seg=3 yaw=141.86° err=-5.83° LT=-1.7 RT=-1.0 LB=2.6 RB=2.8rpm state=CleanReturn
+[2026-04-20 18:20:50.844] [info] [hw_system][pid_combined] ✓ 段 3 完成：CleanFwd → CleanReturn（已采集 403 条，耗时 18.7s）
+[2026-04-20 18:20:50.944] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:51.045] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:51.045] [info] [hw_system][pid_combined] #404 seg=3 yaw=143.55° err=-7.53° LT=-20.6 RT=-20.4 LB=19.8 RB=20.0rpm state=CleanReturn
+[2026-04-20 18:20:51.045] [warning] [hw_system][pid_combined] 段 4: CleanReturn → 等待【尾端】限位（最多 2400s）...
+[2026-04-20 18:20:51.145] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:51.146] [info] [hw_system][pid_combined] #405 seg=4 yaw=143.39° err=-7.37° LT=-20.2 RT=-20.2 LB=19.6 RB=20.1rpm state=CleanReturn
+[2026-04-20 18:20:51.251] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:51.252] [info] [hw_system][pid_combined] #406 seg=4 yaw=143.56° err=-7.54° LT=-20.6 RT=-20.7 LB=16.2 RB=16.3rpm state=CleanReturn
+[2026-04-20 18:20:51.357] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:51.357] [info] [hw_system][pid_combined] #407 seg=4 yaw=143.29° err=-7.27° LT=-21.9 RT=-21.8 LB=17.9 RB=18.1rpm state=CleanReturn
+[2026-04-20 18:20:51.463] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:51.563] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:51.563] [info] [hw_system][pid_combined] #408 seg=4 yaw=143.18° err=-7.16° LT=-21.1 RT=-21.2 LB=17.9 RB=18.0rpm state=CleanReturn
+[2026-04-20 18:20:51.669] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:51.669] [info] [hw_system][pid_combined] #409 seg=4 yaw=143.14° err=-7.12° LT=-22.0 RT=-22.1 LB=18.1 RB=18.2rpm state=CleanReturn
+[2026-04-20 18:20:51.774] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:51.775] [info] [hw_system][pid_combined] #410 seg=4 yaw=142.95° err=-6.93° LT=-21.5 RT=-21.5 LB=18.0 RB=18.1rpm state=CleanReturn
+[2026-04-20 18:20:51.880] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:51.881] [info] [hw_system][pid_combined] #411 seg=4 yaw=143.03° err=-7.00° LT=-21.6 RT=-21.7 LB=18.1 RB=18.1rpm state=CleanReturn
+[2026-04-20 18:20:51.986] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:52.086] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:52.087] [info] [hw_system][pid_combined] #412 seg=4 yaw=142.86° err=-6.83° LT=-21.2 RT=-21.3 LB=18.3 RB=18.5rpm state=CleanReturn
+[2026-04-20 18:20:52.192] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:52.192] [info] [hw_system][pid_combined] #413 seg=4 yaw=142.83° err=-6.81° LT=-21.6 RT=-21.6 LB=18.3 RB=18.5rpm state=CleanReturn
+[2026-04-20 18:20:52.298] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:52.298] [info] [hw_system][pid_combined] #414 seg=4 yaw=142.73° err=-6.71° LT=-21.7 RT=-21.6 LB=18.4 RB=18.5rpm state=CleanReturn
+[2026-04-20 18:20:52.403] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:52.404] [info] [hw_system][pid_combined] #415 seg=4 yaw=142.72° err=-6.70° LT=-21.6 RT=-21.4 LB=18.5 RB=18.4rpm state=CleanReturn
+[2026-04-20 18:20:52.609] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:52.809] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:52.810] [info] [hw_system][pid_combined] #416 seg=4 yaw=142.80° err=-6.78° LT=-20.5 RT=-20.2 LB=19.8 RB=19.8rpm state=CleanReturn
+[2026-04-20 18:20:53.015] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:53.016] [info] [hw_system][pid_combined] #417 seg=4 yaw=142.81° err=-6.78° LT=-20.2 RT=-20.0 LB=19.6 RB=19.7rpm state=CleanReturn
+[2026-04-20 18:20:53.121] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:53.122] [info] [hw_system][pid_combined] #418 seg=4 yaw=142.79° err=-6.77° LT=-20.0 RT=-20.2 LB=19.8 RB=19.7rpm state=CleanReturn
+[2026-04-20 18:20:53.327] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:53.328] [info] [hw_system][pid_combined] #419 seg=4 yaw=142.84° err=-6.82° LT=-20.2 RT=-20.5 LB=19.7 RB=19.7rpm state=CleanReturn
+[2026-04-20 18:20:53.533] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:53.633] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:53.634] [info] [hw_system][pid_combined] #420 seg=4 yaw=142.74° err=-6.72° LT=-20.7 RT=-20.9 LB=19.4 RB=19.4rpm state=CleanReturn
+[2026-04-20 18:20:53.839] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:53.840] [info] [hw_system][pid_combined] #421 seg=4 yaw=142.67° err=-6.65° LT=-20.0 RT=-20.1 LB=20.0 RB=19.9rpm state=CleanReturn
+[2026-04-20 18:20:53.945] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:53.945] [info] [hw_system][pid_combined] #422 seg=4 yaw=142.64° err=-6.62° LT=-19.8 RT=-20.0 LB=19.8 RB=19.6rpm state=CleanReturn
+[2026-04-20 18:20:54.051] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:54.051] [info] [hw_system][pid_combined] #423 seg=4 yaw=142.62° err=-6.60° LT=-19.6 RT=-19.5 LB=20.0 RB=19.9rpm state=CleanReturn
+[2026-04-20 18:20:54.156] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:54.256] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:54.257] [info] [hw_system][pid_combined] #424 seg=4 yaw=142.77° err=-6.75° LT=-20.6 RT=-19.6 LB=20.1 RB=20.1rpm state=CleanReturn
+[2026-04-20 18:20:54.362] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:54.363] [info] [hw_system][pid_combined] #425 seg=4 yaw=142.75° err=-6.73° LT=-21.1 RT=-20.1 LB=20.1 RB=19.9rpm state=CleanReturn
+[2026-04-20 18:20:54.468] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:54.468] [info] [hw_system][pid_combined] #426 seg=4 yaw=142.67° err=-6.65° LT=-20.4 RT=-20.0 LB=20.0 RB=19.9rpm state=CleanReturn
+[2026-04-20 18:20:54.574] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:54.574] [info] [hw_system][pid_combined] #427 seg=4 yaw=142.65° err=-6.63° LT=-20.0 RT=-20.3 LB=19.8 RB=19.7rpm state=CleanReturn
+[2026-04-20 18:20:54.679] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:54.779] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:54.780] [info] [hw_system][pid_combined] #428 seg=4 yaw=142.58° err=-6.55° LT=-20.1 RT=-20.6 LB=19.9 RB=19.9rpm state=CleanReturn
+[2026-04-20 18:20:54.885] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:54.886] [info] [hw_system][pid_combined] #429 seg=4 yaw=142.57° err=-6.55° LT=-19.9 RT=-20.3 LB=19.7 RB=19.9rpm state=CleanReturn
+[2026-04-20 18:20:54.991] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:54.992] [info] [hw_system][pid_combined] #430 seg=4 yaw=142.55° err=-6.53° LT=-20.0 RT=-20.4 LB=19.6 RB=19.8rpm state=CleanReturn
+[2026-04-20 18:20:55.097] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:55.097] [info] [hw_system][pid_combined] #431 seg=4 yaw=142.53° err=-6.51° LT=-20.1 RT=-20.3 LB=19.8 RB=19.9rpm state=CleanReturn
+[2026-04-20 18:20:55.202] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:55.303] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:55.304] [info] [hw_system][pid_combined] #432 seg=4 yaw=142.50° err=-6.48° LT=-20.3 RT=-20.3 LB=19.8 RB=19.6rpm state=CleanReturn
+[2026-04-20 18:20:55.509] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:55.510] [info] [hw_system][pid_combined] #433 seg=4 yaw=142.37° err=-6.35° LT=-19.9 RT=-19.9 LB=20.1 RB=19.8rpm state=CleanReturn
+[2026-04-20 18:20:55.615] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:55.615] [info] [hw_system][pid_combined] #434 seg=4 yaw=142.33° err=-6.31° LT=-20.1 RT=-20.0 LB=20.0 RB=19.9rpm state=CleanReturn
+[2026-04-20 18:20:55.821] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:55.822] [info] [hw_system][pid_combined] #435 seg=4 yaw=142.29° err=-6.27° LT=-20.2 RT=-19.9 LB=20.0 RB=20.0rpm state=CleanReturn
+[2026-04-20 18:20:56.027] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:56.127] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:56.128] [info] [hw_system][pid_combined] #436 seg=4 yaw=142.09° err=-6.06° LT=-20.0 RT=-20.0 LB=20.0 RB=20.0rpm state=CleanReturn
+[2026-04-20 18:20:56.334] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:56.334] [info] [hw_system][pid_combined] #437 seg=4 yaw=142.01° err=-5.99° LT=-20.1 RT=-20.2 LB=19.9 RB=19.8rpm state=CleanReturn
+[2026-04-20 18:20:56.540] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:56.541] [info] [hw_system][pid_combined] #438 seg=4 yaw=141.91° err=-5.89° LT=-20.0 RT=-20.2 LB=20.2 RB=19.8rpm state=CleanReturn
+[2026-04-20 18:20:56.646] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:56.647] [info] [hw_system][pid_combined] #439 seg=4 yaw=141.83° err=-5.81° LT=-20.0 RT=-20.1 LB=20.0 RB=19.8rpm state=CleanReturn
+[2026-04-20 18:20:56.752] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:56.853] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:56.853] [info] [hw_system][pid_combined] #440 seg=4 yaw=141.73° err=-5.71° LT=-19.8 RT=-19.7 LB=20.1 RB=20.0rpm state=CleanReturn
+[2026-04-20 18:20:56.958] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:56.959] [info] [hw_system][pid_combined] #441 seg=4 yaw=141.70° err=-5.68° LT=-20.1 RT=-19.8 LB=20.0 RB=20.0rpm state=CleanReturn
+[2026-04-20 18:20:57.064] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:57.065] [info] [hw_system][pid_combined] #442 seg=4 yaw=141.66° err=-5.64° LT=-20.1 RT=-19.7 LB=20.1 RB=20.2rpm state=CleanReturn
+[2026-04-20 18:20:57.170] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:57.171] [info] [hw_system][pid_combined] #443 seg=4 yaw=141.59° err=-5.56° LT=-20.0 RT=-19.8 LB=20.1 RB=20.2rpm state=CleanReturn
+[2026-04-20 18:20:57.276] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:57.376] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:57.377] [info] [hw_system][pid_combined] #444 seg=4 yaw=141.50° err=-5.48° LT=-18.3 RT=-19.0 LB=19.9 RB=20.2rpm state=CleanReturn
+[2026-04-20 18:20:57.482] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:57.483] [info] [hw_system][pid_combined] #445 seg=4 yaw=141.50° err=-5.48° LT=-19.0 RT=-19.4 LB=20.2 RB=19.9rpm state=CleanReturn
+[2026-04-20 18:20:57.589] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:57.590] [info] [hw_system][pid_combined] #446 seg=4 yaw=141.48° err=-5.46° LT=-20.0 RT=-20.8 LB=20.1 RB=19.7rpm state=CleanReturn
+[2026-04-20 18:20:57.695] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:57.696] [info] [hw_system][pid_combined] #447 seg=4 yaw=141.30° err=-5.28° LT=-20.3 RT=-20.7 LB=20.0 RB=20.0rpm state=CleanReturn
+[2026-04-20 18:20:57.801] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:57.902] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:57.903] [info] [hw_system][pid_combined] #448 seg=4 yaw=141.19° err=-5.17° LT=-20.0 RT=-19.3 LB=20.2 RB=20.5rpm state=CleanReturn
+[2026-04-20 18:20:58.108] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:58.109] [info] [hw_system][pid_combined] #449 seg=4 yaw=141.20° err=-5.17° LT=-20.2 RT=-19.3 LB=20.3 RB=20.4rpm state=CleanReturn
+[2026-04-20 18:20:58.314] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:58.315] [info] [hw_system][pid_combined] #450 seg=4 yaw=141.12° err=-5.10° LT=-20.2 RT=-19.4 LB=20.1 RB=20.2rpm state=CleanReturn
+[2026-04-20 18:20:58.520] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:58.521] [info] [hw_system][pid_combined] #451 seg=4 yaw=141.09° err=-5.06° LT=-19.9 RT=-19.8 LB=20.5 RB=20.3rpm state=CleanReturn
+[2026-04-20 18:20:58.626] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:58.726] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:58.727] [info] [hw_system][pid_combined] #452 seg=4 yaw=141.02° err=-5.00° LT=-20.1 RT=-19.5 LB=20.4 RB=20.2rpm state=CleanReturn
+[2026-04-20 18:20:58.832] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:58.832] [info] [hw_system][pid_combined] #453 seg=4 yaw=140.98° err=-4.95° LT=-20.2 RT=-19.8 LB=20.3 RB=20.3rpm state=CleanReturn
+[2026-04-20 18:20:59.038] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:59.038] [info] [hw_system][pid_combined] #454 seg=4 yaw=140.81° err=-4.79° LT=-20.3 RT=-20.4 LB=20.0 RB=20.2rpm state=CleanReturn
+[2026-04-20 18:20:59.143] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:59.144] [info] [hw_system][pid_combined] #455 seg=4 yaw=140.73° err=-4.71° LT=-20.2 RT=-20.4 LB=20.0 RB=20.2rpm state=CleanReturn
+[2026-04-20 18:20:59.249] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:59.349] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:59.350] [info] [hw_system][pid_combined] #456 seg=4 yaw=140.55° err=-4.53° LT=-18.0 RT=-18.1 LB=21.4 RB=21.7rpm state=CleanReturn
+[2026-04-20 18:20:59.455] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:59.456] [info] [hw_system][pid_combined] #457 seg=4 yaw=140.71° err=-4.69° LT=-18.4 RT=-18.5 LB=21.5 RB=21.4rpm state=CleanReturn
+[2026-04-20 18:20:59.561] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:59.561] [info] [hw_system][pid_combined] #458 seg=4 yaw=140.64° err=-4.62° LT=-18.5 RT=-19.0 LB=21.3 RB=21.3rpm state=CleanReturn
+[2026-04-20 18:20:59.666] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:59.667] [info] [hw_system][pid_combined] #459 seg=4 yaw=140.55° err=-4.53° LT=-18.3 RT=-18.7 LB=21.2 RB=21.1rpm state=CleanReturn
+[2026-04-20 18:20:59.772] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:59.872] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:20:59.873] [info] [hw_system][pid_combined] #460 seg=4 yaw=140.56° err=-4.54° LT=-18.6 RT=-18.5 LB=21.5 RB=21.4rpm state=CleanReturn
+[2026-04-20 18:20:59.978] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:20:59.979] [info] [hw_system][pid_combined] #461 seg=4 yaw=140.54° err=-4.52° LT=-18.5 RT=-19.0 LB=21.8 RB=21.5rpm state=CleanReturn
+[2026-04-20 18:21:00.084] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:00.084] [info] [hw_system][pid_combined] #462 seg=4 yaw=140.45° err=-4.43° LT=-17.8 RT=-18.6 LB=21.7 RB=21.6rpm state=CleanReturn
+[2026-04-20 18:21:00.190] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:00.190] [info] [hw_system][pid_combined] #463 seg=4 yaw=140.31° err=-4.29° LT=-17.9 RT=-18.5 LB=21.9 RB=21.7rpm state=CleanReturn
+[2026-04-20 18:21:00.295] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:00.396] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:21:00.396] [info] [hw_system][pid_combined] #464 seg=4 yaw=140.10° err=-4.08° LT=-18.2 RT=-17.6 LB=22.7 RB=21.8rpm state=CleanReturn
+[2026-04-20 18:21:00.501] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:00.502] [info] [hw_system][pid_combined] #465 seg=4 yaw=139.94° err=-3.92° LT=-17.7 RT=-17.4 LB=22.9 RB=22.1rpm state=CleanReturn
+[2026-04-20 18:21:00.707] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:00.708] [info] [hw_system][pid_combined] #466 seg=4 yaw=139.78° err=-3.76° LT=-17.1 RT=-17.1 LB=23.0 RB=22.4rpm state=CleanReturn
+[2026-04-20 18:21:00.913] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:00.914] [info] [hw_system][pid_combined] #467 seg=4 yaw=139.65° err=-3.63° LT=-16.9 RT=-16.7 LB=23.4 RB=22.8rpm state=CleanReturn
+[2026-04-20 18:21:01.119] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:01.219] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:21:01.220] [info] [hw_system][pid_combined] #468 seg=4 yaw=139.16° err=-3.14° LT=-16.3 RT=-15.9 LB=24.1 RB=24.0rpm state=CleanReturn
+[2026-04-20 18:21:01.325] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:01.326] [info] [hw_system][pid_combined] #469 seg=4 yaw=139.41° err=-3.39° LT=-16.4 RT=-16.1 LB=23.7 RB=24.7rpm state=CleanReturn
+[2026-04-20 18:21:01.531] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:01.531] [info] [hw_system][pid_combined] #470 seg=4 yaw=138.99° err=-2.97° LT=-15.0 RT=-15.7 LB=23.8 RB=24.1rpm state=CleanReturn
+[2026-04-20 18:21:01.637] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:01.637] [info] [hw_system][pid_combined] #471 seg=4 yaw=138.73° err=-2.71° LT=-15.4 RT=-15.1 LB=24.7 RB=24.9rpm state=CleanReturn
+[2026-04-20 18:21:01.742] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:01.843] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:21:01.843] [info] [hw_system][pid_combined] #472 seg=4 yaw=138.33° err=-2.31° LT=-14.7 RT=-14.5 LB=25.2 RB=25.6rpm state=CleanReturn
+[2026-04-20 18:21:01.948] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:01.949] [info] [hw_system][pid_combined] #473 seg=4 yaw=137.95° err=-1.93° LT=-14.3 RT=-14.1 LB=25.7 RB=25.9rpm state=CleanReturn
+[2026-04-20 18:21:02.054] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:02.055] [info] [hw_system][pid_combined] #474 seg=4 yaw=137.68° err=-1.65° LT=-13.8 RT=-13.8 LB=26.1 RB=25.9rpm state=CleanReturn
+[2026-04-20 18:21:02.160] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:02.161] [info] [hw_system][pid_combined] #475 seg=4 yaw=137.53° err=-1.51° LT=-13.6 RT=-13.5 LB=26.4 RB=26.2rpm state=CleanReturn
+[2026-04-20 18:21:02.266] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:02.366] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:21:02.366] [info] [hw_system][pid_combined] #476 seg=4 yaw=137.21° err=-1.19° LT=-13.0 RT=-13.0 LB=27.3 RB=27.1rpm state=CleanReturn
+[2026-04-20 18:21:02.472] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:02.472] [info] [hw_system][pid_combined] #477 seg=4 yaw=137.09° err=-1.07° LT=-12.8 RT=-12.7 LB=27.1 RB=27.0rpm state=CleanReturn
+[2026-04-20 18:21:02.577] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:02.578] [info] [hw_system][pid_combined] #478 seg=4 yaw=136.88° err=-0.86° LT=-12.5 RT=-12.4 LB=27.5 RB=27.5rpm state=CleanReturn
+[2026-04-20 18:21:02.683] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:02.684] [info] [hw_system][pid_combined] #479 seg=4 yaw=136.71° err=-0.69° LT=-12.1 RT=-12.2 LB=27.8 RB=27.9rpm state=CleanReturn
+[2026-04-20 18:21:02.789] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:02.889] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:21:02.890] [info] [hw_system][pid_combined] #480 seg=4 yaw=136.36° err=-0.34° LT=-11.6 RT=-12.1 LB=28.3 RB=28.1rpm state=CleanReturn
+[2026-04-20 18:21:02.995] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:02.995] [info] [hw_system][pid_combined] #481 seg=4 yaw=136.25° err=-0.23° LT=-11.2 RT=-11.5 LB=28.9 RB=28.4rpm state=CleanReturn
+[2026-04-20 18:21:03.101] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:03.101] [info] [hw_system][pid_combined] #482 seg=4 yaw=136.18° err=-0.16° LT=-11.3 RT=-11.7 LB=28.5 RB=28.5rpm state=CleanReturn
+[2026-04-20 18:21:03.306] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:03.307] [info] [hw_system][pid_combined] #483 seg=4 yaw=136.04° err=-0.02° LT=-11.4 RT=-11.3 LB=29.0 RB=28.8rpm state=CleanReturn
+[2026-04-20 18:21:03.412] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:03.613] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:21:03.613] [info] [hw_system][pid_combined] #484 seg=4 yaw=135.74° err=0.28° LT=-10.5 RT=-10.7 LB=29.5 RB=29.1rpm state=CleanReturn
+[2026-04-20 18:21:03.819] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:03.819] [info] [hw_system][pid_combined] #485 seg=4 yaw=135.64° err=0.38° LT=-10.4 RT=-10.4 LB=29.6 RB=29.2rpm state=CleanReturn
+[2026-04-20 18:21:03.924] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:03.925] [info] [hw_system][pid_combined] #486 seg=4 yaw=135.62° err=0.41° LT=-10.6 RT=-10.5 LB=29.5 RB=29.8rpm state=CleanReturn
+[2026-04-20 18:21:04.130] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:04.131] [info] [hw_system][pid_combined] #487 seg=4 yaw=135.56° err=0.46° LT=-10.1 RT=-10.4 LB=29.7 RB=29.6rpm state=CleanReturn
+[2026-04-20 18:21:04.336] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:04.436] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:21:04.437] [info] [hw_system][pid_combined] #488 seg=4 yaw=135.41° err=0.61° LT=-9.8 RT=-10.5 LB=29.8 RB=29.6rpm state=CleanReturn
+[2026-04-20 18:21:04.542] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:04.543] [info] [hw_system][pid_combined] #489 seg=4 yaw=135.39° err=0.63° LT=-10.3 RT=-10.1 LB=29.8 RB=29.9rpm state=CleanReturn
+[2026-04-20 18:21:04.648] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:04.648] [info] [hw_system][pid_combined] #490 seg=4 yaw=135.30° err=0.73° LT=-10.8 RT=-10.1 LB=30.0 RB=30.4rpm state=CleanReturn
+[2026-04-20 18:21:04.854] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:04.854] [info] [hw_system][pid_combined] #491 seg=4 yaw=135.82° err=0.20° LT=-8.9 RT=-10.7 LB=29.7 RB=30.3rpm state=CleanReturn
+[2026-04-20 18:21:04.959] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:05.060] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:21:05.060] [info] [hw_system][pid_combined] #492 seg=4 yaw=135.13° err=0.90° LT=-7.1 RT=-10.7 LB=30.0 RB=29.9rpm state=CleanReturn
+[2026-04-20 18:21:05.165] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:05.166] [info] [hw_system][pid_combined] #493 seg=4 yaw=134.59° err=1.43° LT=-8.4 RT=-10.0 LB=30.6 RB=29.7rpm state=CleanReturn
+[2026-04-20 18:21:05.271] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:05.272] [info] [hw_system][pid_combined] #494 seg=4 yaw=133.42° err=2.60° LT=-9.2 RT=-9.8 LB=29.5 RB=29.2rpm state=CleanReturn
+[2026-04-20 18:21:05.377] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:05.377] [info] [hw_system][pid_combined] #495 seg=4 yaw=133.50° err=2.52° LT=-9.7 RT=-9.5 LB=30.3 RB=29.0rpm state=CleanReturn
+[2026-04-20 18:21:05.483] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:05.583] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:21:05.583] [info] [hw_system][pid_combined] #496 seg=4 yaw=133.65° err=2.37° LT=-10.1 RT=-9.7 LB=30.2 RB=28.8rpm state=CleanReturn
+[2026-04-20 18:21:05.689] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:05.689] [info] [hw_system][pid_combined] #497 seg=4 yaw=132.82° err=3.20° LT=-9.1 RT=-9.7 LB=29.6 RB=29.6rpm state=CleanReturn
+[2026-04-20 18:21:05.794] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:05.795] [info] [hw_system][pid_combined] #498 seg=4 yaw=132.58° err=3.44° LT=-10.2 RT=-9.9 LB=30.2 RB=32.2rpm state=CleanReturn
+[2026-04-20 18:21:05.900] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:05.901] [info] [hw_system][pid_combined] #499 seg=4 yaw=132.69° err=3.33° LT=-10.7 RT=-10.6 LB=30.2 RB=27.9rpm state=CleanReturn
+[2026-04-20 18:21:06.006] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:06.106] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:21:06.107] [info] [hw_system][pid_combined] #500 seg=4 yaw=132.80° err=3.22° LT=-9.2 RT=-10.3 LB=29.7 RB=29.0rpm state=CleanReturn
+[2026-04-20 18:21:06.312] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:06.313] [info] [hw_system][pid_combined] #501 seg=4 yaw=133.21° err=2.81° LT=-10.1 RT=-10.6 LB=29.4 RB=29.5rpm state=CleanReturn
+[2026-04-20 18:21:06.418] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:06.418] [info] [hw_system][pid_combined] #502 seg=4 yaw=133.19° err=2.83° LT=-10.0 RT=-10.3 LB=30.3 RB=32.3rpm state=CleanReturn
+[2026-04-20 18:21:06.624] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:06.624] [info] [hw_system][pid_combined] #503 seg=4 yaw=133.45° err=2.57° LT=-10.0 RT=-10.2 LB=30.2 RB=31.5rpm state=CleanReturn
+[2026-04-20 18:21:06.829] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:06.930] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:21:06.930] [info] [hw_system][pid_combined] #504 seg=4 yaw=133.70° err=2.32° LT=-10.6 RT=-9.9 LB=30.0 RB=30.9rpm state=CleanReturn
+[2026-04-20 18:21:07.035] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:07.036] [info] [hw_system][pid_combined] #505 seg=4 yaw=133.61° err=2.41° LT=-9.9 RT=-9.9 LB=30.0 RB=30.6rpm state=CleanReturn
+[2026-04-20 18:21:07.141] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:07.142] [info] [hw_system][pid_combined] #506 seg=4 yaw=133.72° err=2.30° LT=-10.9 RT=-9.8 LB=29.9 RB=30.5rpm state=CleanReturn
+[2026-04-20 18:21:07.247] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:07.248] [info] [hw_system][pid_combined] #507 seg=4 yaw=133.05° err=2.97° LT=-11.2 RT=-9.6 LB=30.0 RB=30.4rpm state=CleanReturn
+[2026-04-20 18:21:07.453] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:07.553] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:21:07.554] [info] [hw_system][pid_combined] #508 seg=4 yaw=129.16° err=6.87° LT=-9.6 RT=-10.0 LB=30.2 RB=30.3rpm state=CleanReturn
+[2026-04-20 18:21:07.659] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:07.659] [info] [hw_system][pid_combined] #509 seg=4 yaw=130.60° err=5.42° LT=-12.1 RT=-11.9 LB=30.1 RB=30.1rpm state=CleanReturn
+[2026-04-20 18:21:07.765] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:07.765] [info] [hw_system][pid_combined] #510 seg=4 yaw=131.02° err=5.00° LT=-10.8 RT=-10.1 LB=30.0 RB=30.1rpm state=CleanReturn
+[2026-04-20 18:21:07.870] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:07.871] [info] [hw_system][pid_combined] #511 seg=4 yaw=130.40° err=5.62° LT=-9.5 RT=-9.3 LB=28.1 RB=30.9rpm state=CleanReturn
+[2026-04-20 18:21:07.976] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:08.076] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:21:08.077] [info] [hw_system][pid_combined] #512 seg=4 yaw=131.58° err=4.44° LT=-11.9 RT=-11.3 LB=28.9 RB=29.8rpm state=CleanReturn
+[2026-04-20 18:21:08.182] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:08.183] [info] [hw_system][pid_combined] #513 seg=4 yaw=132.22° err=3.80° LT=-11.2 RT=-9.9 LB=28.8 RB=29.6rpm state=CleanReturn
+[2026-04-20 18:21:08.288] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:08.288] [info] [hw_system][pid_combined] #514 seg=4 yaw=132.58° err=3.44° LT=-11.5 RT=-10.0 LB=29.2 RB=29.7rpm state=CleanReturn
+[2026-04-20 18:21:08.394] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:08.394] [info] [hw_system][pid_combined] #515 seg=4 yaw=133.15° err=2.87° LT=-11.5 RT=-10.1 LB=30.3 RB=29.4rpm state=CleanReturn
+[2026-04-20 18:21:08.499] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:08.599] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:21:08.600] [info] [hw_system][pid_combined] #516 seg=4 yaw=133.54° err=2.48° LT=-10.3 RT=-9.6 LB=30.0 RB=29.6rpm state=CleanReturn
+[2026-04-20 18:21:08.805] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:08.806] [info] [hw_system][pid_combined] #517 seg=4 yaw=133.25° err=2.77° LT=-10.2 RT=-9.8 LB=29.7 RB=29.5rpm state=CleanReturn
+[2026-04-20 18:21:08.911] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:08.912] [info] [hw_system][pid_combined] #518 seg=4 yaw=133.57° err=2.45° LT=-10.4 RT=-10.2 LB=30.2 RB=30.1rpm state=CleanReturn
+[2026-04-20 18:21:09.117] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:09.118] [info] [hw_system][pid_combined] #519 seg=4 yaw=133.61° err=2.41° LT=-9.9 RT=-9.8 LB=30.4 RB=29.8rpm state=CleanReturn
+[2026-04-20 18:21:09.323] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:09.423] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:21:09.423] [info] [hw_system][pid_combined] #520 seg=4 yaw=133.95° err=2.07° LT=-10.1 RT=-9.9 LB=30.4 RB=29.8rpm state=CleanReturn
+[2026-04-20 18:21:09.629] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:09.629] [info] [hw_system][pid_combined] #521 seg=4 yaw=134.32° err=1.70° LT=-10.1 RT=-10.0 LB=30.2 RB=29.8rpm state=CleanReturn
+[2026-04-20 18:21:09.735] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:09.735] [info] [hw_system][pid_combined] #522 seg=4 yaw=134.40° err=1.62° LT=-9.9 RT=-9.9 LB=30.3 RB=29.9rpm state=CleanReturn
+[2026-04-20 18:21:09.840] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:09.841] [info] [hw_system][pid_combined] #523 seg=4 yaw=134.53° err=1.49° LT=-9.9 RT=-9.9 LB=29.7 RB=29.9rpm state=CleanReturn
+[2026-04-20 18:21:09.946] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:10.046] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:21:10.047] [info] [hw_system][pid_combined] #524 seg=4 yaw=135.00° err=1.02° LT=-10.1 RT=-9.9 LB=30.0 RB=29.9rpm state=CleanReturn
+[2026-04-20 18:21:10.252] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:10.253] [info] [hw_system][pid_combined] #525 seg=4 yaw=135.22° err=0.80° LT=-9.9 RT=-9.8 LB=30.0 RB=29.7rpm state=CleanReturn
+[2026-04-20 18:21:10.358] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:10.359] [info] [hw_system][pid_combined] #526 seg=4 yaw=135.24° err=0.78° LT=-9.9 RT=-9.7 LB=30.2 RB=30.0rpm state=CleanReturn
+[2026-04-20 18:21:10.464] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:10.464] [info] [hw_system][pid_combined] #527 seg=4 yaw=135.31° err=0.71° LT=-10.0 RT=-9.9 LB=30.2 RB=29.6rpm state=CleanReturn
+[2026-04-20 18:21:10.569] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:10.670] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:21:10.670] [info] [hw_system][pid_combined] #528 seg=4 yaw=135.49° err=0.53° LT=-10.1 RT=-10.0 LB=29.9 RB=29.6rpm state=CleanReturn
+[2026-04-20 18:21:10.775] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:10.776] [info] [hw_system][pid_combined] #529 seg=4 yaw=135.52° err=0.51° LT=-10.2 RT=-10.2 LB=29.5 RB=29.6rpm state=CleanReturn
+[2026-04-20 18:21:10.881] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:10.882] [info] [hw_system][pid_combined] #530 seg=4 yaw=135.58° err=0.44° LT=-10.3 RT=-10.4 LB=29.6 RB=29.5rpm state=CleanReturn
+[2026-04-20 18:21:10.987] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:10.987] [info] [hw_system][pid_combined] #531 seg=4 yaw=135.65° err=0.37° LT=-10.5 RT=-10.6 LB=29.8 RB=29.6rpm state=CleanReturn
+[2026-04-20 18:21:11.093] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:11.193] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:21:11.193] [info] [hw_system][pid_combined] #532 seg=4 yaw=135.73° err=0.30° LT=-10.7 RT=-10.8 LB=29.6 RB=29.6rpm state=CleanReturn
+[2026-04-20 18:21:11.298] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:11.299] [info] [hw_system][pid_combined] #533 seg=4 yaw=135.70° err=0.32° LT=-10.7 RT=-10.7 LB=29.4 RB=29.4rpm state=CleanReturn
+[2026-04-20 18:21:11.504] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:11.505] [info] [hw_system][pid_combined] #534 seg=4 yaw=135.69° err=0.33° LT=-10.4 RT=-10.4 LB=29.4 RB=29.7rpm state=CleanReturn
+[2026-04-20 18:21:11.610] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:11.611] [info] [hw_system][pid_combined] #535 seg=4 yaw=135.74° err=0.29° LT=-10.6 RT=-10.4 LB=29.2 RB=29.4rpm state=CleanReturn
+[2026-04-20 18:21:11.816] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:11.916] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:21:11.917] [info] [hw_system][pid_combined] #536 seg=4 yaw=136.06° err=-0.04° LT=-11.0 RT=-11.1 LB=29.0 RB=29.1rpm state=CleanReturn
+[2026-04-20 18:21:12.122] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:12.123] [info] [hw_system][pid_combined] #537 seg=4 yaw=136.21° err=-0.19° LT=-11.3 RT=-11.4 LB=29.0 RB=28.7rpm state=CleanReturn
+[2026-04-20 18:21:12.328] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:12.329] [info] [hw_system][pid_combined] #538 seg=4 yaw=136.43° err=-0.41° LT=-11.6 RT=-11.6 LB=28.4 RB=28.3rpm state=CleanReturn
+[2026-04-20 18:21:12.434] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:12.434] [info] [hw_system][pid_combined] #539 seg=4 yaw=136.59° err=-0.57° LT=-11.6 RT=-11.8 LB=28.3 RB=27.9rpm state=CleanReturn
+[2026-04-20 18:21:12.539] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:12.640] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:21:12.640] [info] [hw_system][pid_combined] #540 seg=4 yaw=136.85° err=-0.83° LT=-12.2 RT=-12.2 LB=27.9 RB=27.7rpm state=CleanReturn
+[2026-04-20 18:21:12.745] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:12.746] [info] [hw_system][pid_combined] #541 seg=4 yaw=137.01° err=-0.99° LT=-12.5 RT=-12.6 LB=27.5 RB=27.7rpm state=CleanReturn
+[2026-04-20 18:21:12.851] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:12.852] [info] [hw_system][pid_combined] #542 seg=4 yaw=137.15° err=-1.13° LT=-12.5 RT=-12.6 LB=27.7 RB=27.3rpm state=CleanReturn
+[2026-04-20 18:21:12.957] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:12.957] [info] [hw_system][pid_combined] #543 seg=4 yaw=137.38° err=-1.36° LT=-12.6 RT=-13.0 LB=26.7 RB=28.5rpm state=CleanReturn
+[2026-04-20 18:21:13.063] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:13.163] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:21:13.163] [info] [hw_system][pid_combined] #544 seg=4 yaw=138.41° err=-2.39° LT=-12.3 RT=-15.6 LB=27.0 RB=27.5rpm state=CleanReturn
+[2026-04-20 18:21:13.268] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:13.269] [info] [hw_system][pid_combined] #545 seg=4 yaw=138.51° err=-2.49° LT=-13.9 RT=-14.4 LB=24.8 RB=26.2rpm state=CleanReturn
+[2026-04-20 18:21:13.374] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:13.375] [info] [hw_system][pid_combined] #546 seg=4 yaw=137.65° err=-1.63° LT=-13.2 RT=-13.7 LB=26.3 RB=24.9rpm state=CleanReturn
+[2026-04-20 18:21:13.480] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:13.481] [info] [hw_system][pid_combined] #547 seg=4 yaw=137.78° err=-1.76° LT=-12.6 RT=-13.6 LB=26.9 RB=24.4rpm state=CleanReturn
+[2026-04-20 18:21:13.586] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:13.686] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:21:13.687] [info] [hw_system][pid_combined] #548 seg=4 yaw=137.82° err=-1.80° LT=-13.7 RT=-13.8 LB=27.1 RB=26.4rpm state=CleanReturn
+[2026-04-20 18:21:13.792] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:13.792] [info] [hw_system][pid_combined] #549 seg=4 yaw=138.50° err=-2.48° LT=-15.2 RT=-14.8 LB=26.2 RB=25.6rpm state=CleanReturn
+[2026-04-20 18:21:13.897] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:13.898] [info] [hw_system][pid_combined] #550 seg=4 yaw=139.08° err=-3.05° LT=-16.0 RT=-15.1 LB=25.3 RB=24.5rpm state=CleanReturn
+[2026-04-20 18:21:14.103] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:14.104] [info] [hw_system][pid_combined] #551 seg=4 yaw=138.99° err=-2.97° LT=-14.5 RT=-15.8 LB=24.5 RB=23.7rpm state=CleanReturn
+[2026-04-20 18:21:14.209] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+^X[2026-04-20 18:21:14.309] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:21:14.310] [info] [hw_system][pid_combined] #552 seg=4 yaw=136.95° err=-0.93° LT=-10.0 RT=-13.6 LB=26.4 RB=25.5rpm state=CleanReturn
+[2026-04-20 18:21:14.415] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:14.415] [info] [hw_system][pid_combined] #553 seg=4 yaw=136.86° err=-0.84° LT=-10.1 RT=-12.6 LB=27.6 RB=28.9rpm state=CleanReturn
+[2026-04-20 18:21:14.621] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:14.621] [info] [hw_system][pid_combined] #554 seg=4 yaw=136.57° err=-0.54° LT=-11.6 RT=-12.1 LB=28.1 RB=29.6rpm state=CleanReturn
+[2026-04-20 18:21:14.727] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:14.727] [info] [hw_system][pid_combined] #555 seg=4 yaw=136.48° err=-0.46° LT=-11.5 RT=-12.4 LB=27.9 RB=30.9rpm state=CleanReturn
+[2026-04-20 18:21:14.832] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=45
+[2026-04-20 18:21:14.932] [info] [BMS] 帧接收成功 attempt=1/1 rx_bytes=23
+[2026-04-20 18:21:14.933] [info] [hw_system][pid_combined] #556 seg=4 yaw=136.96° err=-0.93° LT=-11.6 RT=-12.6 LB=27.6 RB=28.8rpm state=CleanReturn

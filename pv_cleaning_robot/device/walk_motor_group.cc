@@ -467,7 +467,7 @@ void WalkMotorGroup::update(float yaw_deg) {
             float upper_spd = correction;  // 上轨修正量
             float lower_spd = correction;  // 下轨修正量（与上轨同号才能产生差速，因 base 已取反）
             float lt = clamp_rpm(base_lt_rpm_ + upper_spd);
-            float rt = clamp_rpm(base_rt_rpm_ + upper_spd);   // 与 lt 同向，非 - correction
+            float rt = clamp_rpm(base_rt_rpm_ + upper_spd);  // 与 lt 同向，非 - correction
             float lb = clamp_rpm(-base_lt_rpm_ + lower_spd);  // 非 -lt：base 取反，correction 同号
             float rb = clamp_rpm(-base_rt_rpm_ + lower_spd);  // 同理
             ctrl = protocol::WalkMotorCanCodec::encode_group_speed(id_base_, lt, rt, lb, rb);
