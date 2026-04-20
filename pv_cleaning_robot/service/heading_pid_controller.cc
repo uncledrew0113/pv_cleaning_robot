@@ -44,17 +44,24 @@ float HeadingPidController::compute(float yaw_deg, float dt_s) {
 
     float err = norm_angle(target_ - yaw_deg);
 
-    // 积分（带限幅；死区内也累积，避免退出死区时出现积分滞后）
-    integral_ += err * dt_s;
-    integral_ = clamp(integral_, -params_.integral_limit, params_.integral_limit);
+    // Fix 1：误差过零（航向越过目标）时清零积分，防止收敛阶段累积的正/负积分
+    // 在系统越过目标后继续施加错误方向的纠偏力（积分超调/windup）。
+    // 条件：prev_err_ 与 err 异号，且两者均不为 0（排除初始状态）。
+    if (prev_err_ * err < 0.0f)
+        integral_ = 0.0f;
 
-    // 微分
+    // 微分（先计算，prev_err_ 更新前使用旧值；死区内也更新，确保退出死区时导数平滑）
     float derivative = (dt_s > 0.0f) ? (err - prev_err_) / dt_s : 0.0f;
-    prev_err_ = err;  // 死区内也更新，确保退出死区时导数平滑
+    prev_err_ = err;
 
-    // 死区：|err| ≤ deadband_deg 时抑制输出
+    // Fix 2：死区内不累积积分，防止在死区附近长期停留时产生积分饱和。
+    // 退出死区时导数仍然平滑（prev_err_ 在上方已更新）。
     if (params_.deadband_deg > 0.0f && std::abs(err) <= params_.deadband_deg)
         return 0.0f;
+
+    // 积分（带限幅；仅在死区外且误差未过零时累积）
+    integral_ += err * dt_s;
+    integral_ = clamp(integral_, -params_.integral_limit, params_.integral_limit);
 
     float output = params_.kp * err + params_.ki * integral_ + params_.kd * derivative;
     return clamp(output, -params_.max_output, params_.max_output);

@@ -143,7 +143,52 @@ TEST_CASE("HeadingPidController: 积分限幅", "[service][heading_pid]") {
     REQUIRE(c == Approx(-10.0f).margin(0.5f));
 }
 
-// ── 死区（Deadband）────────────────────────────────────────────────────────
+// ── 新增：积分 Anti-Windup 行为验证 ──────────────────────────────────────────
+
+TEST_CASE("HeadingPidController: 死区内不累积积分（Fix 2）", "[service][heading_pid]") {
+    HeadingPidController::Params p;
+    p.kp = 0.0f; p.ki = 1.0f; p.kd = 0.0f;
+    p.max_output = 1000.0f; p.integral_limit = 1000.0f;
+    p.deadband_deg = 2.0f;
+    HeadingPidController pid(p);
+    pid.enable(true);
+    pid.set_target(0.0f);
+
+    // 在死区内调用10次，误差=1° < 2°（死区内）
+    for (int i = 0; i < 10; ++i)
+        pid.compute(1.0f, 1.0f);  // err=-1°, 在死区内，积分不应累积
+
+    // 退出死区：err=-3°，如果积分为0，correction = ki*0 + kp*(-3) = 0
+    // 如果积分错误累积了 10 × (-1) × 1 = -10，则 correction = 1*(-10) = -10（会失败）
+    p.kp = 0.0f;  // 关掉 P 项，只看积分贡献
+    pid.set_params(p);
+    float c = pid.compute(3.0f, 0.0f);  // err=-3°（超出死区），dt=0，积分不再增加
+    // 积分应为 0（死区内未累积），correction = 0
+    REQUIRE(c == Approx(0.0f).margin(0.01f));
+}
+
+TEST_CASE("HeadingPidController: 误差过零时清零积分（Fix 1）", "[service][heading_pid]") {
+    HeadingPidController::Params p;
+    p.kp = 0.0f; p.ki = 1.0f; p.kd = 0.0f;
+    p.max_output = 1000.0f; p.integral_limit = 1000.0f;
+    HeadingPidController pid(p);
+    pid.enable(true);
+    pid.set_target(0.0f);
+
+    // 先积累正向积分（err > 0）
+    pid.compute(-5.0f, 1.0f);  // err = 0-(-5) = +5，积分 = +5
+    pid.compute(-5.0f, 1.0f);  // err = +5，积分 = +10
+
+    // 误差从正（+5）翻转为负（-5）：过零触发积分清零
+    float c = pid.compute(5.0f, 0.0f);  // err = 0-5 = -5（与前一帧+5异号）
+    // 积分应已清零，correction = ki*0 + kp*(-5) = 0（kp=0）
+    REQUIRE(c == Approx(0.0f).margin(0.01f));
+
+    // 再验证：过零后积分从0重新累积（1次 err=-5, dt=1s → integral=-5）
+    float c2 = pid.compute(5.0f, 1.0f);  // err=-5, no sign change, integral=-5
+    REQUIRE(c2 == Approx(-5.0f).margin(0.1f));
+}
+
 
 TEST_CASE("HeadingPidController: deadband=0 时行为不变", "[service][heading_pid]") {
     HeadingPidController::Params p = kp_only(2.0f);

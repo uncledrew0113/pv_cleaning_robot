@@ -25,12 +25,12 @@ class HeadingPidController {
    public:
     /// PID 调参（与原 WalkMotorGroup::HeadingPidParams 字段完全一致）
     struct Params {
-        float kp{0.5f};               ///< 比例系数
-        float ki{0.05f};              ///< 积分系数
-        float kd{0.1f};               ///< 微分系数
-        float max_output{30.0f};      ///< 最大差速输出（RPM），防止饱和
-        float integral_limit{20.0f};  ///< 积分限幅（RPM）
-        float deadband_deg{0.0f};     ///< 死区（°），|err| ≤ deadband_deg 时输出 0；0.0f = 关闭
+        float kp{1.5f};               ///< 比例系数；kp=1.5 在 err=2° 时输出 3 RPM，可抵消接缝处 ~3°/s 扰动
+        float ki{0.05f};              ///< 积分系数；配合符号翻转清零策略，用于消除稳态摩擦偏差
+        float kd{0.3f};               ///< 微分系数；提高对接缝冲击的预测阻尼（原 0.1 太弱）
+        float max_output{30.0f};      ///< 最大差速输出（RPM），防止饱和；测试时应改为 base_speed×50%
+        float integral_limit{5.0f};   ///< 积分限幅（RPM）；符号翻转清零后可降至 5，避免残余积分压制 P 项
+        float deadband_deg{0.5f};     ///< 死区（°），|err| ≤ deadband_deg 时输出 0 且不累积积分；0.0f = 关闭
     };
 
     /// 使用默认参数构造
@@ -56,6 +56,7 @@ class HeadingPidController {
 
     /// 计算差速修正值（RPM）。
     /// 首次调用时若尚未 set_target()，自动将当前 yaw 锁定为目标（保持直行）。
+    /// 积分抗饱和：误差过零（越过目标）时自动清零积分；死区内不累积积分。
     /// @param yaw_deg  当前航向角（来自 IMU，°）
     /// @param dt_s     控制周期（秒），≤0 时微分项置 0
     /// @return  差速修正量（RPM），未使能时始终返回 0.0f
