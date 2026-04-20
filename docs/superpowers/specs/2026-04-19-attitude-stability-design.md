@@ -190,48 +190,51 @@ device::WalkMotorGroup::SpeedCmd base_cmd_{};
 **`motion_service.cc` / `update()` 追加接缝状态机：**
 
 ```cpp
-// 接缝检测（陀螺仪角速度，rad/s → deg/s）
-// gyro[1] = Y轴角速度 = 横向倾斜率（上下边框高差方向，接缝穿越主要激发轴）
-// gyro[0] = X轴角速度 = 纵向倾斜率（前后轮高差方向，次要激发轴）
-const float lateral_rate_dps  = std::abs(imu_data.gyro[1]) * kRadToDeg;
-const float fore_aft_rate_dps = std::abs(imu_data.gyro[0]) * kRadToDeg;
-const bool  high_rate = (lateral_rate_dps  > cfg_.joint_detect_rate_dps ||
-                         fore_aft_rate_dps > cfg_.joint_detect_rate_dps);
+// 接缝状态机：仅在运动中且非 override 状态下激活
+if (is_moving() && !is_edge_override_active()) {
+    // 接缝检测（陀螺仪角速度，rad/s → deg/s）
+    // gyro[1] = Y轴角速度 = 横向倾斜率（上下边框高差方向，接缝穿越主要激发轴）
+    // gyro[0] = X轴角速度 = 纵向倾斜率（前后轮高差方向，次要激发轴）
+    const float lateral_rate_dps  = std::abs(imu_data.gyro[1]) * kRadToDeg;
+    const float fore_aft_rate_dps = std::abs(imu_data.gyro[0]) * kRadToDeg;
+    const bool  high_rate = (lateral_rate_dps  > cfg_.joint_detect_rate_dps ||
+                             fore_aft_rate_dps > cfg_.joint_detect_rate_dps);
 
-if (joint_state_ == JointState::kNormal) {
-    if (high_rate) {
-        if (++joint_trigger_cnt_ >= cfg_.joint_enter_ticks) {
-            joint_state_ = JointState::kCrossing;
+    if (joint_state_ == JointState::kNormal) {
+        if (high_rate) {
+            if (++joint_trigger_cnt_ >= cfg_.joint_enter_ticks) {
+                joint_state_ = JointState::kCrossing;
+                joint_trigger_cnt_ = 0;
+                // 按比例缩放四轮速度（保留符号，前进/返回均正确）
+                device::WalkMotorGroup::SpeedCmd sc = base_cmd_;
+                sc.lt_rpm *= cfg_.joint_speed_scale;
+                sc.rt_rpm *= cfg_.joint_speed_scale;
+                sc.lb_rpm *= cfg_.joint_speed_scale;
+                sc.rb_rpm *= cfg_.joint_speed_scale;
+                group_->set_speeds(sc);
+                // 扩大死区（复用现有 set_heading_pid_params() 接口，WalkMotorGroup 无需修改）
+                auto p = cfg_.pid;
+                p.deadband_deg *= cfg_.joint_deadband_scale;
+                group_->set_heading_pid_params(p);
+                spdlog::debug("[MotionService] joint crossing enter, rate={:.1f}/{:.1f} dps",
+                              lateral_rate_dps, fore_aft_rate_dps);
+            }
+        } else {
             joint_trigger_cnt_ = 0;
-            // 按比例缩放四轮速度（保留符号，前进/返回均正确）
-            device::WalkMotorGroup::SpeedCmd sc = base_cmd_;
-            sc.lt_rpm *= cfg_.joint_speed_scale;
-            sc.rt_rpm *= cfg_.joint_speed_scale;
-            sc.lb_rpm *= cfg_.joint_speed_scale;
-            sc.rb_rpm *= cfg_.joint_speed_scale;
-            group_->set_speeds(sc);
-            // 扩大死区
-            auto p = cfg_.pid;
-            p.deadband_deg *= cfg_.joint_deadband_scale;
-            group_->set_heading_pid_params(p);
-            spdlog::debug("[MotionService] joint crossing enter, rate={:.1f} dps",
-                          std::max(roll_rate_dps, pitch_rate_dps));
         }
-    } else {
-        joint_trigger_cnt_ = 0;
-    }
-} else {  // kCrossing
-    if (!high_rate) {
-        if (++joint_recovery_cnt_ >= cfg_.joint_recovery_ticks) {
-            joint_state_ = JointState::kNormal;
+    } else {  // kCrossing
+        if (!high_rate) {
+            if (++joint_recovery_cnt_ >= cfg_.joint_recovery_ticks) {
+                joint_state_ = JointState::kNormal;
+                joint_recovery_cnt_ = 0;
+                // 恢复原速和死区
+                group_->set_speeds(base_cmd_);
+                group_->set_heading_pid_params(cfg_.pid);
+                spdlog::debug("[MotionService] joint crossing exit");
+            }
+        } else {
             joint_recovery_cnt_ = 0;
-            // 恢复原速和死区
-            group_->set_speeds(base_cmd_);
-            group_->set_heading_pid_params(cfg_.pid);
-            spdlog::debug("[MotionService] joint crossing exit");
         }
-    } else {
-        joint_recovery_cnt_ = 0;
     }
 }
 ```
@@ -248,9 +251,9 @@ base_cmd_ = {-spd, -spd, +spd, +spd};
 
 ### 注意事项
 
-- 接缝状态机仅在 heading PID 使能且机器人运动时起效（`is_moving()` 判断防空转触发）
-- `emergency_override` 激活期间跳过接缝检测（已有 `is_override_active()` 判断）
-- `SpeedCmd` 带完整方向信息，前进/返回均可正确缩放，无需额外方向标志
+- `group_->set_speeds(sc)` 在状态**转换时调用一次**即可，`WalkMotorGroup` 会持续重播上一帧；无需每周期重复调用，避免命令队列堆积
+- `set_heading_pid_params()` 是热更新接口（`WalkMotorGroup` 已有），**不需要修改** `WalkMotorGroup` 源码
+- `SpeedCmd` 带完整4轮方向符号，前进（LT/RT正，LB/RB负）和返回（LT/RT负，LB/RB正）均可正确缩放
 
 ---
 
@@ -389,14 +392,21 @@ void FaultHandler::on_attitude_alert(const SafetyMonitor::AttitudeAlertEvent& e)
 
 | 文件 | 改动摘要 |
 |---|---|
-| `include/.../service/motion_service.h` | Config 新增 7 个字段；私有成员新增 JointState + 4 个变量 |
-| `.../service/motion_service.cc` | `update()` 增加倾斜补偿 + 接缝状态机；`start_*()` 记录 `base_cmd_` |
+| `include/.../service/motion_service.h` | Config 新增 7 个字段；私有成员新增 JointState + 4 个变量 + `SpeedCmd base_cmd_` |
+| `.../service/motion_service.cc` | `update()` 读完整 ImuData，增加倾斜补偿 + 接缝状态机；`start_*()` 记录 `base_cmd_` |
 | `include/.../middleware/safety_monitor.h` | 新增 `AttitudeConfig`、`AttitudeAlertEvent`；构造函数增加可选 imu；新增 `set_attitude_config()` |
-| `.../middleware/safety_monitor.cc` | 构造函数存储 imu；`monitor_loop()` 增加姿态检查 |
+| `.../middleware/safety_monitor.cc` | 构造函数存储 imu；`monitor_loop()` 增加姿态检查 + kWarn 限流 |
 | `include/.../app/fault_handler.h` | 新增 `on_attitude_alert()` 声明 |
 | `.../app/fault_handler.cc` | 新增 `AttitudeAlertEvent` 订阅和处理 |
-| `hw_test_config.json` | 新增 `motion` 和 `safety` 块 |
+| `config/hw_test_config.json` | 新增 `motion` 和 `safety` 配置块 |
 | `main.cc`（或测试入口） | SafetyMonitor 构造传入 imu 指针，读取新配置字段 |
+
+**不需要修改的文件（明确边界）：**
+
+| 文件 | 原因 |
+|---|---|
+| `service/heading_pid_controller.h/.cc` | PID 核心逻辑不变；死区通过 `set_params()` 热更新 |
+| `device/walk_motor_group.h/.cc` | 已有 `set_heading_pid_params()` 接口；接口签名 `update(float yaw_deg)` 不变 |
 
 ---
 
