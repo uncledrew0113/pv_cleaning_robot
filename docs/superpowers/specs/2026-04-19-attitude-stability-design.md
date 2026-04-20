@@ -1,8 +1,37 @@
 # 姿态稳定性增强设计文档
 
 **日期：** 2026-04-19  
+**修订：** 2026-04-20（PID 差速方向前置修正）  
 **状态：** 已确认  
 **范围：** 现有文件改动，不新增源文件
+
+---
+
+## 0. 前置修正（2026-04-20）
+
+### PID 差速方向错误
+
+在姿态稳定功能实现之前，发现原始 `walk_motor_group.cc` PID 差速方向有根本性错误。
+
+**错误原因：** 代码将纠偏误施加为**左右差速**（lt ≠ rt），而机器人物理约束要求 LT/RT 在同一上轨（上边框）、LB/RB 在同一下轨（下边框），同轨两轮必须同速，否则对轨道产生扭力。
+
+**正确模型：** 通过**上下轨差速**纠偏。
+
+| | 旧代码（错误）| 新代码（正确）|
+|---|---|---|
+| `rt` | `base_rt − correction` ❌ | `base_rt + correction` ✅ |
+| `lb` | `−lt` ❌ | `−base_lt + correction` ✅ |
+| `rb` | `−rt` ❌ | `−base_rt + correction` ✅ |
+
+**公式推导（正向，base = +spd，correction = +c 为偏左）：**
+- lt = rt = spd + c → 上轨加速
+- lb = rb = −spd + c → 下轨命令更少负 → 物理速度减慢
+- 上轨超前下轨 → CW 旋转 → yaw 增大 ✓
+
+**正向/返向无需区别对待：**  
+base 的正负已编码行走方向。同号 correction 在两方向均产生相同旋转角速度 `ω_z = −c/d`，无需反向。
+
+此修正已在 commit `0245fa76` 中完成，`walk_motor_group.cc` 已改动（见第 7 节更新）。
 
 ---
 
@@ -11,10 +40,10 @@
 ### 物理场景
 
 光伏清扫机器人采用**双轨四轮（类火车）**结构：
-- 左两轮（LT + LB）行驶于左侧光伏板边框轨道
-- 右两轮（RT + RB）行驶于右侧光伏板边框轨道
-- 上边框：凹槽轮 + 外侧导向轮（物理约束较强）
-- 下边框：平轮（无物理约束，仅靠摩擦力保持）
+- 上边框（上轨）：**LT + RT** 行驶于上侧光伏板边框轨道（凹槽轮 + 外侧导向轮，约束较强）
+- 下边框（下轨）：**LB + RB** 行驶于下侧光伏板边框轨道（平轮，无物理约束，仅靠摩擦力保持）
+- LB/RB 与 LT/RT 安装方向相反（motor 命令符号相反，物理运动方向相同）
+- 同轨两轮（LT=RT、LB=RB）物理上强约束相同速度，PID 纠偏只能通过**上下轨差速**实现
 
 光伏板之间由铁条连接，由于安装误差，导致板间接缝处存在上下高差，机器人过缝时横滚角（roll）、俯仰角（pitch）、航向角（yaw）均会发生变化。
 
@@ -45,14 +74,18 @@ MotionService::update()  [50Hz, SCHED_FIFO 80, motion_service.cc]
 WalkMotorGroup::update(yaw_deg)  [walk_motor_group.cc]
   └─ HeadingPidController::compute()
        → correction
-       → lt = base_lt_rpm_ + correction
-       → rt = base_rt_rpm_ - correction
-       → lb = -lt, rb = -rt              ← LB/RB 始终是 LT/RT 的镜像取反
+       → lt = base_lt_rpm_ + correction   ← 上轨左轮
+       → rt = base_rt_rpm_ + correction   ← 上轨右轮（与lt同号，上下轨差速纠偏）
+       → lb = -base_lt_rpm_ + correction  ← 下轨左轮（base取反，correction同号）
+       → rb = -base_rt_rpm_ + correction  ← 下轨右轮（已在commit 0245fa76修正）
 ```
+
+> **物理意义**：correction > 0（偏左）→ 上轨加速、下轨减速 → 顺时针旋转 → yaw 增大 ✓  
+> **注意**：`lb ≠ -lt`；旧错误公式 `lb = -lt = -(base+c) = -base-c` 让 correction 也取反，无差速效果。
 
 > **架构说明**：`WalkMotorGroup` 内部只存储 `base_lt_rpm_` / `base_rt_rpm_`（LB/RB 在 update() 内推导为取反），接缝降速需由 `MotionService` 持有完整 `SpeedCmd base_cmd_`（含4轮方向符号），并在状态转换时调用 `group_->set_speeds(scaled_cmd)` 一次即可，WalkMotorGroup 会自动持续重播该帧。
 
-**`HeadingPidController` 和 `WalkMotorGroup` 无需修改**——`set_heading_pid_params()` 已支持热更新所有参数含死区，供接缝穿越时动态调整。
+**`HeadingPidController` 无需修改**——`set_heading_pid_params()` 已支持热更新所有参数含死区，供接缝穿越时动态调整。`walk_motor_group.cc` 已在 commit `0245fa76` 完成 PID 差速公式修正（上下轨差速）。
 
 ---
 
@@ -406,7 +439,8 @@ void FaultHandler::on_attitude_alert(const SafetyMonitor::AttitudeAlertEvent& e)
 | 文件 | 原因 |
 |---|---|
 | `service/heading_pid_controller.h/.cc` | PID 核心逻辑不变；死区通过 `set_params()` 热更新 |
-| `device/walk_motor_group.h/.cc` | 已有 `set_heading_pid_params()` 接口；接口签名 `update(float yaw_deg)` 不变 |
+
+> ⚠ `device/walk_motor_group.h/.cc` 已在 commit `0245fa76` 修改（PID差速从左右轨改为上下轨），不在本次姿态稳定功能的修改范围内，但已完成。
 
 ---
 
