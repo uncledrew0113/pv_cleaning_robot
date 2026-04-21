@@ -38,11 +38,9 @@ bool MotionService::start_cleaning() {
     if (group_->set_mode_all(protocol::WalkMotorMode::SPEED) != device::DeviceError::OK)
         return false;
 
-    // 如果 heading PID 使能，以当前 IMU yaw 为目标航向
+    // 如果 heading PID 使能，设置参数并启用（速率 PID，无需锁定航向目标）
     if (cfg_.heading_pid_en) {
         group_->set_heading_pid_params(cfg_.pid);
-        const float cur_yaw = imu_ ? imu_->get_latest().yaw_deg : 0.0f;
-        group_->set_target_heading(cur_yaw);
         group_->enable_heading_control(true);
     }
 
@@ -72,18 +70,11 @@ bool MotionService::start_returning() {
     brush_->set_rpm(-static_cast<float>(cfg_.return_brush_rpm));
     brush_->start();
 
-    // 返程保持航向 PID，但配合自适应目标跟踪（target_tracking_alpha < 1.0）：
-    //   - 以当前 yaw（正向终点）为初始目标，PID 在目标自适应跟踪下不再以固定偏移值对抗轨道复位力
-    //   - 轨道几何引起的慢速 yaw 变化（τ < 2s）：目标自动跟踪 → PID 误差小 → 纠偏力弱 → 不脱轨
-    //   - 突发偏转（出轨等异常）：目标跟不上 → PID 大力纠正 → 保证安全
-    // 根因分析（doc/pid.txt）：
-    //   旧做法以正向终点 yaw（~141°）为固定返程目标，轨道自然将 yaw 压回 134°，
-    //   PID 对抗轨道复位力产生 20+ RPM 差速（LT≈-9, LB≈+30）→ 脱轨。
-    //   自适应跟踪（alpha=0.99）下稳态误差 ≤ 0.6°，纠偏力 ≤ 0.9 RPM，彻底解决此问题。
+    // 返程保持航向速率 PID：目标角速度始终为 0，正返程完全对称，无需锁定航向目标。
+    //   轨道几何慢速 yaw 变化（omega_z < deadband）：死区过滤，不纠偏 → 不脱轨
+    //   突发偏转（出轨等异常）：omega_z 大 → PID 立即响应纠正 → 保证安全
     if (cfg_.heading_pid_en) {
-        const float cur_yaw = imu_ ? imu_->get_latest().yaw_deg : 0.0f;
-        group_->set_target_heading(cur_yaw);
-        group_->enable_heading_control(true);
+        group_->enable_heading_control(true);  // 速率 PID，无需锁定航向目标
     }
 
     // 先使能，再切换速度环（M1502E：ENABLE 帧覆盖模式位，Q5 修复）
@@ -106,12 +97,10 @@ bool MotionService::start_returning_no_brush() {
     brush_->stop();
     group_->clear_override();
 
-    // 保持航向 PID（与 start_returning() 一致，自适应目标跟踪；
-    // 原 Q9 修复"保持 PID"依然正确，但原因更新为：靠自适应跟踪而非固定目标）
+    // 保持航向速率 PID（速率 PID，无需锁定航向目标；
+    // 正返程完全对称，omega_z 死区过滤轨道几何漂移，突发偏转立即响应）
     if (cfg_.heading_pid_en) {
-        const float cur_yaw = imu_ ? imu_->get_latest().yaw_deg : 0.0f;
-        group_->set_target_heading(cur_yaw);
-        group_->enable_heading_control(true);
+        group_->enable_heading_control(true);  // 速率 PID，无需锁定航向目标
     }
 
     // 先使能，再切换速度环（M1502E：ENABLE 帧覆盖模式位，Q5 修复）
@@ -187,12 +176,21 @@ void MotionService::update() {
         filtered_yaw_ = 0.8f * filtered_yaw_ + 0.2f * raw_yaw;
     }
 
-    // 传入 yaw，由 WalkMotorGroup::update() 完成：
+    // Z 轴角速度（rad/s → deg/s），EMA 低通滤波抑制噪声
+    const float raw_omega_z = imu_ ? (imu_->get_latest().gyro[2] * (180.0f / 3.14159265f)) : 0.0f;
+    if (!filtered_omega_z_inited_) {
+        filtered_omega_z_ = raw_omega_z;
+        filtered_omega_z_inited_ = true;
+    } else {
+        filtered_omega_z_ = 0.8f * filtered_omega_z_ + 0.2f * raw_omega_z;
+    }
+
+    // 传入 yaw 和 omega_z，由 WalkMotorGroup::update() 完成：
     //   1. 更新 online 超时状态
     //   2. 排干命令队列（消费 set_speeds/clear_override 投递的 Cmd）
     //   3. override 激活时跳过重发（不干扰紧急停车帧）
     //   4. 若 heading_ctrl_en_，计算 PID 差速修正并发帧
-    group_->update(filtered_yaw_);
+    group_->update(filtered_yaw_, filtered_omega_z_);
 
     // 注意：brush_->update() 已移到 bms_exec 线程（SCHED_OTHER, 500ms）
     // 原因：Modbus RTU 读取寄存器需 5~10ms 阻塞 I/O，放在 walk_ctrl(FIFO 80, 20ms)

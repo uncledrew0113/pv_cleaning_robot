@@ -119,15 +119,15 @@ TEST_CASE("[hw_sweep][with_pid] 带 PID 全扫描序列", "[hw_sweep][with_pid]"
     REQUIRE(group.set_mode_all(protocol::WalkMotorMode::SPEED) == device::DeviceError::OK);
     std::this_thread::sleep_for(200ms);  // 等待电机切换完成
 
-    // ── 4. 配置航向 PID，锁定当前 yaw 为目标航向 ─────────────────────────
+    // ── 4. 配置航向速率 PID（速率 PID，无需锁定航向目标）─────────────────────
     device::WalkMotorGroup::HeadingPidParams pid;
     pid.kp = 0.5f;
     pid.ki = 0.05f;
     pid.kd = 0.1f;
     pid.max_output = 30.0f;
     pid.integral_limit = 20.0f;
+    pid.deadband_rate_dps = 2.0f;
     group.set_heading_pid_params(pid);
-    group.set_target_heading(init_yaw);
     group.enable_heading_control(true);
 
     // ── 5. 入队清扫速度（前进：LT=+spd, RT=+spd, LB=-spd, RB=-spd）────────
@@ -135,15 +135,26 @@ TEST_CASE("[hw_sweep][with_pid] 带 PID 全扫描序列", "[hw_sweep][with_pid]"
     REQUIRE(group.set_speeds(kp.sweep_rpm, kp.sweep_rpm, -kp.sweep_rpm, -kp.sweep_rpm) ==
             device::DeviceError::OK);
     spdlog::info(
-        "[hw_sweep][with_pid] 开始清扫：{:.1f} RPM，PID 目标航向 {:.2f}°", kp.sweep_rpm, init_yaw);
+        "[hw_sweep][with_pid] 开始清扫：{:.1f} RPM，速率 PID 已使能（deadband={:.1f}°/s）",
+        kp.sweep_rpm,
+        pid.deadband_rate_dps);
 
     // ── 6. 运行 update() 循环（60 次 × 50ms = 3 秒）──────────────────────
     float filtered_yaw = init_yaw;
+    float filtered_omega_z = 0.0f;
+    bool filtered_omega_z_inited = false;
     for (int i = 0; i < sweep_loops(); ++i) {
         const float raw_yaw = imu.get_latest().yaw_deg;
+        const float raw_omega_z = imu.get_latest().gyro[2] * (180.0f / 3.14159265f);
         // EMA α=0.8，τ≈100ms @50ms 周期，与生产 MotionService::update() 完全一致
         filtered_yaw = 0.8f * filtered_yaw + 0.2f * raw_yaw;
-        group.update(filtered_yaw);
+        if (!filtered_omega_z_inited) {
+            filtered_omega_z = raw_omega_z;
+            filtered_omega_z_inited = true;
+        } else {
+            filtered_omega_z = 0.8f * filtered_omega_z + 0.2f * raw_omega_z;
+        }
+        group.update(filtered_yaw, filtered_omega_z);
         std::this_thread::sleep_for(std::chrono::milliseconds(kp.loop_period_ms));
 
         // 约 1 秒后检查所有轮在线状态
@@ -189,7 +200,7 @@ TEST_CASE("[hw_sweep][with_pid] 带 PID 全扫描序列", "[hw_sweep][with_pid]"
         REQUIRE(group.is_override_active());
 
         group.clear_override();      // 投递 CLEAR_OVERRIDE 到命令队列
-        group.update(filtered_yaw);  // update() step2 消费 CLEAR_OVERRIDE → store(false)
+        group.update(filtered_yaw, filtered_omega_z);  // update() step2 消费 CLEAR_OVERRIDE → store(false)
 
         CHECK_FALSE(group.is_override_active());
         spdlog::info(

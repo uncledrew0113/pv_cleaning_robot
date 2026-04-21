@@ -31,7 +31,6 @@ struct MockWalkMotorGroup {
     std::vector<std::tuple<float, float, float, float>> set_speeds_calls;
     float last_uniform_rpm{0.0f};
     int set_uniform_count{0};
-    float last_target_heading{0.0f};
     bool heading_ctrl_en{false};
 
     robot::device::DeviceError open() {
@@ -80,9 +79,6 @@ struct MockWalkMotorGroup {
     void enable_heading_control(bool en) {
         heading_ctrl_en = en;
     }
-    void set_target_heading(float yaw) {
-        last_target_heading = yaw;
-    }
 
     robot::device::WalkMotorGroup::GroupStatus get_group_status() const {
         return status_result;
@@ -91,5 +87,5 @@ struct MockWalkMotorGroup {
         return {};
     }
 
-    void update(float = 0.0f) {}
+    void update(float = 0.0f, float = 0.0f) {}
 };

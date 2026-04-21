@@ -137,10 +137,8 @@ class WalkMotorGroup {
     // ── 航向 PID 控制 ────────────────────────────────────────────────────
     /// 设置航向 PID 参数（默认已有合理初值）
     void set_heading_pid_params(const HeadingPidParams& p);
-    /// 使能/禁用航向 PID（set_speeds 设定目标速度后，update(yaw) 自动补偿差速）
+    /// 使能/禁用航向 PID（set_speeds 设定目标速度后，update(yaw, omega_z) 自动补偿差速）
     void enable_heading_control(bool en);
-    /// 更新航向目标（首次调用时锁定当前航向为目标）
-    void set_target_heading(float yaw_deg);
 
     // ── 边缘紧急覆盖（优先级最高，立即生效）────────────────────────────
     /// 立即发送停止或反转帧，并暂停心跳重发直到 clear_override() + update()
@@ -160,9 +158,11 @@ class WalkMotorGroup {
     GroupDiagnostics get_group_diagnostics() const;
 
     // ── 周期心跳（建议由控制线程调用，50 ms）─────────────────────────
-    /// 重发当前设定值（含 PID 差速补偿）；轮询 online 超时状态；
-    /// @param yaw_deg  当前航向角（来自 IMU），仅在 PID 使能时有效
-    void update(float yaw_deg = 0.0f);
+    /// 心跳帧重发 + PID 差速控制（由 walk_ctrl 线程每 20ms 调用一次）。
+    /// @param yaw_deg      当前 IMU 航向角（°），仅用于日志和诊断
+    /// @param omega_z_dps  当前 IMU Z 轴角速度（°/s），用于速率 PID 计算；
+    ///                     正值 = CCW（yaw 增大），负值 = CW（yaw 减小）
+    void update(float yaw_deg = 0.0f, float omega_z_dps = 0.0f);
 
    private:
     // ── 命令队列（Command Queue）─────────────────────────────────────────

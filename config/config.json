@@ -78,13 +78,12 @@
     "edge_reverse_rpm": 0.0,
     "heading_pid_en":   true,
     "pid": {
-      "kp":                     1.5,
-      "ki":                     0.05,
-      "kd":                     0.3,
+      "kp":                     2.0,
+      "ki":                     0.0,
+      "kd":                     0.0,
       "max_output":             30.0,
-      "integral_limit":         5.0,
-      "deadband_deg":           0.5,
-      "target_tracking_alpha":  0.99
+      "integral_limit":         10.0,
+      "deadband_rate_dps":      2.0
     },
     "battery_full_soc": 95.0,
     "battery_low_soc":  15.0,

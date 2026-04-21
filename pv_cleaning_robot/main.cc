@@ -285,8 +285,7 @@ int main() {
     motion_cfg.pid.kd                    = cfg.get<float>("robot.pid.kd",                    0.3f);
     motion_cfg.pid.max_output            = cfg.get<float>("robot.pid.max_output",            30.0f);
     motion_cfg.pid.integral_limit        = cfg.get<float>("robot.pid.integral_limit",        5.0f);
-    motion_cfg.pid.deadband_deg          = cfg.get<float>("robot.pid.deadband_deg",          0.5f);
-    motion_cfg.pid.target_tracking_alpha = cfg.get<float>("robot.pid.target_tracking_alpha", 1.0f);
+    motion_cfg.pid.deadband_rate_dps     = cfg.get<float>("robot.pid.deadband_rate_dps",     2.0f);
 
     auto motion = std::make_shared<robot::service::MotionService>(
         walk_group, brush_motor, imu, event_bus, motion_cfg);

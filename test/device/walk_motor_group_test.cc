@@ -281,7 +281,7 @@ TEST_CASE("设备层WalkMotorGroup - HeadingPidParams 是 HeadingPidController::
     SUCCEED("编译期类型别名验证通过");
 }
 
-TEST_CASE("设备层WalkMotorGroup - update() PID 使能时上下轨差速（偏右 yaw=10°→上轨减速/下轨加速）",
+TEST_CASE("设备层WalkMotorGroup - update() PID 使能时上下轨差速（omega_z=+10°/s CCW→上轨减速/下轨加速）",
           "[device][walk_motor_group]") {
     auto bus = std::make_shared<MockCanBus>();
     device::WalkMotorGroup group(bus, 1u);
@@ -290,15 +290,15 @@ TEST_CASE("设备层WalkMotorGroup - update() PID 使能时上下轨差速（偏
     // 建立基础匀速（前进 100 RPM），enqueue 到命令队列
     group.set_speed_uniform(100.0f);
     group.enable_heading_control(true);
-    group.set_target_heading(0.0f);  // 目标航向 0°
 
-    // 第一次 update：消费队列，建立 base_lt/rt=100，yaw=0 无偏差 → 无差速
-    group.update(0.0f);
+    // 第一次 update：消费队列，建立 base_lt/rt=100，omega_z=0 无旋转 → 死区内无差速
+    group.update(0.0f, 0.0f);
     bus->sent_frames.clear();
 
-    // 第二次 update：yaw=10°（偏右，yaw > target），err=-10 → correction<0
+    // 第二次 update：omega_z=+10°/s（CCW，超出 deadband=2°/s）
+    // err = -10 → correction = kp * (-10) < 0
     // 预期：上轨（LT=RT）均匀减速，下轨（LB=RB）均匀加速（物理速度更大）
-    group.update(10.0f);
+    group.update(10.0f, 10.0f);
 
     REQUIRE_FALSE(bus->sent_frames.empty());
     const auto& f = bus->sent_frames.back();
@@ -327,11 +327,11 @@ TEST_CASE("设备层WalkMotorGroup - update() PID 禁用时无差速（yaw=30°�
     group.enable_heading_control(false);  // 明确禁用 PID（默认亦禁用）
 
     // 消费队列，建立 base_lt/rt=100，last_ctrl_frame_ 为匀速帧
-    group.update(0.0f);
+    group.update(0.0f, 0.0f);
     bus->sent_frames.clear();
 
-    // yaw=30°，但 PID 禁用 → last_ctrl_frame_ 原样重发，LT==RT
-    group.update(30.0f);
+    // omega_z=30°/s，但 PID 禁用 → last_ctrl_frame_ 原样重发，LT==RT
+    group.update(30.0f, 30.0f);
 
     REQUIRE_FALSE(bus->sent_frames.empty());
     const auto& f = bus->sent_frames.back();

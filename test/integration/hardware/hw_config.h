@@ -99,7 +99,7 @@ struct HwParams {
         float kd{0.1f};
         float max_output{30.0f};
         float integral_limit{20.0f};
-        float deadband_deg{0.0f};
+        float deadband_rate_dps{2.0f};
     } pid;
 };
 
@@ -161,7 +161,7 @@ inline HwParams load_hw_test_config() {
         p.pid.kd = cfg.get<float>("pid.kd", p.pid.kd);
         p.pid.max_output = cfg.get<float>("pid.max_output", p.pid.max_output);
         p.pid.integral_limit = cfg.get<float>("pid.integral_limit", p.pid.integral_limit);
-        p.pid.deadband_deg = cfg.get<float>("pid.deadband_deg", p.pid.deadband_deg);
+        p.pid.deadband_rate_dps = cfg.get<float>("pid.deadband_rate_dps", p.pid.deadband_rate_dps);
         spdlog::debug("[hw_config] Loaded config: {}", path);
     } catch (const std::exception& e) {
         spdlog::warn("[hw_config] Exception loading config {}: {} — using built-in defaults",
@@ -266,7 +266,7 @@ struct FullSystemFixture : DeviceFixture {
         motion_cfg.pid.kd = p.pid.kd;
         motion_cfg.pid.max_output = p.pid.max_output;
         motion_cfg.pid.integral_limit = p.pid.integral_limit;
-        motion_cfg.pid.deadband_deg = p.pid.deadband_deg;
+        motion_cfg.pid.deadband_rate_dps = p.pid.deadband_rate_dps;
 
         motion =
             std::make_shared<service::MotionService>(walk_group, brush, imu, event_bus, motion_cfg);

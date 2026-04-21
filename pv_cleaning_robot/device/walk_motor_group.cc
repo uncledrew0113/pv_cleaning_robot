@@ -280,11 +280,6 @@ void WalkMotorGroup::enable_heading_control(bool en) {
     pid_ctrl_.enable(en);
 }
 
-void WalkMotorGroup::set_target_heading(float yaw_deg) {
-    std::lock_guard<hal::PiMutex> lk(mtx_);
-    pid_ctrl_.set_target(yaw_deg);
-}
-
 // ── 边缘紧急覆盖 ──────────────────────────────────────────────────────────────
 
 DeviceError WalkMotorGroup::emergency_override(float reverse_rpm) {
@@ -371,7 +366,7 @@ WalkMotorGroup::GroupDiagnostics WalkMotorGroup::get_group_diagnostics() const {
 
 // ── 周期心跳 ─────────────────────────────────────────────────────────────────
 
-void WalkMotorGroup::update(float yaw_deg) {
+void WalkMotorGroup::update(float yaw_deg, float omega_z_dps) {
     if (!can_->is_open())
         return;
     auto now = std::chrono::steady_clock::now();
@@ -458,10 +453,11 @@ void WalkMotorGroup::update(float yaw_deg) {
         has = has_ctrl_frame_;
 
         if (has && pid_ctrl_.is_enabled()) {
-            float correction = pid_ctrl_.compute(yaw_deg, dt_s);
-            // 上下轨差速纠偏（CW+ 约定，upper = 上边框轨道 LT+RT，lower = 下边框轨道 LB+RB）：
-            //   correction > 0 → 偏左（yaw < target）→ 上轨加速/下轨减速 → 机器人向右纠偏
-            //   correction < 0 → 偏右（yaw > target）→ 上轨减速/下轨加速 → 机器人向左纠偏
+            float correction = pid_ctrl_.compute(omega_z_dps, dt_s);
+            // 上下轨差速纠偏（omega_z 约定，upper = 上边框轨道 LT+RT，lower = 下边框轨道 LB+RB）：
+            //   correction > 0 → omega_z < 0（CW，yaw 减小）→ 上轨加速/下轨减速 → CCW 纠偏 ✓
+            //   correction < 0 → omega_z > 0（CCW，yaw 增大）→ 上轨减速/下轨加速 → CW 纠偏 ✓
+            //   正返程完全对称，无需区分处理。
             // 注：同一轨道两轮必须同速（物理硬约束），因此 lt==rt、lb==rb；
             //     lb 不等于 -lt：base 取反体现反向安装，correction 符号相同以实现上下差速。
             float upper_spd = correction;  // 上轨修正量

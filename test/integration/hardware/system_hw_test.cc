@@ -613,11 +613,11 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + PID 控制 + yaw 指�
     spdlog::warn("[hw_system][pid_combined] ⚠ 机器人将运动 {:.1f} 趟（{} 段）！",
                  f.p.combined_passes,
                  static_cast<int>(passes_half));
-    spdlog::warn("[hw_system][pid_combined] PID kp={:.2f} ki={:.3f} kd={:.3f} deadband={:.1f}°",
+    spdlog::warn("[hw_system][pid_combined] PID kp={:.2f} ki={:.3f} kd={:.3f} deadband={:.1f}°/s",
                  f.p.pid.kp,
                  f.p.pid.ki,
                  f.p.pid.kd,
-                 f.p.pid.deadband_deg);
+                 f.p.pid.deadband_rate_dps);
     spdlog::warn("[hw_system][pid_combined] 健康数据: {}", f.p.health_jsonl_path);
     spdlog::warn("[hw_system][pid_combined] PID 指标: {}", f.p.pid_jsonl_path);
     spdlog::warn("[hw_system][pid_combined] 最大漂移警告阈值: {:.1f}°", f.p.pid_max_drift_deg);
@@ -681,6 +681,7 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + PID 控制 + yaw 指�
         auto gd = f.walk_group->get_group_diagnostics();
         auto imu = f.imu->get_latest();
         const float yaw = imu.yaw_deg;
+        const float omega_z_dps = imu.gyro[2] * (180.0f / 3.14159265f);
         const float yaw_err = norm_angle(target_yaw - yaw);
         const float drift = std::abs(yaw_err);
         if (drift > max_drift_all)
@@ -695,17 +696,16 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + PID 控制 + yaw 指�
         rec["seg"] = cur_seg;
         rec["state"] = f.fsm->current_state();
         rec["yaw"] = std::round(yaw * 100.0f) / 100.0f;
-        rec["target_yaw"] = std::round(target_yaw * 100.0f) / 100.0f;
-        rec["yaw_err"] = std::round(yaw_err * 100.0f) / 100.0f;
+        rec["omega_z"] = std::round(omega_z_dps * 100.0f) / 100.0f;
         pid_ofs << rec.dump() << '\n';
 
         spdlog::info(
-            "[hw_system][pid_combined] #{} seg={} yaw={:.2f}° err={:.2f}° "
+            "[hw_system][pid_combined] #{} seg={} yaw={:.2f}° omega_z={:.2f}°/s "
             "LT={:.1f} RT={:.1f} LB={:.1f} RB={:.1f}rpm state={}",
             total_health_records,
             cur_seg,
             yaw,
-            yaw_err,
+            omega_z_dps,
             gd.wheel[0].speed_rpm,
             gd.wheel[1].speed_rpm,
             gd.wheel[2].speed_rpm,
@@ -800,7 +800,7 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + PID 控制 + yaw 指�
     final_sum["kp"] = f.p.pid.kp;
     final_sum["ki"] = f.p.pid.ki;
     final_sum["kd"] = f.p.pid.kd;
-    final_sum["deadband_deg"] = f.p.pid.deadband_deg;
+    final_sum["deadband_rate_dps"] = f.p.pid.deadband_rate_dps;
     pid_ofs << final_sum.dump() << '\n';
     pid_ofs.close();
 

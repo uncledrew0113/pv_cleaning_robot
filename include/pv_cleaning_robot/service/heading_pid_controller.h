@@ -2,9 +2,9 @@
  * @Author: UncleDrew
  * @Date: 2026-03-31 10:54:14
  * @LastEditors: UncleDrew
- * @LastEditTime: 2026-03-31 11:03:49
+ * @LastEditTime: 2026-04-21 00:00:00
  * @FilePath: /pv_cleaning_robot/include/pv_cleaning_robot/service/heading_pid_controller.h
- * @Description:
+ * @Description: 基于 IMU 陀螺仪 Z 轴角速度的航向速率 PID 控制器
  *
  * Copyright (c) 2026 by UncleDrew, All Rights Reserved.
  */
@@ -12,37 +12,39 @@
 
 namespace robot::service {
 
-/// 航向 PID 控制器：根据当前航向与目标航向误差计算差速修正量（RPM）。
+/// 航向速率 PID 控制器：基于 IMU 陀螺仪 Z 轴角速度（deg/s）计算差速修正量（RPM）。
+///
+/// **设计原理（角速度控制 vs 绝对航向控制）：**
+///
+/// 旧方案（绝对航向）：error = target_yaw - current_yaw
+///   缺陷：轨道几何强制使 yaw 沿轨道自然变化 ~10°，固定目标与轨道物理对抗，
+///   导致返程 PID 持续输出最大差速，将机器人推出轨道。
+///
+/// 新方案（角速度控制）：error = 0 - omega_z = -omega_z
+///   原理：机器人在直线轨道上行走时不应旋转（omega_z ≈ 0）。
+///   - 轨道几何慢速变化 → omega_z < deadband_rate_dps → 不纠偏（物理自然复位）
+///   - 突发偏转/出轨 → omega_z 大 → 立即纠偏
+///   - 不需要初始化参考航向，正返程完全对称，无需区分处理。
+///
+/// **差速约定（IMU 右手法则，Z 向上，Y 为行进方向）：**
+///   omega_z > 0（CCW，yaw 增大）→ correction < 0 → 下轨加速/上轨减速 → CW 纠偏 ✓
+///   omega_z < 0（CW，yaw 减小）→ correction > 0 → 上轨加速/下轨减速 → CCW 纠偏 ✓
+///   正返程均适用（公式对称）。
 ///
 /// **非线程安全**：所有方法须在调用方的锁保护下调用（通常为 WalkMotorGroup::mtx_）。
-/// 本类不含任何硬件/CAN 依赖，便于独立单元测试。
-///
-/// 差速约定（IMU 顺时针为正/CW+，上轨=LT+RT，下轨=LB+RB）：
-///   correction > 0 → 偏左（yaw < target，向左偏转未达目标），上轨加速/下轨减速 → 机器人向右纠偏；
-///   correction < 0 → 偏右（yaw > target，向右偏转超过目标），上轨减速/下轨加速 → 机器人向左纠偏。
-/// 同一轨道两轮物理约束相同，速度必须一致（lt==rt，lb==rb）；下轨 base 取反体现反向安装。
 class HeadingPidController {
    public:
-    /// PID 调参（与原 WalkMotorGroup::HeadingPidParams 字段完全一致）
+    /// PID 参数
     struct Params {
-        float kp{1.5f};               ///< 比例系数；kp=1.5 在 err=2° 时输出 3 RPM，可抵消接缝处 ~3°/s 扰动
-        float ki{0.05f};              ///< 积分系数；配合符号翻转清零策略，用于消除稳态摩擦偏差
-        float kd{0.3f};               ///< 微分系数；提高对接缝冲击的预测阻尼（原 0.1 太弱）
-        float max_output{30.0f};      ///< 最大差速输出（RPM），防止饱和；测试时应改为 base_speed×50%
-        float integral_limit{5.0f};   ///< 积分限幅（RPM）；符号翻转清零后可降至 5，避免残余积分压制 P 项
-        float deadband_deg{0.5f};     ///< 死区（°），|err| ≤ deadband_deg 时输出 0 且不累积积分；0.0f = 关闭
-
-        /// 目标 yaw 自适应跟踪系数 [0, 1]，每个控制周期（20ms）执行一步指数平滑：
-        ///   target += (1 - alpha) × norm_angle(yaw - target)
-        /// 效果：
-        ///   alpha = 1.0：禁用跟踪，目标固定不变（旧行为，向后兼容）
-        ///   alpha = 0.99：时间常数 τ ≈ 2s @50Hz；0.3°/s 几何漂移的稳态误差 ≈ 0.6°（接近死区）
-        ///   alpha = 0.98：时间常数 τ ≈ 1s @50Hz；对突发偏移响应更快但几何漂移误差略大
-        /// 原理：
-        ///   轨道几何慢速漂移（速率 << 1/τ）→ 目标跟上 → PID 误差小 → 不对抗轨道自然复位力
-        ///   突发偏转（速率 >> 1/τ，例如出轨）→ 目标跟不上 → 误差保持 → PID 大力纠正
-        /// 推荐生产值：0.99（适合板间桥架过渡，τ=2s 可吸收 0.3°/s 的常规几何漂移）
-        float target_tracking_alpha{1.0f};
+        float kp{2.0f};              ///< 比例系数 [RPM/(deg/s)]；kp=2 在 omega_z=5°/s 时输出 10 RPM
+        float ki{0.0f};              ///< 积分系数；速率控制通常不需要积分，默认 0；
+                                     ///< 若存在持续单侧扭矩偏差（如坡度），可适当增大（≤0.1）
+        float kd{0.0f};              ///< 微分系数；速率控制已含微分特性，通常不需要，默认 0
+        float max_output{30.0f};     ///< 最大差速输出（RPM），防止饱和；建议设为基速的 50%
+        float integral_limit{10.0f}; ///< 积分限幅（RPM）
+        float deadband_rate_dps{2.0f}; ///< 死区角速度（°/s）；|omega_z| ≤ 此值时输出 0；
+                                       ///< 建议 2~5°/s：可过滤轨道几何慢速漂移（通常 <1°/s），
+                                       ///< 同时响应突发偏转（出轨时通常 >10°/s）
     };
 
     /// 使用默认参数构造
@@ -56,9 +58,6 @@ class HeadingPidController {
     /// 使能/禁用；禁用时自动复位积分状态
     void enable(bool en);
 
-    /// 设置目标航向（同时复位积分，首次调用时解除自动锁定）
-    void set_target(float yaw_deg);
-
     /// 复位积分状态（不改变使能状态）
     void reset();
 
@@ -67,23 +66,23 @@ class HeadingPidController {
     }
 
     /// 计算差速修正值（RPM）。
-    /// 首次调用时若尚未 set_target()，自动将当前 yaw 锁定为目标（保持直行）。
-    /// 积分抗饱和：误差过零（越过目标）时自动清零积分；死区内不累积积分。
-    /// @param yaw_deg  当前航向角（来自 IMU，°）
-    /// @param dt_s     控制周期（秒），≤0 时微分项置 0
+    ///
+    /// error = -omega_z_dps（目标角速度为 0，偏差 = 当前角速度取反）
+    ///
+    /// 积分抗饱和：误差过零时自动清零积分；死区内不累积积分。
+    ///
+    /// @param omega_z_dps  当前 Z 轴角速度（°/s），来自 IMU gyro[2] × (180/π)；
+    ///                     正值 = CCW（yaw 增大），负值 = CW（yaw 减小）
+    /// @param dt_s         控制周期（秒），≤0 时微分项置 0
     /// @return  差速修正量（RPM），未使能时始终返回 0.0f
-    float compute(float yaw_deg, float dt_s);
+    float compute(float omega_z_dps, float dt_s);
 
    private:
     Params params_;
     bool enabled_{false};
-    float target_{0.0f};
-    bool initialized_{false};
     float integral_{0.0f};
     float prev_err_{0.0f};
 
-    /// 将角度规范化到 (-180, +180] 区间，处理 0°/360° 跨越边界的误差计算
-    static float norm_angle(float deg);
     /// 通用限幅：将 v 限制在 [lo, hi] 范围内
     static float clamp(float v, float lo, float hi);
 };

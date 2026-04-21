@@ -18,8 +18,8 @@ namespace robot::service {
 ///      给每台电机；update() 每 20ms 重发设定值维持心跳，超时自停
 ///   2. 主动上报+温度查询：反馈方式使用主动上报（100Hz），
 ///      无法上报温度时由 WalkMotorGroup::update() 定期发 0x107 查询补采
-///   3. 航向 PID：start_cleaning() 时锁定当前 IMU yaw 为目标，
-///      update() 每 20ms 用最新 IMU yaw 计算左右差速补偿
+///   3. 航向速率 PID：基于 IMU 陀螺仪 Z 轴角速度（deg/s），
+///      update() 每 20ms 计算差速补偿，目标角速度始终为 0
 ///   4. 边缘紧急响应：register_edge_callback() 注册后，
 ///      边缘触发时 emergency_override() 立即发帧（不经过 update() 调度），
 ///      并用 cancel_edge_override() 解除，恢复正常行驶
@@ -93,6 +93,8 @@ class MotionService : public middleware::IRunnable {
     /// EMA 滤波后的 yaw（替代 update() 中的 static 局部变量，解决多实例共享和重启污染）
     float filtered_yaw_{0.0f};
     bool filtered_yaw_inited_{false};
+    float filtered_omega_z_{0.0f};   ///< EMA 滤波后的 Z 轴角速度（°/s），用于速率 PID 输入
+    bool filtered_omega_z_inited_{false};  ///< 首次调用时硬初始化标志
 };
 
 }  // namespace robot::service
