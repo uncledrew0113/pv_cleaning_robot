@@ -4,6 +4,9 @@
     "motor_id_base":       1,
     "imu_port":            "/dev/ttyS1",
     "imu_baud":            9600,
+    "gpsd_host":           "127.0.0.1",
+    "gpsd_port":           2947,
+    "gpsd_watch":          "?WATCH={\"enable\":true,\"json\":true};",
     "bms_port":            "/dev/ttyS8",
     "bms_baud":            9600,
     "dist_port":           "/dev/ttyS9",
@@ -18,6 +21,8 @@
     "limit_timeout_sec":   60,
     "online_timeout_ms":   600,
     "comm_timeout_ms":     500,
+    "gpsd_message_timeout_sec": 5,
+    "gpsd_fix_timeout_sec": 30,
     "sweep_duration_ms":   5000,
     "loop_period_ms":      50
   },

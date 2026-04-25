@@ -10,6 +10,7 @@
  * 硬件接线（默认值与 config/config.json 对齐，可通过 hw_test_config.json 覆盖）：
  *   CAN      : can0（默认），行走电机 M1502E_111，motor_id_base=1
  *   IMU      : /dev/ttyS1（默认），WIT Motion，9600 baud
+ *   GPSD     : 127.0.0.1:2947（默认），由目标机 gpsd 服务提供 TCP JSON 数据
  *   BMS      : /dev/ttyS8（默认），嘉佰达通用协议 V4，9600 baud
  *   距离传感器: /dev/ttyS9（默认），RS485 Modbus RTU，9600 baud
  *   GPIO     : gpiochip5 line0=前限位，line1=后限位（默认）
@@ -68,6 +69,9 @@ struct HwParams {
     uint16_t comm_timeout_ms = 500u;  ///< update 50ms × 10 倍余量
     std::string imu_port = "/dev/ttyS1";
     int imu_baud = 9600;
+    std::string gpsd_host = "127.0.0.1";
+    int gpsd_port = 2947;
+    std::string gpsd_watch = "?WATCH={\"enable\":true,\"json\":true};";
     std::string bms_port = "/dev/ttyS8";
     int bms_baud = 9600;
     std::string dist_port = "/dev/ttyS9";  ///< 距离传感器 RS485 串口
@@ -82,6 +86,8 @@ struct HwParams {
     int online_timeout_ms = 600;  ///< 等待电机上线最大毫秒数
     int sweep_duration_ms = 5000;
     int loop_period_ms = 50;
+    int gpsd_message_timeout_sec = 5;  ///< 期望收到首条 gpsd JSON 报文的最大等待时间
+    int gpsd_fix_timeout_sec = 30;     ///< 期望拿到有效 GPS fix 的最大等待时间
     // behavior
     float test_speed_rpm = 10.0f;  ///< 安全低速（测试专用）
     float test_return_rpm = 10.0f;
@@ -130,6 +136,9 @@ inline HwParams load_hw_test_config() {
             static_cast<uint16_t>(cfg.get<int>("timing.comm_timeout_ms", (int)p.comm_timeout_ms));
         p.imu_port = cfg.get<std::string>("hardware.imu_port", p.imu_port);
         p.imu_baud = cfg.get<int>("hardware.imu_baud", p.imu_baud);
+        p.gpsd_host = cfg.get<std::string>("hardware.gpsd_host", p.gpsd_host);
+        p.gpsd_port = cfg.get<int>("hardware.gpsd_port", p.gpsd_port);
+        p.gpsd_watch = cfg.get<std::string>("hardware.gpsd_watch", p.gpsd_watch);
         p.bms_port = cfg.get<std::string>("hardware.bms_port", p.bms_port);
         p.bms_baud = cfg.get<int>("hardware.bms_baud", p.bms_baud);
         p.dist_port = cfg.get<std::string>("hardware.dist_port", p.dist_port);
@@ -147,6 +156,10 @@ inline HwParams load_hw_test_config() {
         p.online_timeout_ms = cfg.get<int>("timing.online_timeout_ms", p.online_timeout_ms);
         p.sweep_duration_ms = cfg.get<int>("timing.sweep_duration_ms", p.sweep_duration_ms);
         p.loop_period_ms = cfg.get<int>("timing.loop_period_ms", p.loop_period_ms);
+        p.gpsd_message_timeout_sec =
+            cfg.get<int>("timing.gpsd_message_timeout_sec", p.gpsd_message_timeout_sec);
+        p.gpsd_fix_timeout_sec =
+            cfg.get<int>("timing.gpsd_fix_timeout_sec", p.gpsd_fix_timeout_sec);
         p.test_speed_rpm = cfg.get<float>("behavior.test_speed_rpm", p.test_speed_rpm);
         p.test_return_rpm = cfg.get<float>("behavior.test_return_rpm", p.test_return_rpm);
         p.sweep_rpm = cfg.get<float>("behavior.sweep_rpm", p.sweep_rpm);

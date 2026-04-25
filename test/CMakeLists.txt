@@ -128,6 +128,7 @@ add_executable(hw_tests
   integration/hardware/driver_hw_test.cc
   integration/hardware/bms_hw_test.cc
   integration/hardware/imu_hw_test.cc
+  integration/hardware/gpsd_hw_test.cc
   integration/hardware/full_sweep_hw_test.cc
   integration/hardware/limit_switch_hw_test.cc
   integration/hardware/walk_motor_group_hw_test.cc
