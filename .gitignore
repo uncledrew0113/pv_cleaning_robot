@@ -1,4 +1,5 @@
 build
+.worktrees/
 3rdparty/boost/
 
 # Codex 敏感配置禁止提交
