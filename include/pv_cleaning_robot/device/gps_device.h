@@ -1,28 +1,28 @@
 #pragma once
 #include "pv_cleaning_robot/device/device_error.h"
+#include "pv_cleaning_robot/device/gps_source.h"
 #include "pv_cleaning_robot/hal/i_serial_port.h"
 #include "pv_cleaning_robot/protocol/nmea_parser.h"
-#include <atomic>
 #include <memory>
 #include <mutex>
-#include <string>
-#include <thread>
 
 namespace robot::device {
 
-/// @brief GPS 定位设备（UART，NMEA 0183 协议）
-/// 内部启动读取线程，按行缓冲并解析 NMEA 句子
+/// @brief GPS 定位设备统一门面
+/// 对上层暴露线程安全缓存访问，对下层可接串口 NMEA 或 gpsd TCP 数据源。
 class GpsDevice {
 public:
     using GpsData = protocol::GpsData;
 
     struct Diagnostics : GpsData {
-        uint32_t sentence_count;      ///< 接收句子总数
-        uint32_t parse_error_count;   ///< 解析失败句子数
-        uint32_t fix_loss_count;      ///< 定位丢失次数
+        uint32_t sentence_count{0};      ///< 接收报文总数
+        uint32_t parse_error_count{0};   ///< 解析失败报文数
+        uint32_t fix_loss_count{0};      ///< 定位丢失次数
     };
 
     explicit GpsDevice(std::shared_ptr<hal::ISerialPort> serial);
+    explicit GpsDevice(std::unique_ptr<IGpsSource> source);
+    static std::shared_ptr<GpsDevice> create_gpsd(const GpsdSourceConfig& cfg);
     ~GpsDevice();
 
     // ── 生命周期 ──────────────────────────────────────────────
@@ -44,18 +44,14 @@ public:
     Diagnostics get_diagnostics() const;
 
 private:
-    void read_loop();
+    GpsDevice() = default;
+    void on_source_message(const GpsData& data);
+    void on_source_parse_error();
+    void on_source_message_count();
 
-    std::shared_ptr<hal::ISerialPort> serial_;
-    protocol::NmeaParser              parser_;
-
-    mutable std::mutex mtx_;
-    Diagnostics        diag_{};
-
-    std::thread        read_thread_;
-    std::atomic<bool>  running_{false};
-
-    std::string        line_buf_;  ///< 行缓冲（直到 '\n'）
+    std::unique_ptr<IGpsSource> source_;
+    mutable std::mutex          mtx_;
+    Diagnostics                 diag_{};
 };
 
 }  // namespace robot::device

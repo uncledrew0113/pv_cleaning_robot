@@ -17,6 +17,8 @@ set(COMMON_SRCS
   ${PROJ}/device/bms.cc
   ${PROJ}/device/imu_device.cc
   ${PROJ}/device/gps_device.cc
+  ${PROJ}/device/serial_gps_source.cc
+  ${PROJ}/device/gpsd_gps_source.cc
   ${PROJ}/device/walk_motor_group.cc
   ${PROJ}/device/brush_motor.cc
   ${PROJ}/device/limit_switch.cc
@@ -70,6 +72,7 @@ add_executable(unit_tests
   device/brush_motor_test.cc
   device/limit_switch_test.cc
   device/gps_device_test.cc
+  device/gpsd_gps_source_test.cc
   device/distance_sensor_device_test.cc
 
   # 驱动层（纯软件路径，无需真实硬件即可运行）

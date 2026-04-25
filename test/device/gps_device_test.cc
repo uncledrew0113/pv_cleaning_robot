@@ -107,8 +107,8 @@ TEST_CASE("GpsDevice: 注入非法句子后 parse_error_count 累加", "[device]
     auto diag = f.gps.get_diagnostics();
     f.gps.close();
 
-    // 解析了并失败，应有错误计数（valid=false）
     REQUIRE_FALSE(diag.valid);
+    REQUIRE(diag.parse_error_count > 0);
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -127,4 +127,18 @@ TEST_CASE("GpsDevice: 处理完句子后 sentence_count > 0", "[device][gps]") {
     f.gps.close();
 
     REQUIRE(diag.sentence_count > 0);
+}
+
+// ────────────────────────────────────────────────────────────────
+// 命令路径：set_output_rate() 应写入 UART
+// ────────────────────────────────────────────────────────────────
+TEST_CASE("GpsDevice: set_output_rate() 写入 PMTK220 命令", "[device][gps]") {
+    GpsFixture f;
+
+    REQUIRE(f.gps.open());
+    REQUIRE(f.gps.set_output_rate(5) == robot::device::DeviceError::OK);
+    f.gps.close();
+
+    const std::string tx(f.serial->tx_captured.begin(), f.serial->tx_captured.end());
+    REQUIRE(tx.find("$PMTK220,200") != std::string::npos);
 }

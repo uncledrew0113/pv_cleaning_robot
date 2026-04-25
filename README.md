@@ -8,7 +8,7 @@ RK3576 / PREEMPT\_RT Linux / aarch64，C++17。光伏板面清扫机器人固件
 |------|------|----------|
 | CAN (`can0`) | 行走电机组 × 4（M1502E_111，motor_id 1–4） | `can.interface` |
 | UART `/dev/ttyS1` | IMU（WIT Motion 9轴，9600 baud） | `serial.imu` |
-| UART `/dev/ttyS2` | GPS（NMEA 0183，可选，暂无硬件） | `serial.gps` |
+| UART `/dev/ttyS2` / TCP `127.0.0.1:2947` | GPS（NMEA 0183 或 gpsd，可选） | `gps.source="serial"` 使用 `gps.serial`；`gps.source="gpsd"` 使用 `gps.gpsd` |
 | UART `/dev/ttyS3` | 滚刷电机（Modbus RTU，slave_id=1） | `serial.brush` |
 | UART `/dev/ttyS8` | BMS（嘉佰达通用协议 V4，9600 baud） | `serial.bms` |
 | GPIO `gpiochip5/0` | 前限位传感器（接近开关，NPN 常开） | `gpio.front_limit` |
@@ -99,6 +99,9 @@ cmake --build --preset rk3576-build
 | 键 | 说明 |
 |----|------|
 | `gpio.use_irq` | `false`=轮询模式（**RK3576 gpiochip5 必须设为 false**）；`true`=中断模式（其他平台） |
+| `gps.source` | GPS 数据源选择：`"serial"` / `"gpsd"` |
+| `gps.serial.port` / `gps.serial.baudrate` | 串口 GPS 参数 |
+| `gps.gpsd.host` / `gps.gpsd.port` / `gps.gpsd.watch` | gpsd TCP 服务参数 |
 | `network.transport_mode` | `"mqtt_only"` / `"lorawan_only"` / `"dual_parallel"` |
 | `network.mqtt.tls_enabled` | 是否启用 TLS（生产环境应为 `true`） |
 | `network.mqtt.ca_cert_path` | CA 证书路径 |
@@ -106,6 +109,8 @@ cmake --build --preset rk3576-build
 | `diagnostics.local_path` | 本地 JSONL 落盘路径（空字符串禁用） |
 | `robot.passes` | 清扫趟数（`0.5`=单程，`1.0`=往返一趟） |
 | `robot.heading_pid_en` | 是否启用 IMU 航向 PID 差速补偿（需 IMU 已接线） |
+
+兼容说明：若 `gps.source` 缺失，程序会临时回退读取旧配置 `serial.gps.*`。
 
 ## 参考文档
 

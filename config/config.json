@@ -28,6 +28,19 @@
     }
   },
 
+  "gps": {
+    "source": "serial",
+    "serial": {
+      "port": "/dev/ttyS2",
+      "baudrate": 115200
+    },
+    "gpsd": {
+      "host": "127.0.0.1",
+      "port": 2947,
+      "watch": "?WATCH={\"enable\":true,\"json\":true};"
+    }
+  },
+
   "gpio": {
     "front_limit": { "chip": "gpiochip5", "line": 0 },
     "rear_limit":  { "chip": "gpiochip5", "line": 1 },

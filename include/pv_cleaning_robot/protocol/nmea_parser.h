@@ -45,8 +45,10 @@ struct GpsData {
 class NmeaParser {
    public:
     /// 解析单行 NMEA 句子（含或不含 \r\n）
-    /// 解析结果会更新内部状态缓存；每次调用后通过 get_data() 获取最新值
-    void parse_sentence(const std::string& sentence);
+    /// 返回 true 表示该句子语法有效且已被成功解析；
+    /// 返回 false 表示格式/校验/句型不合法，不更新统计调用方可据此计入解析错误。
+    /// 每次成功调用后通过 get_data() 获取最新值。
+    bool parse_sentence(const std::string& sentence);
 
     /// 获取当前积累的 GPS 数据（线程不安全：调用方自行保护）
     const GpsData& get_data() const {

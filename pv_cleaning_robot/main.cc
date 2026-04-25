@@ -145,10 +145,28 @@ int main() {
         robot::hal::UartConfig{cfg.get<int>("serial.imu.baudrate", 921600)});
     auto imu = std::make_shared<robot::device::ImuDevice>(imu_serial);
 
-    auto gps_serial = std::make_shared<robot::driver::LibSerialPort>(
-        cfg.get<std::string>("serial.gps.port", "/dev/ttyS2"),
-        robot::hal::UartConfig{cfg.get<int>("serial.gps.baudrate", 9600)});
-    auto gps = std::make_shared<robot::device::GpsDevice>(gps_serial);
+    std::shared_ptr<robot::device::GpsDevice> gps;
+    const auto gps_source = cfg.get<std::string>("gps.source", "serial");
+    if (gps_source == "gpsd") {
+        robot::device::GpsdSourceConfig gpsd_cfg;
+        gpsd_cfg.host = cfg.get<std::string>("gps.gpsd.host", "127.0.0.1");
+        gpsd_cfg.port = cfg.get<int>("gps.gpsd.port", 2947);
+        gpsd_cfg.watch =
+            cfg.get<std::string>("gps.gpsd.watch", "?WATCH={\"enable\":true,\"json\":true};");
+        gps = robot::device::GpsDevice::create_gpsd(gpsd_cfg);
+    } else {
+        if (gps_source != "serial") {
+            log->warn("[Main] 未知 GPS source={}，回退到 serial", gps_source);
+        }
+
+        auto gps_serial = std::make_shared<robot::driver::LibSerialPort>(
+            cfg.get<std::string>("gps.serial.port",
+                                 cfg.get<std::string>("serial.gps.port", "/dev/ttyS2")),
+            robot::hal::UartConfig{
+                cfg.get<int>("gps.serial.baudrate",
+                             cfg.get<int>("serial.gps.baudrate", 9600))});
+        gps = std::make_shared<robot::device::GpsDevice>(gps_serial);
+    }
 
     // ── 8. GPIO 限位开关 ───────────────────────────────────────────────
     auto front_gpio = std::make_shared<robot::driver::LibGpiodPin>(

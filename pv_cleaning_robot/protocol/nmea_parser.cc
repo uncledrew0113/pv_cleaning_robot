@@ -7,18 +7,19 @@
 
 namespace robot::protocol {
 
-void NmeaParser::parse_sentence(const std::string& sentence) {
-    if (sentence.empty() || sentence[0] != '$') return;
-    if (!validate_checksum(sentence)) return;
+bool NmeaParser::parse_sentence(const std::string& sentence) {
+    if (sentence.empty() || sentence[0] != '$') return false;
+    if (!validate_checksum(sentence)) return false;
 
     // 提取句子类型（去掉 $Gx 前缀后的3字符，如 GGA/RMC/GSA/GSV）
-    if (sentence.size() < 6) return;
+    if (sentence.size() < 6) return false;
     std::string type = sentence.substr(3, 3);  // e.g. "GGA"
 
-    if      (type == "GGA") parse_gga(sentence);
-    else if (type == "RMC") parse_rmc(sentence);
-    else if (type == "GSA") parse_gsa(sentence);
-    else if (type == "GSV") parse_gsv(sentence);
+    if (type == "GGA") return parse_gga(sentence);
+    if (type == "RMC") return parse_rmc(sentence);
+    if (type == "GSA") return parse_gsa(sentence);
+    if (type == "GSV") return parse_gsv(sentence);
+    return false;
 }
 
 void NmeaParser::reset() { data_ = GpsData{}; }
@@ -91,7 +92,10 @@ bool NmeaParser::parse_rmc(const std::string& s) {
     auto f = split(s, ',');
     // $GxRMC,hhmmss.ss,A,ddmm.mm,N,dddmm.mm,E,n.n,x.x,ddmmyy,,,A*hh
     if (f.size() < 9) return false;
-    if (f[2] != "A") { data_.valid = false; return false; }  // V=无效
+    if (f[2] != "A") {
+        data_.valid = false;
+        return true;  // 句子本身合法，只是定位状态无效
+    }
 
     data_.latitude  = parse_nmea_coord(f[3], f[4]);
     data_.longitude = parse_nmea_coord(f[5], f[6]);
