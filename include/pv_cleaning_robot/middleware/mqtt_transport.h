@@ -13,6 +13,41 @@ namespace robot::middleware {
 
 class MqttCallback;  // 定义在 mqtt_transport.cc，此处仅供 unique_ptr 成员声明使用
 
+namespace detail {
+/// MQTT topic filter matcher.
+/// Supports single-level '+' and multi-level '#' wildcards.
+inline bool mqtt_topic_matches(const std::string& filter, const std::string& topic) {
+    size_t fi = 0;
+    size_t ti = 0;
+    while (fi < filter.size()) {
+        if (filter[fi] == '#') {
+            return fi + 1 == filter.size();
+        }
+
+        size_t fnext = filter.find('/', fi);
+        size_t tnext = topic.find('/', ti);
+        const std::string fseg = filter.substr(fi, fnext - fi);
+        const std::string tseg =
+            (ti <= topic.size()) ? topic.substr(ti, tnext - ti) : std::string{};
+
+        if (fseg != "+" && fseg != tseg) {
+            return false;
+        }
+
+        if (fnext == std::string::npos) {
+            return tnext == std::string::npos;
+        }
+        if (tnext == std::string::npos) {
+            return false;
+        }
+
+        fi = fnext + 1;
+        ti = tnext + 1;
+    }
+    return ti == topic.size();
+}
+}  // namespace detail
+
 /// @brief MQTT 传输层（paho-mqtt-cpp，QoS=1，持久会话）
 class MqttTransport : public INetworkTransport {
 public:

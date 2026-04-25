@@ -1,2 +1,7 @@
 build
 3rdparty/boost/
+
+# Codex 敏感配置禁止提交
+.codex/auth.json
+.codex/*.key
+.env

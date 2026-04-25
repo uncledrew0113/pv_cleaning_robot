@@ -103,7 +103,7 @@ bool BMS::transact(const uint8_t* req, size_t req_len, int timeout_ms) {
                 for (int i = 0; i < n; ++i) {
                     parser_.push_byte(buf[i]);
                     if (parser_.frame_complete()) {
-                        spdlog::info("[BMS] 帧接收成功 attempt={}/{} rx_bytes={}",
+                        spdlog::debug("[BMS] 帧接收成功 attempt={}/{} rx_bytes={}",
                                      attempt + 1,
                                      max_attempts,
                                      total_rx);

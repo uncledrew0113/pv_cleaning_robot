@@ -15,7 +15,7 @@
 
   "serial": {
     "imu":   { "port": "/dev/ttyS1", "baudrate": 9600 },
-    "gps":   { "port": "/dev/ttyS2", "baudrate": 9600   },
+    "gps":   { "port": "/dev/ttyS2", "baudrate": 115200   },
     "brush": { "port": "/dev/ttyS3", "baudrate": 9600, "slave_id": 1 },
     "bms":   { "port": "/dev/ttyS8", "baudrate": 9600   },
     "distance_sensor": {

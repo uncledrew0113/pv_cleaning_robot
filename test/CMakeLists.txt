@@ -83,6 +83,8 @@ add_executable(unit_tests
   # 中间件层
   middleware/event_bus_test.cc
   middleware/data_cache_test.cc
+  middleware/network_manager_test.cc
+  middleware/mqtt_transport_test.cc
   middleware/safety_monitor_test.cc
 
   # 服务层

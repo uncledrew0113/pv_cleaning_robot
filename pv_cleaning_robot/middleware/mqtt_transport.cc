@@ -37,10 +37,17 @@ public:
         const std::string& payload = msg->to_string();
 
         std::lock_guard<std::mutex> lk(owner_->sub_mtx_);
-        // 精确匹配优先
+        // 精确匹配优先，未命中时回退到 MQTT wildcard 过滤匹配。
         auto it = owner_->subscriptions_.find(topic);
         if (it != owner_->subscriptions_.end()) {
             it->second(topic, payload);
+            return;
+        }
+        for (auto& [filter, cb] : owner_->subscriptions_) {
+            if (detail::mqtt_topic_matches(filter, topic)) {
+                cb(topic, payload);
+                return;
+            }
         }
     }
 

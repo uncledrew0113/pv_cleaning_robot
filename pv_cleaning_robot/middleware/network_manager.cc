@@ -60,7 +60,7 @@ bool NetworkManager::subscribe(const std::string& topic,
     if ((mode_ == Mode::MQTT_ONLY || mode_ == Mode::DUAL_PARALLEL) && mqtt_)
         ok |= mqtt_->subscribe(topic, cb);
     if ((mode_ == Mode::LORAWAN_ONLY || mode_ == Mode::DUAL_PARALLEL) && lorawan_)
-        lorawan_->subscribe(topic, cb);
+        ok |= lorawan_->subscribe(topic, cb);
     return ok;
 }
 
