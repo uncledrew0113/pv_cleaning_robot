@@ -42,11 +42,11 @@
 │                    Middleware Layer（中间件层）                    │
 │ EventBus(PiMutex) │ ThreadExecutor │ Logger │ SafetyMonitor     │
 │ NetworkManager │ MqttTransport │ LoRaWANTransport               │
-│ DataCache │ OtaManager                                          │
+│ DataCache │ OtaManager（dormant，默认不编入产品）                │
 ├─────────────────────────────────────────────────────────────────┤
 │                      Device Layer（设备层）                       │
-│ WalkMotorGroup(CAN,4路) │ BrushMotor(Modbus)                    │
-│ BMS(UART) │ ImuDevice(UART) │ GpsDevice(UART)                 │
+│ WalkMotorGroup(CAN,4路) │ BrushMotor(ODrive UART ASCII)        │
+│ BMS(UART) │ ImuDevice(UART) │ GpsDevice(Serial/gpsd)          │
 │ LimitSwitch(GPIO)                                               │
 ├─────────────────────────────────────────────────────────────────┤
 │                     Protocol Layer（协议层）                      │
@@ -905,14 +905,19 @@ public:
 ```
 
 **工作机制**：
-1. 网络断开时，`CloudService` 调用 `push()` 将遥测追加到内存队列，并**原子重写** JSONL 文件（`.tmp` → `rename`）
-2. 网络恢复后，`flush_cache()` 循环 `pop_batch()` → 上报 → `confirm_sent()`，每次 `confirm_sent()` 同样原子重写文件
-3. 超过 `max_rows`（默认 500）时自动丢弃最旧记录，防止磁盘溢出（500 条 × ~300 B ≈ 150 KB）
-4. **断电安全**：`open()` 重新加载文件中所有未确认记录，重启后自动续传；无 SQLite 依赖
+1. 网络断开时，`CloudService` 调用 `push()` 将遥测追加到内存队列，并向 JSONL journal 追加一条 `push` 记录
+2. 网络恢复后，`flush_cache()` 循环 `pop_batch()` → 上报 → `confirm_sent()`，每条确认会再追加一条 `ack` 记录
+3. journal 操作数量达到阈值后，`DataCache` 会 compact 成只包含 live record 的快照文件，避免离线期间每次操作都全量重写
+4. 超过 `max_rows`（默认 500）时自动丢弃最旧记录，并为被淘汰条目追加 `ack` tombstone，防止重启后复活
+5. **断电安全**：`open()` 回放 push/ack journal，仅恢复未确认记录；兼容旧版纯快照 JSONL 文件
 
 ---
 
-### 6.8 `OtaManager` — OTA 固件更新
+### 6.8 `OtaManager` — Dormant OTA Support (Not Integrated In Current Product Build)
+
+This repository still contains an `OtaManager` implementation, but it is not wired into the
+current production application flow and is excluded from the default product build unless
+`PV_ENABLE_OTA=ON` is set intentionally.
 
 ```cpp
 class OtaManager {
@@ -1950,7 +1955,7 @@ cloud 线程（SCHED_OTHER, 1000ms）
 CloudService::publish_telemetry()
     │ [在线] NetworkManager::publish(topic, payload)
     │         → MqttTransport::publish() → paho-mqtt-cpp → MQTT Broker
-    │ [离线] DataCache::push(topic, payload) → SQLite3 WAL
+    │ [离线] DataCache::push(topic, payload) → JSONL journal append
     ▼
 [恢复在线] CloudService::update() → flush_cache() → pop_batch(50)
     → publish() 批量回传 → confirm_sent()

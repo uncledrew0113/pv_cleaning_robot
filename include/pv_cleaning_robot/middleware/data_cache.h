@@ -7,13 +7,13 @@
 
 namespace robot::middleware {
 
-/// @brief 遥测本地缓存（JSONL 文件持久化）
+/// @brief 遥测本地缓存（JSONL journal 持久化）
 ///
 /// 关注点：
-///   - 每次 push() 将队列全量原子重写到磁盘（SCHED_OTHER 云端线程 1Hz，重写 150KB ≈ 1ms）
-///   - confirm_sent() 删除已发记录后同样重写；open() 从文件恢复未发数据
-///   - 断电重启后能自动加载积压遥测并在网络恢复后补发
-///   - 文件格式：每行一个 JSON：{"id":1,"topic":"...","payload":"...","ts_ms":...}
+///   - push()/confirm_sent() 采用追加 journal，避免每次操作都全量重写文件
+///   - open() 回放 push/ack 操作，恢复仍未确认的离线遥测
+///   - journal 膨胀到阈值后做一次快照 compact，收敛文件体积
+///   - 文件兼容旧格式快照行：{"id":1,"topic":"...","payload":"...","ts_ms":...}
 ///
 /// 线程安全：所有公开方法均通过 mtx_ 保护，可从多个线程并发调用。
 class DataCache {
@@ -50,13 +50,21 @@ public:
     size_t size();
 
 private:
-    /// 必须在 mtx_ 持有状态下调用：将 queue_ 原子重写到文件（.tmp → rename）
-    void flush_to_file() const;
+    struct JournalStats {
+        size_t append_count{0};
+        size_t ack_count{0};
+    };
+
+    bool append_push_record_locked(const Record& record);
+    bool append_ack_record_locked(int64_t id);
+    void maybe_compact_locked();
+    bool compact_to_snapshot_locked();
 
     std::string        file_path_;
     size_t             max_rows_;
     int64_t            next_id_{1};
     std::deque<Record> queue_;
+    JournalStats       journal_stats_{};
     mutable std::mutex mtx_;
 };
 

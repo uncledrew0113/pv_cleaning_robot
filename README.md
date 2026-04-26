@@ -2,6 +2,9 @@
 
 RK3576 / PREEMPT\_RT Linux / aarch64，C++17。光伏板面清扫机器人固件——主轨道清扫、故障自检、云端遥测。
 
+- OTA 支持当前处于 dormant 状态，并且默认不参与产品构建。
+- 仓库仍保留 `OtaManager` 代码，作为后续集成的归档实现基础。
+
 ## 硬件要求
 
 | 接口 | 设备 | 配置路径 |
@@ -9,7 +12,7 @@ RK3576 / PREEMPT\_RT Linux / aarch64，C++17。光伏板面清扫机器人固件
 | CAN (`can0`) | 行走电机组 × 4（M1502E_111，motor_id 1–4） | `can.interface` |
 | UART `/dev/ttyS1` | IMU（WIT Motion 9轴，9600 baud） | `serial.imu` |
 | UART `/dev/ttyS2` / TCP `127.0.0.1:2947` | GPS（NMEA 0183 或 gpsd，可选） | `gps.source="serial"` 使用 `gps.serial`；`gps.source="gpsd"` 使用 `gps.gpsd` |
-| UART `/dev/ttyS3` | 滚刷电机（Modbus RTU，slave_id=1） | `serial.brush` |
+| UART `/dev/ttyS3` | 滚刷电机（ODrive 3.6 UART ASCII） | `serial.brush` |
 | UART `/dev/ttyS8` | BMS（嘉佰达通用协议 V4，9600 baud） | `serial.bms` |
 | GPIO `gpiochip5/0` | 前限位传感器（接近开关，NPN 常开） | `gpio.front_limit` |
 | GPIO `gpiochip5/1` | 后限位传感器（接近开关，NPN 常开） | `gpio.rear_limit` |

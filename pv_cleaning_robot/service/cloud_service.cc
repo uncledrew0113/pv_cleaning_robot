@@ -24,11 +24,7 @@ CloudService::CloudService(std::shared_ptr<middleware::NetworkManager> network,
     // 订阅共享属性下行（服务端推送，初始接入时也会收到全量属性）
     network_->subscribe(topics_.attributes,
         [this](const std::string& /*t*/, const std::string& p) {
-            if (!attr_cb_) return;
-            try {
-                auto j = nlohmann::json::parse(p);
-                attr_cb_(j);
-            } catch (...) {}
+            on_shared_attributes_message(p);
         });
 }
 
@@ -55,7 +51,7 @@ void CloudService::register_rpc(const std::string& method, RpcHandler handler)
 
 void CloudService::subscribe_shared_attributes(AttrCallback cb)
 {
-    std::lock_guard<std::mutex> lk(rpc_mtx_);
+    std::lock_guard<std::mutex> lk(attr_cb_mtx_);
     attr_cb_ = std::move(cb);
 }
 
@@ -79,6 +75,22 @@ void CloudService::update()
 {
     // 每次 update() 尝试回填缓存数据
     flush_cache();
+}
+
+void CloudService::on_shared_attributes_message(const std::string& payload)
+{
+    AttrCallback cb;
+    {
+        std::lock_guard<std::mutex> lk(attr_cb_mtx_);
+        cb = attr_cb_;
+    }
+    if (!cb) return;
+
+    try {
+        auto j = nlohmann::json::parse(payload);
+        cb(j);
+    } catch (...) {
+    }
 }
 
 void CloudService::on_rpc_message(const std::string& topic,

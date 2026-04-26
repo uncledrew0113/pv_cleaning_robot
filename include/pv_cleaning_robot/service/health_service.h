@@ -6,8 +6,9 @@
 #include "pv_cleaning_robot/device/gps_device.h"
 #include "pv_cleaning_robot/device/distance_sensor.h"
 #include "pv_cleaning_robot/service/cloud_service.h"
+#include "pv_cleaning_robot/service/health_payload_builder.h"
 #include "pv_cleaning_robot/middleware/thread_executor.h"
-#include <nlohmann/json.hpp>
+#include <array>
 #include <fstream>
 #include <memory>
 #include <string>
@@ -39,7 +40,8 @@ public:
     void update() override;  ///< 由 ThreadExecutor 调用
 
 private:
-    std::string build_payload() const;
+    static constexpr size_t kPayloadBufferBytes = 8192;
+    size_t build_payload(char* out, size_t cap) const;
 
     std::shared_ptr<device::WalkMotorGroup> walk_;
     std::shared_ptr<device::BrushMotor>     brush_;
@@ -49,10 +51,8 @@ private:
     std::shared_ptr<device::DistanceSensor> dist_;  ///< 可选；nullptr 时 JSONL 不含 dist 字段
     std::shared_ptr<CloudService>           cloud_;
     Mode                                mode_;
-    /// 预分配 JSON 键树，build_payload() 中复用以减少内存分配。
-    /// 线程约束：update()/build_payload() 必须由单一线程（ThreadExecutor）调用，
-    /// 不支持并发 build_payload()。若需多线程访问，须在调用方加锁。
-    mutable nlohmann::json              j_;
+    mutable std::array<char, kPayloadBufferBytes> payload_buf_{};
+    mutable std::string                 payload_cache_;
     std::ofstream                       local_log_file_; ///< 本地 JSONL 落盘文件（local_log_path 非空时打开）
 };
 

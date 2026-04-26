@@ -8,6 +8,11 @@ file(GLOB_RECURSE ROBOT_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/app/*.cc"
 )
 
+if(NOT PV_ENABLE_OTA)
+  list(REMOVE_ITEM ROBOT_SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/middleware/ota_manager.cc")
+endif()
+
 # ── 主可执行文件 ─────────────────────────────────────────────────────────
 add_executable(${PROJECT_NAME}
     main.cc

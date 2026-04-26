@@ -61,6 +61,7 @@ class CloudService : public middleware::IRunnable {
 
    private:
     void on_rpc_message(const std::string& topic, const std::string& payload);
+    void on_shared_attributes_message(const std::string& payload);
 
     /// RPC params 大小上限（防止超大 payload 耗尽栈空间）
     static constexpr size_t kMaxRpcParamsBytes = 4096;
@@ -69,8 +70,9 @@ class CloudService : public middleware::IRunnable {
     std::shared_ptr<middleware::DataCache> cache_;
     Topics topics_;
     std::unordered_map<std::string, RpcHandler> rpc_handlers_;
-    AttrCallback attr_cb_;  ///< 共享属性回调（为空则不分发）
     std::mutex rpc_mtx_;
+    std::mutex attr_cb_mtx_;
+    AttrCallback attr_cb_;  ///< 共享属性回调（为空则不分发）
 };
 
 }  // namespace robot::service

@@ -14,6 +14,9 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+option(PV_ENABLE_OTA "Build dormant OTA support into the product binary" OFF)
+message(STATUS "PV_ENABLE_OTA = ${PV_ENABLE_OTA}")
+
 # 默认构建类型
 if (NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)

@@ -46,6 +46,7 @@ set(COMMON_SRCS
   ${PROJ}/service/nav_service.cc
   ${PROJ}/service/motion_service.cc
   ${PROJ}/service/heading_pid_controller.cc
+  ${PROJ}/service/health_payload_builder.cc
   ${PROJ}/service/health_service.cc
   ${PROJ}/service/cloud_service.cc
 
@@ -95,8 +96,10 @@ add_executable(unit_tests
   middleware/safety_monitor_test.cc
 
   # 服务层
+  service/cloud_service_test.cc
   service/config_service_test.cc
   service/fault_service_test.cc
+  service/health_payload_builder_test.cc
   service/scheduler_service_test.cc
   service/motion_service_test.cc
   service/heading_pid_test.cc

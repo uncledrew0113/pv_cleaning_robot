@@ -4,6 +4,7 @@
  */
 #include <catch2/catch.hpp>
 #include <filesystem>
+#include <fstream>
 #include <string>
 
 #include "pv_cleaning_robot/middleware/data_cache.h"
@@ -175,6 +176,79 @@ TEST_CASE("DataCache: 重新 open() 从文件恢复未确认记录", "[middlewar
         REQUIRE(batch[1].payload == "payload_B");
         c2.close();
     }
+    fs::remove(path);
+    fs::remove(path + ".tmp");
+}
+
+TEST_CASE("DataCache: ack journal survives restart without full rewrite semantics",
+          "[middleware][data_cache]") {
+    std::string path = "/tmp/test_dc_journal.jsonl";
+    {
+        DataCache c1(path);
+        c1.open();
+        c1.push("topic", "payload_A");
+        c1.push("topic", "payload_B");
+        auto batch = c1.pop_batch(10);
+        REQUIRE(batch.size() == 2);
+        c1.confirm_sent({batch[0].id});
+        c1.close();
+    }
+    {
+        DataCache c2(path);
+        c2.open();
+        auto batch = c2.pop_batch(10);
+        REQUIRE(batch.size() == 1);
+        REQUIRE(batch[0].payload == "payload_B");
+        c2.close();
+    }
+    fs::remove(path);
+    fs::remove(path + ".tmp");
+}
+
+TEST_CASE("DataCache: compact snapshot keeps only live records",
+          "[middleware][data_cache]") {
+    std::string path = "/tmp/test_dc_compact.jsonl";
+    {
+        DataCache cache(path, 512);
+        cache.open();
+        for (int i = 0; i < 180; ++i) {
+            REQUIRE(cache.push("topic", "payload_" + std::to_string(i), 1000 + i));
+        }
+
+        auto batch = cache.pop_batch(180);
+        REQUIRE(batch.size() == 180);
+
+        std::vector<int64_t> ack_ids;
+        for (int i = 0; i < 150; ++i) {
+            ack_ids.push_back(batch[static_cast<size_t>(i)].id);
+        }
+        cache.confirm_sent(ack_ids);
+        REQUIRE(cache.size() == 30);
+        cache.close();
+    }
+
+    {
+        std::ifstream in(path);
+        REQUIRE(in.is_open());
+        std::string line;
+        size_t line_count = 0;
+        while (std::getline(in, line)) {
+            if (!line.empty()) ++line_count;
+            REQUIRE(line.find("\"op\"") == std::string::npos);
+        }
+        REQUIRE(line_count == 30);
+    }
+
+    {
+        DataCache cache(path, 512);
+        REQUIRE(cache.open());
+        REQUIRE(cache.size() == 30);
+        auto batch = cache.pop_batch(40);
+        REQUIRE(batch.size() == 30);
+        REQUIRE(batch.front().payload == "payload_150");
+        REQUIRE(batch.back().payload == "payload_179");
+    }
+
     fs::remove(path);
     fs::remove(path + ".tmp");
 }

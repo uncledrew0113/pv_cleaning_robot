@@ -288,7 +288,6 @@ int main() {
 
     auto net_mgr =
         std::make_shared<robot::middleware::NetworkManager>(mqtt, lorawan_transport, net_mode);
-    net_mgr->connect();
 
     // ── 12. 数据缓存 ───────────────────────────────────────────────────
     auto data_cache = std::make_shared<robot::middleware::DataCache>(
@@ -315,6 +314,21 @@ int main() {
         walk_group, brush_motor, imu, event_bus, motion_cfg);
     auto nav = std::make_shared<robot::service::NavService>(walk_group, imu, gps);
     auto cloud = std::make_shared<robot::service::CloudService>(net_mgr, data_cache);
+
+    // ── 共享属性回调：远程更新配置，持久化到 config.json （下次启动生效）──
+    cloud->subscribe_shared_attributes([&cfg](const nlohmann::json& attrs) {
+        if (attrs.contains("passes"))
+            cfg.set("robot.passes", attrs["passes"].get<float>());
+        if (attrs.contains("clean_speed_rpm"))
+            cfg.set("robot.clean_speed_rpm", attrs["clean_speed_rpm"].get<float>());
+        if (attrs.contains("return_speed_rpm"))
+            cfg.set("robot.return_speed_rpm", attrs["return_speed_rpm"].get<float>());
+        if (attrs.contains("brush_rpm"))
+            cfg.set("robot.brush_rpm", attrs["brush_rpm"].get<int>());
+        cfg.save();
+    });
+
+    net_mgr->connect();
 
     // 上电首次发布设备静态属性（云端连接后立即通知平台本机信息）
     if (net_mgr->is_connected()) {
@@ -408,19 +422,6 @@ int main() {
         } catch (...) {
             return nlohmann::json{{"result", "error"}}.dump();
         }
-    });
-
-    // ── 共享属性回调：远程更新配置，持久化到 config.json （下次启动生效）──
-    cloud->subscribe_shared_attributes([&cfg](const nlohmann::json& attrs) {
-        if (attrs.contains("passes"))
-            cfg.set("robot.passes", attrs["passes"].get<float>());
-        if (attrs.contains("clean_speed_rpm"))
-            cfg.set("robot.clean_speed_rpm", attrs["clean_speed_rpm"].get<float>());
-        if (attrs.contains("return_speed_rpm"))
-            cfg.set("robot.return_speed_rpm", attrs["return_speed_rpm"].get<float>());
-        if (attrs.contains("brush_rpm"))
-            cfg.set("robot.brush_rpm", attrs["brush_rpm"].get<int>());
-        cfg.save();
     });
 
     robot::app::FaultHandler fault_handler(
