@@ -50,8 +50,8 @@ bool MotionService::start_cleaning() {
     if (group_->set_speeds(spd, spd, -spd, -spd) != device::DeviceError::OK)
         return false;
 
+    brush_->set_mode_speed();
     brush_->set_rpm(cfg_.brush_rpm);
-    brush_->start();
     return true;
 }
 
@@ -67,8 +67,8 @@ bool MotionService::start_returning() {
     group_->clear_override();
 
     // 返程滚刷反向运行（清洁板面残留，绝对值同 brush_rpm，方向取反）
-    brush_->set_rpm(-static_cast<float>(cfg_.return_brush_rpm));
-    brush_->start();
+    brush_->set_mode_speed();
+    brush_->set_rpm(-cfg_.return_brush_rpm);
 
     // 返程保持航向速率 PID：目标角速度始终为 0，正返程完全对称，无需锁定航向目标。
     //   轨道几何慢速 yaw 变化（omega_z < deadband）：死区过滤，不纠偏 → 不脱轨
@@ -117,7 +117,7 @@ bool MotionService::start_returning_no_brush() {
 }
 
 void MotionService::emergency_stop() {
-    brush_->stop();
+    brush_->enter_idle();
     group_->emergency_override(0.0f);  // 原地停止 + 抑制心跳
     group_->disable_all();
 }

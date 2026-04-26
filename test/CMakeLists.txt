@@ -12,6 +12,7 @@ set(COMMON_SRCS
   ${PROJ}/protocol/walk_motor_can_codec.cc
   ${PROJ}/protocol/nmea_parser.cc
   ${PROJ}/protocol/distance_sensor_protocol.cc
+  ${PROJ}/protocol/odrive_ascii_protocol.cc
 
   # 设备层
   ${PROJ}/device/bms.cc
@@ -64,6 +65,7 @@ add_executable(unit_tests
   protocol/walk_motor_codec_test.cc
   protocol/nmea_parser_test.cc
   protocol/distance_sensor_protocol_test.cc
+  protocol/odrive_ascii_protocol_test.cc
 
   # 设备层
   device/bms_device_test.cc

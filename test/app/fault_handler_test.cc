@@ -5,7 +5,7 @@
 #include <catch2/catch.hpp>
 
 #include "../mock/mock_can_bus.h"
-#include "../mock/mock_modbus_master.h"
+#include "../mock/mock_serial_port.h"
 #include "pv_cleaning_robot/app/fault_handler.h"
 #include "pv_cleaning_robot/device/brush_motor.h"
 #include "pv_cleaning_robot/device/walk_motor_group.h"
@@ -28,8 +28,9 @@ using robot::middleware::EventBus;
 struct FaultHandlerFixture {
     std::shared_ptr<MockCanBus> can{std::make_shared<MockCanBus>()};
     std::shared_ptr<WalkMotorGroup> group{std::make_shared<WalkMotorGroup>(can)};
-    std::shared_ptr<MockModbusMaster> modbus{std::make_shared<MockModbusMaster>()};
-    std::shared_ptr<BrushMotor> brush{std::make_shared<BrushMotor>(modbus, 1)};
+    std::shared_ptr<MockSerialPort> brush_serial{std::make_shared<MockSerialPort>()};
+    std::shared_ptr<BrushMotor> brush{
+        std::make_shared<BrushMotor>(brush_serial, 0, 8192.0f, true, 0.5f)};
     EventBus bus;
     std::shared_ptr<MotionService> motion;
     FaultService fault_svc{bus};
@@ -48,8 +49,7 @@ struct FaultHandlerFixture {
         , handler(motion, bus, [this](FaultEvent e) { dispatched.push_back(e); }) {
         can->open_result = true;
         can->send_result = true;
-        modbus->open_result = true;
-        modbus->write_reg_return = 0;
+        brush_serial->open_result = true;
         brush->open();
         handler.start_listening();
     }
@@ -127,12 +127,11 @@ TEST_CASE("FaultHandler: 析构后 EventBus publish 不崩溃", "[app][fault_han
     EventBus bus;
     auto can = std::make_shared<MockCanBus>();
     auto group = std::make_shared<WalkMotorGroup>(can);
-    auto modbus = std::make_shared<MockModbusMaster>();
-    auto brush = std::make_shared<BrushMotor>(modbus, 1);
+    auto brush_serial = std::make_shared<MockSerialPort>();
+    auto brush = std::make_shared<BrushMotor>(brush_serial, 0, 8192.0f, true, 0.5f);
     can->open_result = true;
     can->send_result = true;
-    modbus->open_result = true;
-    modbus->write_reg_return = 0;
+    brush_serial->open_result = true;
     brush->open();
     auto motion = std::make_shared<MotionService>(
         group, brush, nullptr, bus, MotionService::Config{.heading_pid_en = false});

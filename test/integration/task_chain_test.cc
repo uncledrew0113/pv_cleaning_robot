@@ -11,7 +11,7 @@
  *
  * 关键约束（来自 CONCURRENCY.md）：
  *   - EventBus 回调不能再调用 publish()
- *   - 仅验证状态机路径与 CAN/Modbus 帧存在，不验实时时序
+ *   - 仅验证状态机路径与 CAN/串口指令存在，不验实时时序
  */
 #include <catch2/catch.hpp>
 #include <chrono>
@@ -20,7 +20,6 @@
 
 #include "../mock/mock_can_bus.h"
 #include "../mock/mock_gpio_pin.h"
-#include "../mock/mock_modbus_master.h"
 #include "../mock/mock_serial_port.h"
 #include "pv_cleaning_robot/app/fault_handler.h"
 #include "pv_cleaning_robot/app/robot_fsm.h"
@@ -59,15 +58,16 @@ using FaultLevel = FaultEvent::Level;
 struct TaskChainFixture {
     // 底层 mock
     std::shared_ptr<MockCanBus> can{std::make_shared<MockCanBus>()};
-    std::shared_ptr<MockModbusMaster> modbus{std::make_shared<MockModbusMaster>()};
     std::shared_ptr<MockSerialPort> imu_sp{std::make_shared<MockSerialPort>()};
     std::shared_ptr<MockSerialPort> gps_sp{std::make_shared<MockSerialPort>()};
+    std::shared_ptr<MockSerialPort> brush_sp{std::make_shared<MockSerialPort>()};
     std::shared_ptr<MockGpioPin> front_pin{std::make_shared<MockGpioPin>()};
     std::shared_ptr<MockGpioPin> rear_pin{std::make_shared<MockGpioPin>()};
 
     // 设备
     std::shared_ptr<WalkMotorGroup> group{std::make_shared<WalkMotorGroup>(can)};
-    std::shared_ptr<BrushMotor> brush{std::make_shared<BrushMotor>(modbus, 1)};
+    std::shared_ptr<BrushMotor> brush{
+        std::make_shared<BrushMotor>(brush_sp, 0, 8192.0f, true, 0.5f)};
     std::shared_ptr<ImuDevice> imu{std::make_shared<ImuDevice>(imu_sp)};
     std::shared_ptr<GpsDevice> gps{std::make_shared<GpsDevice>(gps_sp)};
     std::shared_ptr<LimitSwitch> front_sw{
@@ -106,8 +106,7 @@ struct TaskChainFixture {
         }) {
         can->open_result = true;
         can->send_result = true;
-        modbus->open_result = true;
-        modbus->write_reg_return = 0;
+        brush_sp->open_result = true;
         front_pin->open_result = true;
         rear_pin->open_result = true;
         brush->open();

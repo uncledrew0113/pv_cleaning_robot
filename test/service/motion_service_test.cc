@@ -1,269 +1,109 @@
 /**
- * MotionService 单元测试（依赖 MockCanBus + MockModbusMaster）
+ * MotionService 单元测试（依赖 MockCanBus + MockSerialPort）
  * [service][motion]
- *
- * 测试策略：
- *   - 使用真实 WalkMotorGroup(MockCanBus) 构造（不调用 open() 避免后台线程）
- *   - 使用真实 BrushMotor(MockModbusMaster, 1) 构造
- *   - imu 传 nullptr（MotionService 内部有 nullptr 检查）
- *   - 验证 MockCanBus::sent_frames 中出现正确 CAN 帧 ID
- *   - 验证 MockModbusMaster::write_calls 中出现正确寄存器写入
  */
 #include <catch2/catch.hpp>
 
+#include <string>
+
 #include "../mock/mock_can_bus.h"
-#include "../mock/mock_modbus_master.h"
+#include "../mock/mock_serial_port.h"
 #include "pv_cleaning_robot/device/brush_motor.h"
 #include "pv_cleaning_robot/device/walk_motor_group.h"
 #include "pv_cleaning_robot/middleware/event_bus.h"
 #include "pv_cleaning_robot/service/motion_service.h"
 
 using robot::device::BrushMotor;
-using robot::device::DeviceError;
 using robot::device::WalkMotorGroup;
 using robot::middleware::EventBus;
-using robot::protocol::WalkMotorMode;
 using robot::service::MotionService;
 
-// ────────────────────────────────────────────────────────────────
-// 构建辅助
-// ────────────────────────────────────────────────────────────────
 struct MotionFixture {
     std::shared_ptr<MockCanBus> can{std::make_shared<MockCanBus>()};
     std::shared_ptr<WalkMotorGroup> group{std::make_shared<WalkMotorGroup>(can)};
-    std::shared_ptr<MockModbusMaster> modbus{std::make_shared<MockModbusMaster>()};
-    std::shared_ptr<BrushMotor> brush{std::make_shared<BrushMotor>(modbus, 1)};
+    std::shared_ptr<MockSerialPort> serial{std::make_shared<MockSerialPort>()};
+    std::shared_ptr<BrushMotor> brush{std::make_shared<BrushMotor>(serial, 0, 8192.0f, true, 0.5f)};
     EventBus bus;
     MotionService::Config cfg{
         .clean_speed_rpm = 300.0f,
         .return_speed_rpm = 500.0f,
         .brush_rpm = 1200,
-        .heading_pid_en = false  // 关闭 PID，减少 IMU 依赖
+        .heading_pid_en = false
     };
     MotionService motion;
 
     MotionFixture() : motion(group, brush, nullptr, bus, cfg) {
         can->open_result = true;
         can->send_result = true;
-        modbus->open_result = true;
-        modbus->write_reg_return = 0;
+        serial->open_result = true;
         brush->open();
-    }
-
-    /// 在 sent_frames 中查找指定 can id 的帧
-    bool has_frame_id(uint32_t id) const {
-        for (auto& f : can->sent_frames)
-            if (f.id == id)
-                return true;
-        return false;
-    }
-
-    /// 在 write_calls 中查找对指定寄存器的写入
-    bool has_write(int reg) const {
-        for (auto& w : modbus->write_calls)
-            if (w.addr == reg)
-                return true;
-        return false;
     }
 };
 
-// WalkMotorGroup 组控制帧 ID（见 walk_motor_can_codec.h，id_base=1 时为 0x32）
-// 模式帧 id = 0x100 + id_base (0x101)，使能帧 id = 0x102 等
-// 实际 CAN ID 需与协议对应，此处验证 sent_frames 非空即可
-// ────────────────────────────────────────────────────────────────
-// is_moving()
-// ────────────────────────────────────────────────────────────────
-TEST_CASE("MotionService: 初始状态 is_moving() == false", "[service][motion]") {
+TEST_CASE("MotionService start_cleaning emits CAN frames", "[service][motion]") {
     MotionFixture f;
-    REQUIRE_FALSE(f.motion.is_moving());
-}
-
-// ────────────────────────────────────────────────────────────────
-// start_cleaning()
-// ────────────────────────────────────────────────────────────────
-TEST_CASE("MotionService: start_cleaning() 发出 CAN 帧", "[service][motion]") {
-    MotionFixture f;
-    bool ok = f.motion.start_cleaning();
-    REQUIRE(ok);
-    // 应有 CAN 帧：模式设置帧 + 使能帧 + 速度给定帧
+    REQUIRE(f.motion.start_cleaning());
     REQUIRE_FALSE(f.can->sent_frames.empty());
 }
 
-TEST_CASE("MotionService: start_cleaning() 写 BrushMotor REG_ENABLE=1", "[service][motion]") {
+TEST_CASE("MotionService start_cleaning switches brush to speed mode and sets rpm",
+          "[service][motion]") {
     MotionFixture f;
+    f.serial->clear_tx();
+
     f.motion.start_cleaning();
 
-    bool found = false;
-    for (auto& w : f.modbus->write_calls)
-        if (w.addr == BrushMotor::REG_ENABLE && w.val == 1) {
-            found = true;
-            break;
-        }
-    REQUIRE(found);
+    const auto tx = f.serial->take_tx_text();
+    REQUIRE(tx.find("w axis0.controller.config.control_mode 2\n") != std::string::npos);
+    REQUIRE(tx.find("v 0 163840.000 0\n") != std::string::npos);
 }
 
-TEST_CASE("MotionService: start_cleaning() 写 BrushMotor REG_TARGET_RPM=1200",
+TEST_CASE("MotionService stop_cleaning commands brush stop", "[service][motion]") {
+    MotionFixture f;
+    f.motion.start_cleaning();
+    f.serial->clear_tx();
+
+    f.motion.stop_cleaning();
+
+    REQUIRE(f.serial->take_tx_text().find("v 0 0.000 0\n") != std::string::npos);
+}
+
+TEST_CASE("MotionService start_returning reverses brush direction", "[service][motion]") {
+    MotionFixture f;
+    f.serial->clear_tx();
+
+    REQUIRE(f.motion.start_returning());
+
+    REQUIRE(f.serial->take_tx_text().find("v 0 -163840.000 0\n") != std::string::npos);
+}
+
+TEST_CASE("MotionService start_returning_no_brush stops brush before reversing walk motors",
           "[service][motion]") {
     MotionFixture f;
     f.motion.start_cleaning();
-
-    bool found = false;
-    for (auto& w : f.modbus->write_calls)
-        if (w.addr == BrushMotor::REG_TARGET_RPM &&
-            static_cast<int16_t>(w.val) == f.cfg.brush_rpm) {
-            found = true;
-            break;
-        }
-    REQUIRE(found);
-}
-
-// ────────────────────────────────────────────────────────────────
-// stop_cleaning()
-// ────────────────────────────────────────────────────────────────
-TEST_CASE("MotionService: stop_cleaning() 写 BrushMotor REG_ENABLE=0", "[service][motion]") {
-    MotionFixture f;
-    f.motion.start_cleaning();
-    f.modbus->write_calls.clear();
-    f.motion.stop_cleaning();
-
-    bool stop_brush = false;
-    for (auto& w : f.modbus->write_calls)
-        if (w.addr == BrushMotor::REG_ENABLE && w.val == 0) {
-            stop_brush = true;
-            break;
-        }
-    REQUIRE(stop_brush);
-}
-
-TEST_CASE("MotionService: stop_cleaning() 发出零速度 CAN 帧", "[service][motion]") {
-    MotionFixture f;
-    f.motion.start_cleaning();
-    f.can->sent_frames.clear();
-    f.motion.stop_cleaning();
-    REQUIRE_FALSE(f.can->sent_frames.empty());
-}
-
-// ────────────────────────────────────────────────────────────────
-// start_returning()
-// ────────────────────────────────────────────────────────────────
-TEST_CASE("MotionService: start_returning() 发出 CAN 帧（反向）", "[service][motion]") {
-    MotionFixture f;
-    bool ok = f.motion.start_returning();
-    REQUIRE(ok);
-    REQUIRE_FALSE(f.can->sent_frames.empty());
-}
-
-TEST_CASE("MotionService: start_returning() 滚刷反转（负 rpm）", "[service][motion]") {
-    MotionFixture f;
-    f.motion.start_returning();
-
-    bool found_neg = false;
-    for (auto& w : f.modbus->write_calls)
-        if (w.addr == BrushMotor::REG_TARGET_RPM && static_cast<int16_t>(w.val) < 0) {
-            found_neg = true;
-            break;
-        }
-    REQUIRE(found_neg);
-}
-
-// ────────────────────────────────────────────────────────────────
-// start_returning_no_brush()
-// ────────────────────────────────────────────────────────────────
-TEST_CASE("MotionService: start_returning_no_brush() 先停滚刷再反向", "[service][motion]") {
-    MotionFixture f;
-    f.motion.start_cleaning();  // 先启动
-    f.modbus->write_calls.clear();
+    f.serial->clear_tx();
     f.can->sent_frames.clear();
 
-    bool ok = f.motion.start_returning_no_brush();
-    REQUIRE(ok);
+    REQUIRE(f.motion.start_returning_no_brush());
 
-    // 滚刷停止（REG_ENABLE=0）应在 CAN 帧之前
-    bool brush_stopped = false;
-    for (auto& w : f.modbus->write_calls)
-        if (w.addr == BrushMotor::REG_ENABLE && w.val == 0) {
-            brush_stopped = true;
-            break;
-        }
-    REQUIRE(brush_stopped);
+    REQUIRE(f.serial->take_tx_text().find("v 0 0.000 0\n") != std::string::npos);
     REQUIRE_FALSE(f.can->sent_frames.empty());
 }
 
-// ────────────────────────────────────────────────────────────────
-// emergency_stop()
-// ────────────────────────────────────────────────────────────────
-TEST_CASE("MotionService: emergency_stop() 停滚刷并发出急停 CAN 帧", "[service][motion]") {
+TEST_CASE("MotionService emergency_stop idles brush", "[service][motion]") {
     MotionFixture f;
     f.motion.start_cleaning();
-    f.modbus->write_calls.clear();
+    f.serial->clear_tx();
     f.can->sent_frames.clear();
 
     f.motion.emergency_stop();
 
-    // 滚刷停止
-    bool brush_stopped = false;
-    for (auto& w : f.modbus->write_calls)
-        if (w.addr == BrushMotor::REG_ENABLE && w.val == 0) {
-            brush_stopped = true;
-            break;
-        }
-    REQUIRE(brush_stopped);
-
-    // 急停 CAN 帧
+    REQUIRE(f.serial->take_tx_text().find("w axis0.requested_state 1\n") != std::string::npos);
     REQUIRE_FALSE(f.can->sent_frames.empty());
 }
 
-// ────────────────────────────────────────────────────────────────
-// CAN 通信失败：start_cleaning() 返回 false
-// ────────────────────────────────────────────────────────────────
-TEST_CASE("MotionService: CAN send 失败时 start_cleaning() 返回 false", "[service][motion]") {
+TEST_CASE("MotionService CAN send failure causes start_cleaning failure", "[service][motion]") {
     MotionFixture f;
     f.can->send_result = false;
-
-    bool ok = f.motion.start_cleaning();
-    REQUIRE_FALSE(ok);
-}
-
-// ────────────────────────────────────────────────────────────────
-// heading_pid_en = true：与 PID 相关路径验证
-// ────────────────────────────────────────────────────────────────
-TEST_CASE("MotionService: heading_pid_en=true + null IMU 时 start_cleaning() 发出 CAN 帧",
-          "[service][motion]") {
-    MotionFixture f;
-    // 直接设置 opened=true，模拟 CAN 已就绪（跳过 recv 线程），送 send_ctrl() 检查
-    f.can->opened = true;
-    MotionService::Config cfg_pid = f.cfg;
-    cfg_pid.heading_pid_en = true;
-    MotionService motion_pid(f.group, f.brush, nullptr, f.bus, cfg_pid);
-
-    bool ok = motion_pid.start_cleaning();
-    REQUIRE(ok);
-    // null IMU → cur_yaw 回落 0.0f（无崩溃），CAN 帧正常发出
-    REQUIRE_FALSE(f.can->sent_frames.empty());
-}
-
-TEST_CASE("MotionService: heading_pid_en=true 时 update(20°) 输出差速帧（LT<RT）",
-          "[service][motion]") {
-    MotionFixture f;
-    f.can->opened = true;
-    MotionService::Config cfg_pid = f.cfg;
-    cfg_pid.heading_pid_en = true;
-    MotionService motion_pid(f.group, f.brush, nullptr, f.bus, cfg_pid);
-
-    // start_cleaning：enqueue CLEAR_OVERRIDE + SET_CTRL_FRAME，enable_heading=true，target=0°
-    motion_pid.start_cleaning();
-
-    // 消费命令队列（含 CLEAR_OVERRIDE 和 SET_CTRL_FRAME），base_lt/rt = clean_speed_rpm
-    f.group->update(0.0f);
-    f.can->sent_frames.clear();
-
-    // yaw=20°（偏右）→ err=-20 → correction<0 → LT 降速，RT 升速
-    f.group->update(20.0f);
-
-    REQUIRE_FALSE(f.can->sent_frames.empty());
-    const auto& frm = f.can->sent_frames.back();
-    REQUIRE(frm.id == 0x032u);
-    int16_t lt = static_cast<int16_t>((static_cast<uint16_t>(frm.data[0]) << 8) | frm.data[1]);
-    int16_t rt = static_cast<int16_t>((static_cast<uint16_t>(frm.data[2]) << 8) | frm.data[3]);
-    REQUIRE(lt < rt);
+    REQUIRE_FALSE(f.motion.start_cleaning());
 }

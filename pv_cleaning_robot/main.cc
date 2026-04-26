@@ -125,18 +125,21 @@ int main() {
         cfg.get<uint8_t>("can.walk_motor.termination_init_retry_count", 3u),
         cfg.get<uint8_t>("can.walk_motor.termination_motor_id", 2u));
 
-    // ── 6. RS485 串口驱动 ──────────────────────────────────────────────
-    // libmodbus 直接管理串口，无需 LibSerialPort 包装
-    auto brush_modbus = std::make_shared<robot::driver::LibModbusMaster>(
+    // ── 6. 串口驱动 ───────────────────────────────────────────────────
+    auto brush_serial = std::make_shared<robot::driver::LibSerialPort>(
         cfg.get<std::string>("serial.brush.port", "/dev/ttyS3"),
-        robot::hal::ModbusConfig{cfg.get<int>("serial.brush.baudrate", 115200)});
+        robot::hal::UartConfig{cfg.get<int>("serial.brush.baudrate", 115200)});
     // BMS 使用嘉佰达通用协议 V4（UART，9600 bps，8-N-1）
     auto bms_serial = std::make_shared<robot::driver::LibSerialPort>(
         cfg.get<std::string>("serial.bms.port", "/dev/ttyS8"),
         robot::hal::UartConfig{cfg.get<int>("serial.bms.baudrate", 9600)});
 
     auto brush_motor = std::make_shared<robot::device::BrushMotor>(
-        brush_modbus, cfg.get<int>("serial.brush.slave_id", 1));
+        brush_serial,
+        cfg.get<uint8_t>("serial.brush.axis", 0u),
+        cfg.get<float>("serial.brush.counts_per_rev", 8192.0f),
+        cfg.get<bool>("serial.brush.watchdog_enabled", true),
+        cfg.get<float>("serial.brush.watchdog_timeout_s", 0.5f));
 
     auto bms = std::make_shared<robot::device::BMS>(bms_serial,
                                                     cfg.get<float>("robot.battery_full_soc", 95.0f),

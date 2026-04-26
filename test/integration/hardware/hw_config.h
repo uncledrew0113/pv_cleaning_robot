@@ -5,7 +5,7 @@
  * @brief 硬件测试公共 Fixture
  *
  * DeviceFixture       — Driver + Device 层，用于限位和电机单元测试
- * FullSystemFixture   — 全层栈，用于集成测试（BrushMotor 用 MockModbusMaster）
+ * FullSystemFixture   — 全层栈，用于集成测试（BrushMotor 用 MockSerialPort）
  *
  * 硬件接线（默认值与 config/config.json 对齐，可通过 hw_test_config.json 覆盖）：
  *   CAN      : can0（默认），行走电机 M1502E_111，motor_id_base=1
@@ -55,7 +55,7 @@
 #include "pv_cleaning_robot/app/watchdog_mgr.h"
 
 // Mock（滚刷电机未安装）
-#include "mock/mock_modbus_master.h"
+#include "mock/mock_serial_port.h"
 #include "pv_cleaning_robot/service/config_service.h"
 
 namespace hw {
@@ -248,7 +248,7 @@ struct DeviceFixture {
 // ── FullSystemFixture：全层栈（集成测试使用）─────────────────────────────────
 struct FullSystemFixture : DeviceFixture {
     robot::middleware::EventBus event_bus;
-    std::shared_ptr<MockModbusMaster> mock_modbus;
+    std::shared_ptr<MockSerialPort> mock_brush_serial;
     std::shared_ptr<robot::device::BrushMotor> brush;
     std::shared_ptr<robot::device::GpsDevice> gps_dummy;
     std::unique_ptr<robot::middleware::SafetyMonitor> safety;
@@ -267,8 +267,8 @@ struct FullSystemFixture : DeviceFixture {
     explicit FullSystemFixture(bool pid_enabled = false) : DeviceFixture() {
         using namespace robot;
 
-        mock_modbus = std::make_shared<MockModbusMaster>();
-        brush = std::make_shared<device::BrushMotor>(mock_modbus, 1);
+        mock_brush_serial = std::make_shared<MockSerialPort>();
+        brush = std::make_shared<device::BrushMotor>(mock_brush_serial, 0, 8192.0f, true, 0.5f);
 
         // SafetyMonitor 构造时内部绑定 LimitSwitch 回调
         safety =
@@ -284,7 +284,7 @@ struct FullSystemFixture : DeviceFixture {
         service::MotionService::Config motion_cfg;
         motion_cfg.clean_speed_rpm = p.test_speed_rpm;
         motion_cfg.return_speed_rpm = p.test_return_rpm;
-        motion_cfg.brush_rpm = 0;  // MockModbus，不实际驱动滚刷
+        motion_cfg.brush_rpm = 0;  // Mock 串口，不实际驱动滚刷
         motion_cfg.return_brush_rpm = 0;
         motion_cfg.edge_reverse_rpm = 0.0f;
         motion_cfg.heading_pid_en = pid_enabled;

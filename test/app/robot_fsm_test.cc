@@ -3,7 +3,7 @@
  * [app][fsm]
  *
  * 测试策略：
- *   - 使用真实 WalkMotorGroup(MockCanBus) + BrushMotor(MockModbusMaster)
+ *   - 使用真实 WalkMotorGroup(MockCanBus) + BrushMotor(MockSerialPort)
  *     构造 MotionService（不调用 open，不启动后台线程）
  *   - NavService 使用真实构造（不调用 update()）
  *   - FaultService + EventBus 使用真实实例
@@ -12,7 +12,6 @@
 #include <catch2/catch.hpp>
 
 #include "../mock/mock_can_bus.h"
-#include "../mock/mock_modbus_master.h"
 #include "../mock/mock_serial_port.h"
 #include "pv_cleaning_robot/app/robot_fsm.h"
 #include "pv_cleaning_robot/device/brush_motor.h"
@@ -39,8 +38,9 @@ using robot::service::NavService;
 struct FsmFixture {
     std::shared_ptr<MockCanBus> can{std::make_shared<MockCanBus>()};
     std::shared_ptr<WalkMotorGroup> group{std::make_shared<WalkMotorGroup>(can)};
-    std::shared_ptr<MockModbusMaster> modbus{std::make_shared<MockModbusMaster>()};
-    std::shared_ptr<BrushMotor> brush{std::make_shared<BrushMotor>(modbus, 1)};
+    std::shared_ptr<MockSerialPort> brush_serial{std::make_shared<MockSerialPort>()};
+    std::shared_ptr<BrushMotor> brush{
+        std::make_shared<BrushMotor>(brush_serial, 0, 8192.0f, true, 0.5f)};
     std::shared_ptr<MockSerialPort> imu_serial{std::make_shared<MockSerialPort>()};
     std::shared_ptr<ImuDevice> imu{std::make_shared<ImuDevice>(imu_serial)};
     std::shared_ptr<MockSerialPort> gps_serial{std::make_shared<MockSerialPort>()};
@@ -61,8 +61,7 @@ struct FsmFixture {
         , fsm(motion, nav, fault, bus) {
         can->open_result = true;
         can->send_result = true;
-        modbus->open_result = true;
-        modbus->write_reg_return = 0;
+        brush_serial->open_result = true;
         brush->open();
         // 初始化 FSM
         fsm.dispatch(EvInitDone{});

@@ -1,6 +1,7 @@
 #pragma once
 #include "pv_cleaning_robot/hal/i_serial_port.h"
 #include <cstring>
+#include <string>
 #include <vector>
 
 /// @brief ISerialPort 手工 mock，用于单元测试，不依赖真实硬件
@@ -61,4 +62,20 @@ struct MockSerialPort : robot::hal::ISerialPort {
     int  bytes_available() override { return static_cast<int>(rx_data.size()); }
 
     robot::hal::UartResult get_last_error() const override { return injected_error; }
+
+    void queue_rx_text(const char* text) {
+        if (!text) {
+            return;
+        }
+        const size_t len = std::strlen(text);
+        rx_data.insert(rx_data.end(), text, text + len);
+    }
+
+    std::string take_tx_text() const {
+        return std::string(tx_captured.begin(), tx_captured.end());
+    }
+
+    void clear_tx() {
+        tx_captured.clear();
+    }
 };

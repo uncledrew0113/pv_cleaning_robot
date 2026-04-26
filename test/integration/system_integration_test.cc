@@ -130,7 +130,7 @@ static void write_test_config() {
 struct SystemFixture {
     // ── Mock 硬件层 ────────────────────────────────────────────────
     std::shared_ptr<MockCanBus>         can      {std::make_shared<MockCanBus>()};
-    std::shared_ptr<MockModbusMaster>   modbus   {std::make_shared<MockModbusMaster>()};
+    std::shared_ptr<MockSerialPort>     brush_sp {std::make_shared<MockSerialPort>()};
     std::shared_ptr<MockSerialPort>     imu_sp   {std::make_shared<MockSerialPort>()};
     std::shared_ptr<MockSerialPort>     gps_sp   {std::make_shared<MockSerialPort>()};
     std::shared_ptr<MockSerialPort>     bms_sp   {std::make_shared<MockSerialPort>()};
@@ -139,7 +139,7 @@ struct SystemFixture {
 
     // ── 设备层 ────────────────────────────────────────────────────
     std::shared_ptr<WalkMotorGroup>     group  {std::make_shared<WalkMotorGroup>(can)};
-    std::shared_ptr<BrushMotor>         brush  {std::make_shared<BrushMotor>(modbus, 1)};
+    std::shared_ptr<BrushMotor>         brush  {std::make_shared<BrushMotor>(brush_sp, 0, 8192.0f, true, 0.5f)};
     std::shared_ptr<ImuDevice>          imu    {std::make_shared<ImuDevice>(imu_sp)};
     std::shared_ptr<GpsDevice>          gps    {std::make_shared<GpsDevice>(gps_sp)};
     std::shared_ptr<BMS>                bms    {std::make_shared<BMS>(bms_sp, 95.0f, 15.0f)};
@@ -206,8 +206,7 @@ struct SystemFixture {
         can->open_result     = true;
         can->send_result     = true;
         can->opened          = true;   // 允许 send_ctrl() is_open() 检查通过
-        modbus->open_result  = true;
-        modbus->write_reg_return = 0;
+        brush_sp->open_result = true;
         front_pin->open_result = true;
         rear_pin->open_result  = true;
 
