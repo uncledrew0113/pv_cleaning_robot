@@ -143,6 +143,74 @@ TEST_CASE("设备层WalkMotorGroup - 构造支持终端电阻启动配置", "[de
     group.close();
 }
 
+TEST_CASE("设备层WalkMotorGroup - open() 先发终端电阻初始化再发 comm_timeout",
+          "[device][walk_motor_group]") {
+    auto bus = std::make_shared<MockCanBus>();
+    device::WalkMotorGroup group(bus, 1u, 200u, true, 3u, 2u);
+
+    REQUIRE(group.open() == device::DeviceError::OK);
+    REQUIRE(bus->sent_frames.size() == 7u);
+    REQUIRE(bus->sent_frames[0].id == protocol::kWalkMotorTermResId);
+    REQUIRE(bus->sent_frames[1].id == protocol::kWalkMotorTermResId);
+    REQUIRE(bus->sent_frames[2].id == protocol::kWalkMotorTermResId);
+    for (size_t i = 3; i < bus->sent_frames.size(); ++i)
+        REQUIRE(bus->sent_frames[i].id == protocol::kWalkMotorCommTimeoutId);
+
+    const auto& term = bus->sent_frames[0];
+    REQUIRE(term.data[0] == 0u);
+    REQUIRE(term.data[1] == 1u);
+    REQUIRE(term.data[2] == 0u);
+    REQUIRE(term.data[3] == 0u);
+
+    group.close();
+}
+
+TEST_CASE("设备层WalkMotorGroup - 禁用终端电阻初始化时 open() 不发送 0x109",
+          "[device][walk_motor_group]") {
+    auto bus = std::make_shared<MockCanBus>();
+    device::WalkMotorGroup group(bus, 1u, 200u, false, 3u, 2u);
+
+    REQUIRE(group.open() == device::DeviceError::OK);
+    REQUIRE(bus->sent_frames.size() == 4u);
+    for (const auto& frame : bus->sent_frames)
+        REQUIRE(frame.id != protocol::kWalkMotorTermResId);
+
+    group.close();
+}
+
+TEST_CASE("设备层WalkMotorGroup - 非法 termination_motor_id 使 open() 失败",
+          "[device][walk_motor_group]") {
+    auto bus = std::make_shared<MockCanBus>();
+    device::WalkMotorGroup group(bus, 1u, 200u, true, 3u, 5u);
+
+    REQUIRE(group.open() == device::DeviceError::NOT_OPEN);
+    REQUIRE(bus->sent_frames.empty());
+}
+
+TEST_CASE("设备层WalkMotorGroup - retry_count=0 时按 1 次发送处理",
+          "[device][walk_motor_group]") {
+    auto bus = std::make_shared<MockCanBus>();
+    device::WalkMotorGroup group(bus, 1u, 0u, true, 0u, 2u);
+
+    REQUIRE(group.open() == device::DeviceError::OK);
+    REQUIRE(bus->sent_frames.size() == 1u);
+    REQUIRE(bus->sent_frames[0].id == protocol::kWalkMotorTermResId);
+
+    group.close();
+}
+
+TEST_CASE("设备层WalkMotorGroup - 终端电阻初始化前两次失败后重试成功仍继续 open()",
+          "[device][walk_motor_group]") {
+    auto bus = std::make_shared<MockCanBus>();
+    bus->send_results = {false, false, true, true, true, true, true};
+    device::WalkMotorGroup group(bus, 1u, 200u, true, 3u, 2u);
+
+    REQUIRE(group.open() == device::DeviceError::OK);
+    REQUIRE(bus->sent_frames.size() == 7u);
+
+    group.close();
+}
+
 TEST_CASE("设备层WalkMotorGroup - set_mode_all() 发送4帧 SET_MODE", "[device][walk_motor_group]") {
     auto bus = std::make_shared<MockCanBus>();
     device::WalkMotorGroup group(bus, 1u);

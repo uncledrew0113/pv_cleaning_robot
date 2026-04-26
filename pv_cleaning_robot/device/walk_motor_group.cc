@@ -20,6 +20,17 @@ static float clamp(float v, float lo, float hi) {
     return v < lo ? lo : (v > hi ? hi : v);
 }
 
+static bool motor_id_in_group(uint8_t id_base, uint8_t motor_id) {
+    return motor_id >= id_base &&
+           motor_id < static_cast<uint8_t>(id_base + WalkMotorGroup::kWheelCount);
+}
+
+static hal::CanFrame make_group_termination_frame(uint8_t motor_id) {
+    std::array<bool, 8> enables{};
+    enables[static_cast<std::size_t>(motor_id - 1u)] = true;
+    return protocol::WalkMotorCanCodec::encode_set_termination_batch(enables);
+}
+
 // ── 构造 / 析构 ─────────────────────────────────────────────────────────────
 
 WalkMotorGroup::WalkMotorGroup(std::shared_ptr<hal::ICanBus> can,
@@ -66,6 +77,51 @@ DeviceError WalkMotorGroup::open() {
 
     running_.store(true);
     recv_thread_ = std::thread(&WalkMotorGroup::recv_loop, this);
+
+    if (termination_init_enabled_) {
+        if (!motor_id_in_group(id_base_, termination_motor_id_)) {
+            spdlog::error("[WalkMotorGroup] invalid termination_motor_id={} for group base={}",
+                          termination_motor_id_,
+                          id_base_);
+            running_.store(false);
+            if (recv_thread_.joinable())
+                recv_thread_.join();
+            can_->close();
+            return DeviceError::NOT_OPEN;
+        }
+
+        const uint8_t retry_count =
+            termination_init_retry_count_ == 0u ? 1u : termination_init_retry_count_;
+        const auto frame = make_group_termination_frame(termination_motor_id_);
+        bool any_success = false;
+        spdlog::info("[WalkMotorGroup] init termination motor_id={} retries={}",
+                     termination_motor_id_,
+                     retry_count);
+        for (uint8_t i = 0; i < retry_count; ++i) {
+            const bool ok = can_->send(frame);
+            {
+                std::lock_guard<hal::PiMutex> lk(mtx_);
+                if (ok)
+                    ++ctrl_frame_count_;
+                else
+                    ++ctrl_err_count_;
+            }
+            if (ok) {
+                any_success = true;
+            } else {
+                spdlog::warn("[WalkMotorGroup] termination init send failed attempt {}/{}",
+                             static_cast<unsigned>(i + 1u),
+                             static_cast<unsigned>(retry_count));
+            }
+        }
+        if (!any_success) {
+            spdlog::error(
+                "[WalkMotorGroup] termination init failed for motor_id={}, bus may rely on external termination",
+                termination_motor_id_);
+        }
+    } else {
+        spdlog::info("[WalkMotorGroup] termination init disabled by config");
+    }
 
     // 若配置了通信超时，写入每台电机（确保主控失联时电机自停）
     if (comm_timeout_ms_ > 0u) {

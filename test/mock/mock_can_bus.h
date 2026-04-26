@@ -10,6 +10,7 @@ struct MockCanBus : robot::hal::ICanBus {
     bool recv_result{false};
     robot::hal::CanFrame recv_frame{};
     bool recover_result{true};
+    std::vector<bool> send_results{};
 
     // ── 可注入的错误状态 ────────────────────────────────────
     robot::hal::CanResult injected_error{robot::hal::CanResult::OK};
@@ -34,6 +35,11 @@ struct MockCanBus : robot::hal::ICanBus {
 
     bool send(const robot::hal::CanFrame& f) override {
         sent_frames.push_back(f);
+        if (!send_results.empty()) {
+            const bool result = send_results.front();
+            send_results.erase(send_results.begin());
+            return result;
+        }
         return send_result;
     }
     bool recv(robot::hal::CanFrame& frame, int) override {
