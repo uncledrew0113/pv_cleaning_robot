@@ -30,6 +30,14 @@ These exclusions may still appear in repository hygiene observations if they cre
 
 ## Summary
 
+The current repository state shows three kinds of issues clearly.
+
+First, there are confirmed stale artifacts: an unused pre-ODrive brush mock, an unintegrated OTA module that still ships in the build, and raw experiment log files in `doc/`.
+
+Second, the most urgent live-code correctness problem is a thread-safety bug in `CloudService`: the shared-attribute callback is written under a mutex but read from the network callback path without synchronization.
+
+Third, the main long-lived heap churn is concentrated in the telemetry and offline-cache path. `HealthService` rebuilds JSON payloads every reporting cycle, and `DataCache` rewrites the entire JSONL queue on every `push()` and `confirm_sent()`. There is also a smaller but still plausible churn source in the serial NMEA parsing path.
+
 ## Findings by Dimension
 
 ### Redundant or Obsolete Code
@@ -58,7 +66,51 @@ These exclusions may still appear in repository hygiene observations if they cre
 
 ### Thread Safety
 
+#### AUDIT-005
+- **Title:** `CloudService::attr_cb_` has a real cross-thread data race between registration and network delivery
+- **Dimension:** Thread Safety
+- **Evidence Level:** confirmed
+- **Impact:** This is undefined behavior on a live asynchronous path. A shared-attribute message can race with callback registration and observe or invoke a partially written `std::function`.
+- **Files:** `include/pv_cleaning_robot/service/cloud_service.h`, `pv_cleaning_robot/service/cloud_service.cc`, `pv_cleaning_robot/main.cc`
+- **Summary:** `CloudService::subscribe_shared_attributes()` stores `attr_cb_` while holding `rpc_mtx_`, but the attribute subscription lambda reads `attr_cb_` and invokes it with no lock at all. `main.cc` calls `net_mgr->connect()` before `cloud->subscribe_shared_attributes(...)`, which creates a real window where network delivery and callback installation can overlap.
+- **Recommended Action:** Protect both read and write access to `attr_cb_` with the same synchronization strategy, or swap to an immutable callback handle with atomic publication semantics.
+- **Needs Remediation Spec:** yes
+- **Priority:** P0
+
 ### Memory Fragmentation Risk
+
+#### AUDIT-006
+- **Title:** `HealthService` rebuilds telemetry JSON on every reporting cycle through mutable `nlohmann::json` state and `dump()`
+- **Dimension:** Memory Fragmentation Risk
+- **Evidence Level:** confirmed
+- **Impact:** The telemetry reporting path runs continuously for the lifetime of the process. Repeated `nlohmann::json` mutation plus `dump()` string creation adds sustained heap churn in a long-running embedded service.
+- **Files:** `include/pv_cleaning_robot/service/health_service.h`, `pv_cleaning_robot/service/health_service.cc`
+- **Summary:** `HealthService::update()` calls `build_payload()` each cycle. `build_payload()` mutates a large `mutable nlohmann::json j_` tree and returns `j_.dump()` as a fresh `std::string`, which is then sent to `CloudService` and written again to the local JSONL file. This is a direct repeated-allocation path, not just a one-time setup cost.
+- **Recommended Action:** Move payload formatting out of `HealthService` and replace the hot path with a fixed-buffer or reuse-oriented encoder strategy.
+- **Needs Remediation Spec:** yes
+- **Priority:** P1
+
+#### AUDIT-007
+- **Title:** `DataCache` rewrites the entire persisted queue on every enqueue and acknowledgement
+- **Dimension:** Memory Fragmentation Risk
+- **Evidence Level:** confirmed
+- **Impact:** In offline or unstable-network conditions, each telemetry enqueue and each confirmation causes full queue traversal, repeated JSON object construction, and full-file rewrite churn. This compounds heap churn with unnecessary I/O.
+- **Files:** `include/pv_cleaning_robot/middleware/data_cache.h`, `pv_cleaning_robot/middleware/data_cache.cc`, `pv_cleaning_robot/service/cloud_service.cc`
+- **Summary:** `DataCache::push()` appends the record to `queue_` and immediately calls `flush_to_file()`. `confirm_sent()` erases acknowledged records and calls the same full rewrite path. `flush_to_file()` constructs a new `nlohmann::json` object for every queued record and `dump()`s each one during every rewrite cycle.
+- **Recommended Action:** Replace full-rewrite persistence with an append-first journal and explicit compaction policy, or another persistence strategy that avoids reserializing the full queue on every mutation.
+- **Needs Remediation Spec:** yes
+- **Priority:** P1
+
+#### AUDIT-008
+- **Title:** The serial NMEA parsing path still allocates per sentence in a long-lived read loop
+- **Dimension:** Memory Fragmentation Risk
+- **Evidence Level:** high-risk
+- **Impact:** This path is lighter than the telemetry/cache hotspots, but it still performs repeated string growth, split-vector construction, and substring extraction on a device reader loop that may run indefinitely.
+- **Files:** `include/pv_cleaning_robot/device/gps_source.h`, `pv_cleaning_robot/device/serial_gps_source.cc`, `include/pv_cleaning_robot/protocol/nmea_parser.h`, `pv_cleaning_robot/protocol/nmea_parser.cc`
+- **Summary:** `SerialGpsSource::read_loop()` accumulates bytes into `line_buf_`, and `NmeaParser` then uses `std::string`, `std::vector<std::string>`, `substr`, and `stod`/`stoi` style parsing helpers per sentence. Capacity reuse may reduce the effect, but the code shape still suggests repeated heap activity in a background loop.
+- **Recommended Action:** Treat this as a secondary optimization target after the heavier telemetry/cache churn. If memory pressure remains a concern, convert NMEA parsing toward fixed-buffer tokenization.
+- **Needs Remediation Spec:** no
+- **Priority:** observe
 
 ### Layering Discipline
 
@@ -88,6 +140,30 @@ These exclusions may still appear in repository hygiene observations if they cre
 
 ## Priority Rollup
 
+- `P0`
+  - `AUDIT-005` `CloudService::attr_cb_` data race on a live asynchronous path
+- `P1`
+  - `AUDIT-002` `OtaManager` compiled and documented without first-party integration
+  - `AUDIT-003` `HealthService` layer-boundary violation between service policy, formatting, and persistence
+  - `AUDIT-006` `HealthService` telemetry JSON hot-path heap churn
+  - `AUDIT-007` `DataCache` full-rewrite persistence churn
+- `P2`
+  - `AUDIT-001` stale `MockBrushMotor`
+  - `AUDIT-004` raw hardware log artifacts under `doc/`
+- `observe`
+  - `AUDIT-008` serial NMEA parse churn is plausible but secondary compared with the main telemetry/cache path
+
 ## Recommended Remediation Spec Candidates
 
+- `docs/superpowers/specs/2026-04-26-telemetry-pipeline-hardening-design.md`
+  - Covers `AUDIT-003`, `AUDIT-006`, and `AUDIT-007`
+- `docs/superpowers/specs/2026-04-26-cloud-service-thread-safety-design.md`
+  - Covers `AUDIT-005`
+- `docs/superpowers/specs/2026-04-26-ota-module-scope-cleanup-design.md`
+  - Covers `AUDIT-002`
+
 ## Observations That Should Not Trigger Code Changes
+
+- The `gpsd` receive path is no longer the primary memory-fragmentation concern. It already uses a fixed receive buffer and a `std::string_view`-based protocol parser instead of the earlier `nlohmann::json` hot path.
+- `doc/API_REFERENCE.md` and `doc/dev-guide/CONCURRENCY.md` are large but actively referenced from `README.md`, code comments, and prior engineering plans. They should not be treated as garbage merely because they are broad or historical.
+- The checked-in `.vscode` files are repository-hygiene candidates rather than architecture findings. Whether they should stay depends on team convention, not on code correctness.
