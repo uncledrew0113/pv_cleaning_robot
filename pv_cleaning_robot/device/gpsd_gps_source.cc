@@ -1,12 +1,8 @@
 #include "pv_cleaning_robot/device/gps_source.h"
 
-#include <nlohmann/json.hpp>
-
 #include <chrono>
 #include <cstring>
-#include <ctime>
 #include <netdb.h>
-#include <string_view>
 #include <sys/socket.h>
 #include <thread>
 #include <unistd.h>
@@ -21,113 +17,6 @@ void close_socket(int& fd)
         ::shutdown(fd, SHUT_RDWR);
         ::close(fd);
         fd = -1;
-    }
-}
-
-uint8_t clamp_sat_count(std::size_t count)
-{
-    return static_cast<uint8_t>(count > 255 ? 255 : count);
-}
-
-bool parse_utc_timestamp_ms(const std::string& iso8601, uint64_t& out_ms)
-{
-    std::tm tm{};
-    const char* pos = ::strptime(iso8601.c_str(), "%Y-%m-%dT%H:%M:%S", &tm);
-    if (!pos) return false;
-
-    int millis = 0;
-    if (*pos == '.') {
-        ++pos;
-        int digits = 0;
-        while (*pos >= '0' && *pos <= '9') {
-            if (digits < 3) millis = millis * 10 + (*pos - '0');
-            ++digits;
-            ++pos;
-        }
-        while (digits < 3) {
-            millis *= 10;
-            ++digits;
-        }
-    }
-
-    int offset_seconds = 0;
-    if (*pos == 'Z') {
-        ++pos;
-    } else if (*pos == '+' || *pos == '-') {
-        const int sign = (*pos == '+') ? 1 : -1;
-        ++pos;
-
-        if (!std::isdigit(pos[0]) || !std::isdigit(pos[1])) return false;
-        const int hours = (pos[0] - '0') * 10 + (pos[1] - '0');
-        pos += 2;
-
-        int minutes = 0;
-        if (*pos == ':') ++pos;
-        if (std::isdigit(pos[0]) && std::isdigit(pos[1])) {
-            minutes = (pos[0] - '0') * 10 + (pos[1] - '0');
-            pos += 2;
-        }
-        offset_seconds = sign * (hours * 3600 + minutes * 60);
-    } else {
-        return false;
-    }
-
-    if (*pos != '\0') return false;
-
-    const std::time_t epoch = ::timegm(&tm);
-    if (epoch == static_cast<std::time_t>(-1)) return false;
-
-    const long long total_ms =
-        (static_cast<long long>(epoch) - offset_seconds) * 1000LL + millis;
-    if (total_ms < 0) return false;
-
-    out_ms = static_cast<uint64_t>(total_ms);
-    return true;
-}
-
-void apply_tpv(protocol::GpsData& data,
-               const nlohmann::json& j,
-               bool& time_parse_error)
-{
-    if (j.contains("lat")) data.latitude = j.at("lat").get<double>();
-    if (j.contains("lon")) data.longitude = j.at("lon").get<double>();
-    if (j.contains("speed")) data.speed_m_s = j.at("speed").get<float>();
-    if (j.contains("track")) data.course_deg = j.at("track").get<float>();
-
-    if (j.contains("altMSL")) data.altitude_m = j.at("altMSL").get<float>();
-    else if (j.contains("altHAE")) data.altitude_m = j.at("altHAE").get<float>();
-
-    if (j.contains("mode")) {
-        const int mode = j.at("mode").get<int>();
-        data.valid = mode >= 2;
-        data.fix_quality = mode >= 3 ? 2 : (mode >= 2 ? 1 : 0);
-    }
-
-    if (j.contains("time")) {
-        uint64_t timestamp_ms = 0;
-        if (parse_utc_timestamp_ms(j.at("time").get<std::string>(), timestamp_ms)) {
-            data.utc_timestamp_ms = timestamp_ms;
-        } else {
-            time_parse_error = true;
-        }
-    }
-}
-
-void apply_sky(protocol::GpsData& data, const nlohmann::json& j)
-{
-    if (j.contains("hdop")) data.hdop = j.at("hdop").get<float>();
-    if (j.contains("pdop")) data.pdop = j.at("pdop").get<float>();
-    if (j.contains("vdop")) data.vdop = j.at("vdop").get<float>();
-    if (j.contains("nSat")) data.satellites_in_view = clamp_sat_count(j.at("nSat").get<int>());
-
-    if (j.contains("satellites")) {
-        const auto& satellites = j.at("satellites");
-        uint8_t used = 0;
-        for (const auto& sat : satellites) {
-            if (sat.value("used", false)) ++used;
-        }
-        data.satellites_used = used;
-        if (!j.contains("nSat")) data.satellites_in_view = clamp_sat_count(satellites.size());
     }
 }
 
@@ -185,7 +74,7 @@ DeviceError GpsdGpsSource::cold_restart()
     return DeviceError::NOT_SUPPORTED;
 }
 
-void GpsdGpsSource::ingest_json_line_for_test(const std::string& line)
+void GpsdGpsSource::ingest_json_line_for_test(std::string_view line)
 {
     handle_json_line(line);
 }
@@ -248,46 +137,45 @@ void GpsdGpsSource::read_loop()
             continue;
         }
 
-        rx_buf_.append(buf, static_cast<std::size_t>(n));
-        std::size_t pos = 0;
-        while ((pos = rx_buf_.find('\n')) != std::string::npos) {
-            std::string line = rx_buf_.substr(0, pos);
-            rx_buf_.erase(0, pos + 1);
-
-            if (!line.empty() && line.back() == '\r') line.pop_back();
-            if (line.empty()) continue;
-
-            if (on_message_) on_message_();
-            handle_json_line(line);
+        for (int i = 0; i < n; ++i) {
+            const char c = buf[i];
+            if (c == '\n') {
+                std::string_view line(rx_buf_.data(), rx_len_);
+                if (!line.empty() && line.back() == '\r') {
+                    line.remove_suffix(1);
+                }
+                if (!line.empty()) {
+                    if (on_message_) on_message_();
+                    handle_json_line(line);
+                }
+                rx_len_ = 0;
+                continue;
+            }
+            if (rx_len_ + 1 < rx_buf_.size()) {
+                rx_buf_[rx_len_++] = c;
+            } else {
+                rx_len_ = 0;
+                if (on_parse_error_) on_parse_error_();
+            }
         }
     }
 }
 
-void GpsdGpsSource::handle_json_line(const std::string& line)
+void GpsdGpsSource::handle_json_line(std::string_view line)
 {
-    try {
-        const auto j = nlohmann::json::parse(line);
-        const std::string cls = j.value("class", "");
-
-        if (cls == "TPV") {
-            bool time_parse_error = false;
-            apply_tpv(data_, j, time_parse_error);
-            if (time_parse_error && on_parse_error_) on_parse_error_();
-            if (on_data_) on_data_(data_);
-            return;
-        }
-
-        if (cls == "SKY") {
-            apply_sky(data_, j);
-            if (on_data_) on_data_(data_);
-            return;
-        }
-
-        if (cls == "VERSION" || cls == "WATCH") return;
-
+    protocol::GpsdJsonParseResult result{};
+    if (!protocol::GpsdJsonParser::parse_line(line, data_, result)) {
         if (on_parse_error_) on_parse_error_();
-    } catch (...) {
-        if (on_parse_error_) on_parse_error_();
+        return;
+    }
+
+    if ((result.message_class == protocol::GpsdMessageClass::TPV ||
+         result.message_class == protocol::GpsdMessageClass::SKY) &&
+        on_data_) {
+        on_data_(data_);
+    }
+    if (result.time_parse_error && on_parse_error_) {
+        on_parse_error_();
     }
 }
 

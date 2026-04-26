@@ -1,8 +1,10 @@
 #pragma once
 
 #include "pv_cleaning_robot/device/device_error.h"
+#include "pv_cleaning_robot/protocol/gpsd_json_parser.h"
 #include "pv_cleaning_robot/protocol/nmea_parser.h"
 
+#include <array>
 #include <atomic>
 #include <functional>
 #include <memory>
@@ -81,13 +83,15 @@ public:
     DeviceError hot_restart() override;
     DeviceError cold_restart() override;
 
-    void ingest_json_line_for_test(const std::string& line);
+    void ingest_json_line_for_test(std::string_view line);
 
 private:
+    static constexpr size_t kRxBufCap = 2048;
+
     bool connect_socket();
     bool send_watch();
     void read_loop();
-    void handle_json_line(const std::string& line);
+    void handle_json_line(std::string_view line);
 
     GpsdSourceConfig   cfg_;
     DataCallback       on_data_;
@@ -97,7 +101,8 @@ private:
     std::thread        read_thread_;
     std::atomic<bool>  running_{false};
     protocol::GpsData  data_{};
-    std::string        rx_buf_;
+    std::array<char, kRxBufCap> rx_buf_{};
+    size_t             rx_len_{0};
 };
 
 }  // namespace robot::device
