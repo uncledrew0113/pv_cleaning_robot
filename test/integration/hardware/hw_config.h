@@ -67,6 +67,9 @@ struct HwParams {
     std::string can_iface = "can0";
     uint8_t motor_id_base = 1u;
     uint16_t comm_timeout_ms = 500u;  ///< update 50ms × 10 倍余量
+    bool termination_init_enabled = true;
+    uint8_t termination_init_retry_count = 3u;
+    uint8_t termination_motor_id = 2u;
     std::string imu_port = "/dev/ttyS1";
     int imu_baud = 9600;
     std::string gpsd_host = "127.0.0.1";
@@ -134,6 +137,13 @@ inline HwParams load_hw_test_config() {
             static_cast<uint8_t>(cfg.get<int>("hardware.motor_id_base", (int)p.motor_id_base));
         p.comm_timeout_ms =
             static_cast<uint16_t>(cfg.get<int>("timing.comm_timeout_ms", (int)p.comm_timeout_ms));
+        p.termination_init_enabled =
+            cfg.get<bool>("hardware.termination_init_enabled", p.termination_init_enabled);
+        p.termination_init_retry_count = static_cast<uint8_t>(
+            cfg.get<int>("hardware.termination_init_retry_count",
+                         static_cast<int>(p.termination_init_retry_count)));
+        p.termination_motor_id = static_cast<uint8_t>(
+            cfg.get<int>("hardware.termination_motor_id", static_cast<int>(p.termination_motor_id)));
         p.imu_port = cfg.get<std::string>("hardware.imu_port", p.imu_port);
         p.imu_baud = cfg.get<int>("hardware.imu_baud", p.imu_baud);
         p.gpsd_host = cfg.get<std::string>("hardware.gpsd_host", p.gpsd_host);
@@ -202,7 +212,12 @@ struct DeviceFixture {
         using namespace robot;
         can_bus = std::make_shared<driver::LinuxCanSocket>(p.can_iface);
         walk_group =
-            std::make_shared<device::WalkMotorGroup>(can_bus, p.motor_id_base, p.comm_timeout_ms);
+            std::make_shared<device::WalkMotorGroup>(can_bus,
+                                                     p.motor_id_base,
+                                                     p.comm_timeout_ms,
+                                                     p.termination_init_enabled,
+                                                     p.termination_init_retry_count,
+                                                     p.termination_motor_id);
         imu_serial =
             std::make_shared<driver::LibSerialPort>(p.imu_port, hal::UartConfig{p.imu_baud});
         imu = std::make_shared<device::ImuDevice>(imu_serial);

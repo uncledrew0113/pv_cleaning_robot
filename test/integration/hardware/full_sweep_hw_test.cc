@@ -52,6 +52,15 @@ static int sweep_loops() {
     return kp.sweep_duration_ms / kp.loop_period_ms;
 }
 
+static device::WalkMotorGroup make_hw_group(const std::shared_ptr<driver::LinuxCanSocket>& can) {
+    return device::WalkMotorGroup(can,
+                                  kp.motor_id_base,
+                                  kp.comm_timeout_ms,
+                                  kp.termination_init_enabled,
+                                  kp.termination_init_retry_count,
+                                  kp.termination_motor_id);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 //  测试辅助工具
 // ═══════════════════════════════════════════════════════════════════════════
@@ -93,7 +102,7 @@ static void safe_stop(device::WalkMotorGroup& group) {
 TEST_CASE("[hw_sweep][with_pid] 带 PID 全扫描序列", "[hw_sweep][with_pid]") {
     // ── 1. 建立 WalkMotorGroup（真实 CAN）─────────────────────────────────
     auto can = std::make_shared<driver::LinuxCanSocket>(kp.can_iface);
-    device::WalkMotorGroup group(can, kp.motor_id_base, kp.comm_timeout_ms);
+    auto group = make_hw_group(can);
     REQUIRE(group.open() == device::DeviceError::OK);
     spdlog::info(
         "[hw_sweep][with_pid] CAN {} 打开成功，motor_id_base={}", kp.can_iface, kp.motor_id_base);
@@ -220,7 +229,7 @@ TEST_CASE("[hw_sweep][with_pid] 带 PID 全扫描序列", "[hw_sweep][with_pid]"
 TEST_CASE("[hw_sweep][no_pid] 无 PID 纯速度环清扫序列", "[hw_sweep][no_pid]") {
     // ── 1. 建立 WalkMotorGroup（仅 CAN，无 IMU 依赖）─────────────────────
     auto can = std::make_shared<driver::LinuxCanSocket>(kp.can_iface);
-    device::WalkMotorGroup group(can, kp.motor_id_base, kp.comm_timeout_ms);
+    auto group = make_hw_group(can);
     REQUIRE(group.open() == device::DeviceError::OK);
     spdlog::info("[hw_sweep][no_pid] CAN {} 打开成功", kp.can_iface);
 
@@ -282,7 +291,7 @@ TEST_CASE("[hw_sweep][no_pid] 无 PID 纯速度环清扫序列", "[hw_sweep][no_
 TEST_CASE("[hw_sweep][limit_stop] 手动触发前限位急停链路（FSM 全链路）", "[hw_sweep][limit_stop]") {
     // ── 1. 建立 WalkMotorGroup（低速，安全演示）──────────────────────────
     auto can = std::make_shared<driver::LinuxCanSocket>(kp.can_iface);
-    device::WalkMotorGroup group(can, kp.motor_id_base, kp.comm_timeout_ms);
+    auto group = make_hw_group(can);
     REQUIRE(group.open() == device::DeviceError::OK);
 
     REQUIRE(group.enable_all() == device::DeviceError::OK);
@@ -366,7 +375,7 @@ TEST_CASE("[hw_sweep][limit_stop] 手动触发后限位急停链路（FSM 全链
           "[hw_sweep][limit_stop][rear]") {
     // ── 1. 建立 WalkMotorGroup（低速后退，模拟返程场景）──────────────────
     auto can = std::make_shared<driver::LinuxCanSocket>(kp.can_iface);
-    device::WalkMotorGroup group(can, kp.motor_id_base, kp.comm_timeout_ms);
+    auto group = make_hw_group(can);
     REQUIRE(group.open() == device::DeviceError::OK);
 
     REQUIRE(group.enable_all() == device::DeviceError::OK);

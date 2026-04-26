@@ -2,6 +2,9 @@
   "hardware": {
     "can_iface":           "can0",
     "motor_id_base":       1,
+    "termination_init_enabled": true,
+    "termination_init_retry_count": 3,
+    "termination_motor_id": 2,
     "imu_port":            "/dev/ttyS1",
     "imu_baud":            9600,
     "gpsd_host":           "127.0.0.1",
