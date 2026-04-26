@@ -120,7 +120,10 @@ int main() {
     auto walk_group = std::make_shared<robot::device::WalkMotorGroup>(
         can_bus,
         cfg.get<uint8_t>("can.walk_motor.motor_id", 1u),
-        cfg.get<uint16_t>("can.walk_motor.comm_timeout_ms", 200u));
+        cfg.get<uint16_t>("can.walk_motor.comm_timeout_ms", 200u),
+        cfg.get<bool>("can.walk_motor.termination_init_enabled", true),
+        cfg.get<uint8_t>("can.walk_motor.termination_init_retry_count", 3u),
+        cfg.get<uint8_t>("can.walk_motor.termination_motor_id", 2u));
 
     // ── 6. RS485 串口驱动 ──────────────────────────────────────────────
     // libmodbus 直接管理串口，无需 LibSerialPort 包装

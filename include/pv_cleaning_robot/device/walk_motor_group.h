@@ -83,9 +83,15 @@ class WalkMotorGroup {
     ///                         建议设为 update() 周期的 3~5 倍，如
     ///                         建议设为 update() 周期的 5~10 倍，如
     ///                         update()=20ms 时设 200ms（10× 余量）
+    /// @param termination_init_enabled open() 时是否自动发送终端电阻初始化帧
+    /// @param termination_init_retry_count 终端电阻初始化发送次数，0 按 1 次处理
+    /// @param termination_motor_id 需打开终端电阻的物理 motor_id
     explicit WalkMotorGroup(std::shared_ptr<hal::ICanBus> can,
                             uint8_t id_base = 1u,
-                            uint16_t comm_timeout_ms = 200u);
+                            uint16_t comm_timeout_ms = 200u,
+                            bool termination_init_enabled = true,
+                            uint8_t termination_init_retry_count = 3u,
+                            uint8_t termination_motor_id = 2u);
     ~WalkMotorGroup();
 
     // ── 生命周期 ──────────────────────────────────────────────────────────
@@ -186,6 +192,9 @@ class WalkMotorGroup {
     uint8_t id_base_;           ///< 1 或 5
     uint32_t ctrl_id_;          ///< 0x32 或 0x33
     uint16_t comm_timeout_ms_;  ///< 开机写入电机的通信超时
+    bool termination_init_enabled_{true};      ///< open() 时是否自动发终端电阻初始化
+    uint8_t termination_init_retry_count_{3u}; ///< 终端电阻初始化发送次数
+    uint8_t termination_motor_id_{2u};         ///< 目标物理 motor_id
     std::array<protocol::WalkMotorCanCodec, kWheelCount> codecs_;
 
     std::thread recv_thread_;

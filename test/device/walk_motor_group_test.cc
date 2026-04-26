@@ -135,6 +135,14 @@ TEST_CASE("设备层WalkMotorGroup - open() CAN 打开失败 → NOT_OPEN", "[de
     REQUIRE_FALSE(bus->opened);
 }
 
+TEST_CASE("设备层WalkMotorGroup - 构造支持终端电阻启动配置", "[device][walk_motor_group]") {
+    auto bus = std::make_shared<MockCanBus>();
+    device::WalkMotorGroup group(bus, 1u, 200u, true, 3u, 2u);
+
+    REQUIRE(group.open() == device::DeviceError::OK);
+    group.close();
+}
+
 TEST_CASE("设备层WalkMotorGroup - set_mode_all() 发送4帧 SET_MODE", "[device][walk_motor_group]") {
     auto bus = std::make_shared<MockCanBus>();
     device::WalkMotorGroup group(bus, 1u);
@@ -342,4 +350,3 @@ TEST_CASE("设备层WalkMotorGroup - update() PID 禁用时无差速（yaw=30°�
 
     group.close();
 }
-

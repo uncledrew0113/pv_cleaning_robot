@@ -9,7 +9,10 @@
     "interface": "can0",
     "walk_motor": {
       "motor_id":        1,
-      "comm_timeout_ms": 200
+      "comm_timeout_ms": 200,
+      "termination_init_enabled": true,
+      "termination_init_retry_count": 3,
+      "termination_motor_id": 2
     }
   },
 

@@ -24,12 +24,18 @@ static float clamp(float v, float lo, float hi) {
 
 WalkMotorGroup::WalkMotorGroup(std::shared_ptr<hal::ICanBus> can,
                                uint8_t id_base,
-                               uint16_t comm_timeout_ms)
+                               uint16_t comm_timeout_ms,
+                               bool termination_init_enabled,
+                               uint8_t termination_init_retry_count,
+                               uint8_t termination_motor_id)
     : can_(std::move(can))
     , id_base_(id_base)
     , ctrl_id_((id_base <= 4u) ? protocol::kWalkMotorCtrlIdGroup1
                                : protocol::kWalkMotorCtrlIdGroup2)
     , comm_timeout_ms_(comm_timeout_ms)
+    , termination_init_enabled_(termination_init_enabled)
+    , termination_init_retry_count_(termination_init_retry_count)
+    , termination_motor_id_(termination_motor_id)
     // 4个 codec 实例分别对应 motor_id = id_base, id_base+1, id_base+2, id_base+3
     , codecs_{protocol::WalkMotorCanCodec(static_cast<uint8_t>(id_base + 0u)),
               protocol::WalkMotorCanCodec(static_cast<uint8_t>(id_base + 1u)),
