@@ -528,7 +528,7 @@ int main() {
 
         // BMS 低电量检测
         if (bms->is_low_battery() && fsm->current_state() != "Returning" &&
-            fsm->current_state() != "Charging") {
+            fsm->current_state() != "Charging") { 
             log->warn("[Main] 电量不足，触发返回");
             fsm->dispatch(robot::app::EvLowBattery{});
         }

@@ -39,7 +39,7 @@
   },
 
   "gps": {
-    "source": "serial",
+    "source": "gpsd",
     "serial": {
       "port": "/dev/ttyS2",
       "baudrate": 115200
