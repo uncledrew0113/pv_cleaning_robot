@@ -12,6 +12,53 @@
 
 namespace robot::service {
 
+enum class TerminalSide {
+    Unknown,
+    A,
+    B,
+};
+
+enum class ParkingPolicy {
+    TerminalAOnly,
+    TerminalBOnly,
+    Both,
+};
+
+enum class ChargingSide {
+    TerminalA,
+    TerminalB,
+    Both,
+};
+
+inline bool allows_half_pass(ParkingPolicy policy) noexcept {
+    return policy == ParkingPolicy::Both;
+}
+
+inline bool can_start_from_terminal(ParkingPolicy policy, TerminalSide side) noexcept {
+    switch (policy) {
+    case ParkingPolicy::TerminalAOnly:
+        return side == TerminalSide::A;
+    case ParkingPolicy::TerminalBOnly:
+        return side == TerminalSide::B;
+    case ParkingPolicy::Both:
+        return side == TerminalSide::A || side == TerminalSide::B;
+    }
+    return false;
+}
+
+inline bool supports_charging_at(ChargingSide charging_side,
+                                 TerminalSide terminal_side) noexcept {
+    switch (charging_side) {
+    case ChargingSide::TerminalA:
+        return terminal_side == TerminalSide::A;
+    case ChargingSide::TerminalB:
+        return terminal_side == TerminalSide::B;
+    case ChargingSide::Both:
+        return terminal_side == TerminalSide::A || terminal_side == TerminalSide::B;
+    }
+    return false;
+}
+
 struct TbScheduleEntry {
     int hour{0};
     int minute{0};

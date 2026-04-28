@@ -120,6 +120,7 @@ add_executable(unit_tests
 
   # App 层
   app/robot_fsm_test.cc
+  app/terminal_semantics_test.cc
   app/robot_supervisor_test.cc
   app/fault_handler_test.cc
   app/watchdog_mgr_test.cc
