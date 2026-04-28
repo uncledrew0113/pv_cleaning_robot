@@ -1,6 +1,7 @@
 #pragma once
 #include <nlohmann/json.hpp>
 #include <mutex>
+#include <optional>
 #include <string>
 
 namespace robot::service {
@@ -49,6 +50,24 @@ public:
     /// 将当前内存配置写回 config_path_（原子临时文件 rename）
     bool save() const;
 
+    /// 返回当前完整配置副本
+    nlohmann::json snapshot() const;
+
+    /// 用完整配置副本替换当前配置并持久化；若持久化失败则回滚旧值
+    bool replace_and_save(nlohmann::json new_root);
+
+    /// 持久化下一任务待生效配置
+    bool save_pending(nlohmann::json pending_root) const;
+
+    /// 读取待生效配置；不存在或解析失败时返回 nullopt
+    std::optional<nlohmann::json> load_pending() const;
+
+    /// 清除待生效配置
+    bool clear_pending() const;
+
+    /// 最近一次 load() 是否是从 backup 回退成功
+    bool last_load_used_backup() const;
+
     /// 获取 JSON 子树
     nlohmann::json get_subtree(const std::string& path) const;
 
@@ -56,10 +75,15 @@ public:
 
 private:
     static std::vector<std::string> split_path(const std::string& path);
+    static std::string derive_companion_path(const std::string& active_path, const char* suffix);
+    static bool write_json_file(const std::string& path, const nlohmann::json& root);
+    static std::optional<nlohmann::json> read_json_file(const std::string& path);
+    bool save_locked() const;
 
     std::string       config_path_;
     nlohmann::json    root_;
     bool              loaded_{false};
+    bool              last_load_used_backup_{false};
     mutable std::mutex mtx_;
 };
 

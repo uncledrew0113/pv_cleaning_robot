@@ -10,6 +10,7 @@ namespace robot::middleware {
 
 ThreadExecutor::ThreadExecutor(Config cfg)
     : config_(std::move(cfg))
+    , period_ms_(config_.period_ms)
 {
 }
 
@@ -34,6 +35,12 @@ void ThreadExecutor::stop()
 {
     running_.store(false);
     if (thread_.joinable()) thread_.join();
+}
+
+void ThreadExecutor::set_period_ms(int period_ms)
+{
+    if (period_ms <= 0) return;
+    period_ms_.store(period_ms);
 }
 
 void ThreadExecutor::loop()
@@ -70,16 +77,15 @@ void ThreadExecutor::loop()
     auto next_wake = Clock::now();
 
     while (running_.load()) {
-        auto now = Clock::now();
-
         for (auto& r : runnables_) {
             r->update();
         }
 
-        next_wake += std::chrono::milliseconds(config_.period_ms);
+        const int period_ms = period_ms_.load();
+        next_wake += std::chrono::milliseconds(period_ms);
         // 若执行超时则跳到下一个周期（避免积压）
         if (next_wake < Clock::now()) {
-            next_wake = Clock::now() + std::chrono::milliseconds(config_.period_ms);
+            next_wake = Clock::now() + std::chrono::milliseconds(period_ms);
         }
         std::this_thread::sleep_until(next_wake);
     }

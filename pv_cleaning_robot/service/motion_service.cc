@@ -62,6 +62,12 @@ void MotionService::stop_cleaning() {
     group_->disable_all();
 }
 
+void MotionService::pause_task() {
+    brush_->stop();
+    group_->enable_heading_control(false);
+    group_->set_speed_uniform(0.0f);
+}
+
 bool MotionService::start_returning() {
     // 解除可能由 SafetyMonitor 触发的 emergency_override 锁，确保心跳正常恢复
     group_->clear_override();

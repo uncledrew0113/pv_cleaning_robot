@@ -5,6 +5,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <atomic>
 
 namespace robot::middleware {
 
@@ -52,6 +53,8 @@ public:
     bool start();
     void stop();
     bool is_running() const { return running_.load(); }
+    void set_period_ms(int period_ms);
+    int period_ms() const { return period_ms_.load(); }
 
 private:
     void loop();
@@ -59,6 +62,7 @@ private:
     Config config_;
     std::vector<std::shared_ptr<IRunnable>> runnables_;
     std::atomic<bool> running_{false};
+    std::atomic<int> period_ms_;
     std::thread       thread_;
 };
 

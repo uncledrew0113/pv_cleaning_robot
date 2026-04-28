@@ -6,10 +6,10 @@
 
 namespace robot::service {
 
-/// @brief 清扫任务调度服务（时间窗口调度）
+/// @brief 时间窗口触发服务
 ///
-/// 支持配置一个或多个"清扫窗口"（HH:MM 开始时间）。
-/// 到达时间窗口时，调用注册的 on_task_start 回调触发 FSM 开始清扫。
+/// 支持配置一个或多个触发窗口（HH:MM 开始时间）。
+/// 到达窗口时，调用注册的命中回调；窗口持续超时后，调用注册的过期回调。
 class SchedulerService {
 public:
     struct TimeWindow {
@@ -17,24 +17,25 @@ public:
         int minute{0};
     };
 
-    using TaskCallback = std::function<void()>;
+    using TriggerCallback = std::function<void()>;
 
     void add_window(TimeWindow w);
     void clear_windows();  ///< 清除所有时间窗口（远程配置更新时使用）
-    void set_on_task_start(TaskCallback cb);
-    void set_on_task_end(TaskCallback cb);
+    std::vector<TimeWindow> snapshot_windows() const;
+    void set_on_window_hit(TriggerCallback cb);
+    void set_on_window_expired(TriggerCallback cb);
 
-    /// 检查是否进入调度窗口（由主循环定期调用，main.cc 以 100ms 间隔调用，即 ~10Hz）。
+    /// 检查是否进入已配置的时间窗口（由主循环定期调用，main.cc 以 100ms 间隔调用，即 ~10Hz）。
     /// 内部计时器精度取决于调用间隔；建议调用间隔 ≤ 1000ms。
     void tick();
 
 private:
     std::vector<TimeWindow> windows_;
-    TaskCallback            on_start_;
-    TaskCallback            on_end_;
+    TriggerCallback         on_hit_;
+    TriggerCallback         on_expired_;
     bool                    in_window_{false};
     std::chrono::system_clock::time_point window_start_time_;
-    static constexpr int kWindowDurationSec = 3600;  ///< 默认单次清扫窗口 1 小时
+    static constexpr int kWindowDurationSec = 3600;  ///< 默认窗口有效期 1 小时
 };
 
 } // namespace robot::service

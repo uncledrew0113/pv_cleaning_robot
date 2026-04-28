@@ -89,7 +89,8 @@ void CloudService::on_shared_attributes_message(const std::string& payload)
     try {
         auto j = nlohmann::json::parse(payload);
         cb(j);
-    } catch (...) {
+    } catch (const std::exception& ex) {
+        spdlog::warn("[CloudService] Failed to process shared attributes payload: {}", ex.what());
     }
 }
 

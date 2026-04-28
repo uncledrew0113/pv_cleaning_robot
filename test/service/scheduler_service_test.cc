@@ -31,22 +31,22 @@ TEST_CASE("SchedulerService: add_window + clear_windows 不崩溃", "[service][s
 }
 
 // ────────────────────────────────────────────────────────────────
-// 窗口时间命中：tick() 触发 on_task_start
+// 窗口时间命中：tick() 触发命中回调
 // ────────────────────────────────────────────────────────────────
-TEST_CASE("SchedulerService: 当前时间匹配窗口时 tick() 触发 on_task_start",
+TEST_CASE("SchedulerService: 当前时间匹配窗口时 tick() 触发 on_window_hit",
           "[service][scheduler]") {
     SchedulerService svc;
     auto [h, m] = local_now();
     svc.add_window({h, m});  // 加入"现在"这一分钟
 
     bool started = false;
-    svc.set_on_task_start([&] { started = true; });
+    svc.set_on_window_hit([&] { started = true; });
 
     svc.tick();
     REQUIRE(started);
 }
 
-TEST_CASE("SchedulerService: 时间不匹配时 tick() 不触发 on_task_start", "[service][scheduler]") {
+TEST_CASE("SchedulerService: 时间不匹配时 tick() 不触发 on_window_hit", "[service][scheduler]") {
     SchedulerService svc;
     // 加入"明天此刻"的小时 + 1（不可能匹配）
     auto [h, m] = local_now();
@@ -54,7 +54,7 @@ TEST_CASE("SchedulerService: 时间不匹配时 tick() 不触发 on_task_start",
     svc.add_window({future_h, m});
 
     bool started = false;
-    svc.set_on_task_start([&] { started = true; });
+    svc.set_on_window_hit([&] { started = true; });
 
     svc.tick();
     REQUIRE_FALSE(started);
@@ -63,14 +63,14 @@ TEST_CASE("SchedulerService: 时间不匹配时 tick() 不触发 on_task_start",
 // ────────────────────────────────────────────────────────────────
 // 窗口期内 tick() 不重复触发
 // ────────────────────────────────────────────────────────────────
-TEST_CASE("SchedulerService: 窗口期内连续 tick() 只触发一次 on_task_start",
+TEST_CASE("SchedulerService: 窗口期内连续 tick() 只触发一次 on_window_hit",
           "[service][scheduler]") {
     SchedulerService svc;
     auto [h, m] = local_now();
     svc.add_window({h, m});
 
     int count = 0;
-    svc.set_on_task_start([&] { ++count; });
+    svc.set_on_window_hit([&] { ++count; });
 
     for (int i = 0; i < 10; ++i)
         svc.tick();
@@ -87,7 +87,7 @@ TEST_CASE("SchedulerService: clear_windows() 后 tick() 不触发", "[service][s
     svc.clear_windows();
 
     bool started = false;
-    svc.set_on_task_start([&] { started = true; });
+    svc.set_on_window_hit([&] { started = true; });
 
     svc.tick();
     REQUIRE_FALSE(started);
@@ -113,7 +113,7 @@ TEST_CASE("SchedulerService: 多个窗口中有一个匹配即触发", "[service
     svc.add_window({h, m});             // 匹配
 
     bool started = false;
-    svc.set_on_task_start([&] { started = true; });
+    svc.set_on_window_hit([&] { started = true; });
 
     svc.tick();
     REQUIRE(started);

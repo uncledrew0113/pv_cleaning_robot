@@ -252,3 +252,31 @@ TEST_CASE("DataCache: compact snapshot keeps only live records",
     fs::remove(path);
     fs::remove(path + ".tmp");
 }
+
+TEST_CASE("DataCache: full-queue eviction does not drop a record when ack journal append fails",
+          "[middleware][data_cache]") {
+    const std::string path = "/tmp/test_dc_eviction_ack_failure.jsonl";
+    fs::remove(path);
+    fs::remove(path + ".tmp");
+
+    DataCache cache(path, 2);
+    REQUIRE(cache.open());
+    REQUIRE(cache.push("t/a", R"({"v":1})"));
+    REQUIRE(cache.push("t/b", R"({"v":2})"));
+
+    cache.set_test_append_hook([](const nlohmann::json& j) {
+        return j.value("op", "") != "ack";
+    });
+
+    REQUIRE_FALSE(cache.push("t/c", R"({"v":3})"));
+    CHECK(cache.size() == 2);
+
+    const auto batch = cache.pop_batch(10);
+    REQUIRE(batch.size() == 2);
+    CHECK(batch[0].payload == R"({"v":1})");
+    CHECK(batch[1].payload == R"({"v":2})");
+
+    cache.close();
+    fs::remove(path);
+    fs::remove(path + ".tmp");
+}

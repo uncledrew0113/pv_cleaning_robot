@@ -13,6 +13,8 @@
  */
 #include <sys/mman.h>
 
+#include <cmath>
+
 #include "pv_cleaning_robot/middleware/logger.h"
 #include "pv_cleaning_robot/service/config_service.h"
 
@@ -43,24 +45,30 @@
 
 // Service
 #include "pv_cleaning_robot/service/cloud_service.h"
+#include "pv_cleaning_robot/service/business_telemetry_snapshot.h"
+#include "pv_cleaning_robot/service/command_tracker.h"
 #include "pv_cleaning_robot/service/fault_service.h"
 #include "pv_cleaning_robot/service/health_service.h"
 #include "pv_cleaning_robot/service/motion_service.h"
 #include "pv_cleaning_robot/service/nav_service.h"
 #include "pv_cleaning_robot/service/scheduler_service.h"
+#include "pv_cleaning_robot/service/thingsboard_control_plane.h"
+#include "pv_cleaning_robot/service/thingsboard_config_manager.h"
+#include "pv_cleaning_robot/service/thingsboard_telemetry_publisher.h"
 
 // App
 #include <atomic>
 #include <csignal>
+#include <algorithm>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
 #include <string>
 #include <thread>
 
-#include "pv_cleaning_robot/app/clean_task.h"
 #include "pv_cleaning_robot/app/fault_handler.h"
 #include "pv_cleaning_robot/app/robot_fsm.h"
+#include "pv_cleaning_robot/app/robot_supervisor.h"
 #include "pv_cleaning_robot/app/watchdog_mgr.h"
 
 // ── 优雅退出信号 ──────────────────────────────────────────────────────────
@@ -313,38 +321,54 @@ int main() {
     auto motion = std::make_shared<robot::service::MotionService>(
         walk_group, brush_motor, imu, event_bus, motion_cfg);
     auto nav = std::make_shared<robot::service::NavService>(walk_group, imu, gps);
+    robot::service::SchedulerService scheduler;
+    {
+        auto windows_json = cfg.get_subtree("scheduler.windows");
+        if (windows_json.is_array()) {
+            for (auto& w : windows_json) {
+                robot::service::SchedulerService::TimeWindow tw;
+                tw.hour = w.value("hour", 8);
+                tw.minute = w.value("minute", 0);
+                scheduler.add_window(tw);
+            }
+        }
+    }
     auto cloud = std::make_shared<robot::service::CloudService>(net_mgr, data_cache);
-
-    // ── 共享属性回调：远程更新配置，持久化到 config.json （下次启动生效）──
-    cloud->subscribe_shared_attributes([&cfg](const nlohmann::json& attrs) {
-        if (attrs.contains("passes"))
-            cfg.set("robot.passes", attrs["passes"].get<float>());
-        if (attrs.contains("clean_speed_rpm"))
-            cfg.set("robot.clean_speed_rpm", attrs["clean_speed_rpm"].get<float>());
-        if (attrs.contains("return_speed_rpm"))
-            cfg.set("robot.return_speed_rpm", attrs["return_speed_rpm"].get<float>());
-        if (attrs.contains("brush_rpm"))
-            cfg.set("robot.brush_rpm", attrs["brush_rpm"].get<int>());
-        cfg.save();
-    });
+    auto tb_cfg =
+        std::make_shared<robot::service::ThingsBoardConfigManager>(cfg, scheduler);
+    auto command_tracker = std::make_shared<robot::service::CommandTracker>();
 
     net_mgr->connect();
-
-    // 上电首次发布设备静态属性（云端连接后立即通知平台本机信息）
-    if (net_mgr->is_connected()) {
-        cloud->publish_attributes(nlohmann::json{
-            {"fw_version", cfg.get<std::string>("device.fw_version", "1.0.0")},
-            {"hw_version", cfg.get<std::string>("device.hw_version", "1.0")},
-            {"device_id", cfg.get<std::string>("network.mqtt.client_id", "pv_robot_001")}}
-                                      .dump());
-        log->info("[Main] 设备静态属性已发布至云端");
-    }
 
     auto fault = std::make_shared<robot::service::FaultService>(event_bus);
 
     // ── 14. 应用层 ─────────────────────────────────────────────────────
     auto fsm = std::make_shared<robot::app::RobotFsm>(motion, nav, fault, event_bus);
     fsm->dispatch(robot::app::EvInitDone{});
+    auto supervisor =
+        std::make_shared<robot::app::RobotSupervisor>(fsm, tb_cfg, command_tracker, fault, nav);
+    auto tb_telemetry =
+        std::make_shared<robot::service::ThingsBoardTelemetryPublisher>(cfg, cloud, supervisor);
+    auto tb_control = std::make_shared<robot::service::ThingsBoardControlPlane>(
+        cloud,
+        tb_cfg,
+        command_tracker,
+        supervisor,
+        [tb_telemetry](const char* event_name, bool accepted, const char* reason) {
+            tb_telemetry->publish_status_event(event_name, accepted, reason);
+        },
+        [tb_telemetry](const char* event_name,
+                     const robot::service::CommandSnapshot& snapshot) {
+            tb_telemetry->publish_command_event(event_name, snapshot);
+        });
+    tb_control->subscribe_shared_attributes();
+    if (net_mgr->is_connected()) {
+        if (cfg.last_load_used_backup()) {
+            tb_telemetry->publish_backup_fallback_event();
+        }
+        tb_telemetry->publish_startup_attributes();
+        log->info("[Main] 设备静态属性已发布至云端");
+    }
 
     // ── 限位开关防抖事件订阅：LimitSettledEvent → FSM ──────────────────
     // SafetyMonitor::monitor_loop (SCHED_FIFO 94) 在急停后延迟 180ms 发布此事件。
@@ -360,69 +384,24 @@ int main() {
             }
         });
 
-    robot::app::CleanTask::Config task_cfg;
-    task_cfg.track_length_m = cfg.get<float>("robot.track_length_m", 1000.0f);
-    task_cfg.passes = cfg.get<float>("robot.passes", 1.0f);
-    auto clean_task = std::make_shared<robot::app::CleanTask>(motion, nav, task_cfg);
-
     // ── 调度服务：定时触发清扫任务（读取 config.json 的 scheduler.windows） ─────
-    robot::service::SchedulerService scheduler;
-    {
-        auto windows_json = cfg.get_subtree("scheduler.windows");
-        if (windows_json.is_array()) {
-            for (auto& w : windows_json) {
-                robot::service::SchedulerService::TimeWindow tw;
-                tw.hour = w.value("hour", 8);
-                tw.minute = w.value("minute", 0);
-                scheduler.add_window(tw);
-            }
-        }
-    }
-    scheduler.set_on_task_start(
-        [&fsm, &rear_switch, &front_switch, &rear_open_ok, &front_open_ok, &cfg]() {
+    scheduler.set_on_window_hit(
+        [&rear_switch, &front_switch, &rear_open_ok, &front_open_ok, &log, &supervisor]() {
             const bool at_home = rear_open_ok && !rear_switch->read_current_level();
             const bool at_front = front_open_ok && !front_switch->read_current_level();
-            const float passes = cfg.get<float>("robot.passes", 1.0f);
-            fsm->dispatch(robot::app::EvScheduleStart{at_home, at_front, passes});
+            if (!supervisor->start_scheduled_task(at_home, at_front)) {
+                log->warn("[Main] 调度启动被拒绝");
+            }
         });
 
     // ── 云端 RPC 处理器 ─────────────────────────────────────────────
-    cloud->register_rpc("start", [&](const std::string& /*params*/) {
-        const bool at_home = rear_open_ok && !rear_switch->read_current_level();
-        const bool at_front = front_open_ok && !front_switch->read_current_level();
-        fsm->dispatch(
-            robot::app::EvScheduleStart{at_home, at_front, cfg.get<float>("robot.passes", 1.0f)});
-        return nlohmann::json{{"result", "ok"}}.dump();
-    });
-    cloud->register_rpc("stop", [&](const std::string& /*params*/) {
-        fsm->dispatch(robot::app::EvFaultP1{});  // 安全返回（停刷）
-        return nlohmann::json{{"result", "ok"}}.dump();
-    });
-    cloud->register_rpc("reset_fault", [&](const std::string& /*params*/) {
-        fsm->dispatch(robot::app::EvFaultReset{});
-        return nlohmann::json{{"result", "ok"}}.dump();
-    });
-    cloud->register_rpc("set_schedule", [&](const std::string& params) {
-        try {
-            auto j = nlohmann::json::parse(params);
-            if (j.contains("windows") && j["windows"].is_array()) {
-                scheduler.clear_windows();
-                for (auto& w : j["windows"]) {
-                    robot::service::SchedulerService::TimeWindow tw;
-                    tw.hour = w.value("hour", 8);
-                    tw.minute = w.value("minute", 0);
-                    scheduler.add_window(tw);
-                }
-                cfg.set("scheduler.windows", j["windows"]);
-            }
-            if (j.contains("passes"))
-                cfg.set("robot.passes", j["passes"].get<float>());
-            cfg.save();
-            return nlohmann::json{{"result", "ok"}}.dump();
-        } catch (...) {
-            return nlohmann::json{{"result", "error"}}.dump();
-        }
-    });
+    tb_control->register_rpc_handlers(
+        [&rear_switch, &rear_open_ok]() {
+            return rear_open_ok && !rear_switch->read_current_level();
+        },
+        [&front_switch, &front_open_ok]() {
+            return front_open_ok && !front_switch->read_current_level();
+        });
 
     robot::app::FaultHandler fault_handler(
         motion, event_bus, [fsm](const robot::service::FaultService::FaultEvent& evt) {
@@ -507,8 +486,15 @@ int main() {
 
     // 云端上报线程：绑定 LITTLE 核 CPU 0-3（低功耗后台）
     int report_period = cfg.get<int>("diagnostics.publish_interval_ms", 1000);
+    const int active_report_period = std::max(
+        1, cfg.get<int>("diagnostics.publish_interval_active_ms", report_period));
+    const int idle_report_period =
+        std::max(1, cfg.get<int>("diagnostics.publish_interval_idle_ms", 300000));
     robot::middleware::ThreadExecutor cloud_exec({"cloud", report_period, SCHED_OTHER, 0, 0x0F});
     cloud_exec.add_runnable(reporter);
+    cloud_exec.add_runnable(std::make_shared<robot::middleware::RunnableAdapter>([tb_telemetry]() {
+        tb_telemetry->publish_business_telemetry();
+    }));
     cloud_exec.add_runnable(cloud);
     int cloud_wd = watchdog.register_thread("cloud", 5000);
     cloud_exec.add_runnable(std::make_shared<robot::middleware::RunnableAdapter>(
@@ -526,25 +512,12 @@ int main() {
         // 调度器 tick：切换到从 SCHED_OTHER 主循环调用，精度 100ms（调度窪口最小误微差 1min）
         scheduler.tick();
 
-        // BMS 低电量检测
-        if (bms->is_low_battery() && fsm->current_state() != "Returning" &&
-            fsm->current_state() != "Charging") { 
-            log->warn("[Main] 电量不足，触发返回");
-            fsm->dispatch(robot::app::EvLowBattery{});
+        const int desired_report_period =
+            supervisor->desired_cloud_period_ms(active_report_period, idle_report_period);
+        if (cloud_exec.period_ms() != desired_report_period) {
+            cloud_exec.set_period_ms(desired_report_period);
         }
-
-        // 悬空检测：轮子空转 > 500ms 触发 P0 级故障
-        // 排除 Idle/Charging（静止状态）和 Fault（已居存故障，避免重复上报）
-        const auto cur_state = fsm->current_state();
-        if (cur_state != "Idle" && cur_state != "Charging" && cur_state != "Fault") {
-            if (nav->get_pose().spin_free_detected) {
-                log->error("[Main] 悬空检测触发——立即停机");
-                fault->report(robot::service::FaultService::FaultEvent::Level::P0,
-                              0x0002,
-                              "wheel spin-free detected");
-                nav->clear_spin_detection();  // 仅清除计数器，不重置里程计
-            }
-        }
+        supervisor->tick_safety(bms->is_low_battery());
 
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }

@@ -41,6 +41,9 @@ set(COMMON_SRCS
 
   # 服务层
   ${PROJ}/service/config_service.cc
+  ${PROJ}/service/business_payload_builder.cc
+  ${PROJ}/service/business_telemetry_snapshot.cc
+  ${PROJ}/service/command_tracker.cc
   ${PROJ}/service/fault_service.cc
   ${PROJ}/service/scheduler_service.cc
   ${PROJ}/service/nav_service.cc
@@ -48,13 +51,17 @@ set(COMMON_SRCS
   ${PROJ}/service/heading_pid_controller.cc
   ${PROJ}/service/health_payload_builder.cc
   ${PROJ}/service/health_service.cc
+  ${PROJ}/service/thingsboard_event_payload_builder.cc
   ${PROJ}/service/cloud_service.cc
+  ${PROJ}/service/thingsboard_control_plane.cc
+  ${PROJ}/service/thingsboard_config_manager.cc
+  ${PROJ}/service/thingsboard_telemetry_publisher.cc
 
   # App 层
   ${PROJ}/app/robot_fsm.cc
+  ${PROJ}/app/robot_supervisor.cc
   ${PROJ}/app/fault_handler.cc
   ${PROJ}/app/watchdog_mgr.cc
-  ${PROJ}/app/clean_task.cc
 )
 
 # ── 单元测试可执行文件（纯软件路径，无需真实硬件） ──────────────────────
@@ -97,15 +104,23 @@ add_executable(unit_tests
 
   # 服务层
   service/cloud_service_test.cc
+  service/business_payload_builder_test.cc
+  service/business_telemetry_snapshot_test.cc
+  service/command_tracker_test.cc
   service/config_service_test.cc
   service/fault_service_test.cc
   service/health_payload_builder_test.cc
+  service/thingsboard_event_payload_builder_test.cc
+  service/thingsboard_control_plane_test.cc
+  service/thingsboard_telemetry_publisher_test.cc
+  service/thingsboard_config_manager_test.cc
   service/scheduler_service_test.cc
   service/motion_service_test.cc
   service/heading_pid_test.cc
 
   # App 层
   app/robot_fsm_test.cc
+  app/robot_supervisor_test.cc
   app/fault_handler_test.cc
   app/watchdog_mgr_test.cc
 

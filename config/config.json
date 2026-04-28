@@ -114,15 +114,18 @@
   },
 
   "diagnostics": {
-    "mode":                "development",
-    "publish_interval_ms": 1000,
-    "cloud_upload":        true,
-    "local_log":           true,
-    "local_path":          "/data/pv_robot/logs/telemetry.jsonl"
+    "mode":                       "development",
+    "publish_interval_ms":        1000,
+    "publish_interval_active_ms": 1000,
+    "publish_interval_idle_ms":   300000,
+    "cloud_upload":               true,
+    "local_log":                  true,
+    "local_path":                 "/data/pv_robot/logs/telemetry.jsonl"
   },
 
   "device": {
-    "fw_version": "1.0.0",
-    "hw_version": "1.0"
+    "software_version": "1.0.0",
+    "hardware_version": "1.0",
+    "model": "pv_cleaning_robot"
   }
 }

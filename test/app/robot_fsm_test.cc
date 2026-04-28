@@ -172,6 +172,15 @@ TEST_CASE("FSM: Fault -EvFaultReset-> Idle", "[app][fsm]") {
     REQUIRE(f.fsm.current_state() == "Idle");
 }
 
+TEST_CASE("FSM: EvFaultReset outside Fault does not overwrite outward state", "[app][fsm]") {
+    FsmFixture f;
+    f.fsm.dispatch(EvScheduleStart{.at_home = true, .passes = 1.0f});
+    REQUIRE(f.fsm.current_state() == "CleanFwd");
+
+    f.fsm.dispatch(EvFaultReset{});
+    REQUIRE(f.fsm.current_state() == "CleanFwd");
+}
+
 // ────────────────────────────────────────────────────────────────
 // 低电量返回
 // ────────────────────────────────────────────────────────────────
@@ -180,6 +189,81 @@ TEST_CASE("FSM: CleanFwd -EvLowBattery-> Returning", "[app][fsm]") {
     f.fsm.dispatch(EvScheduleStart{.at_home = true, .passes = 1.0f});
     f.fsm.dispatch(EvLowBattery{});
     REQUIRE(f.fsm.current_state() == "Returning");
+}
+
+TEST_CASE("FSM: CleanFwd -EvPauseTask-> Paused", "[app][fsm]") {
+    FsmFixture f;
+    f.fsm.dispatch(EvScheduleStart{.at_home = true, .passes = 1.0f});
+    REQUIRE(f.fsm.current_state() == "CleanFwd");
+
+    f.fsm.dispatch(EvPauseTask{});
+    REQUIRE(f.fsm.current_state() == "Paused");
+}
+
+TEST_CASE("FSM: Paused task resumes to previous direction", "[app][fsm]") {
+    SECTION("resume forward task") {
+        FsmFixture f;
+        f.fsm.dispatch(EvScheduleStart{.at_home = true, .passes = 1.0f});
+        f.fsm.dispatch(EvPauseTask{});
+        REQUIRE(f.fsm.current_state() == "Paused");
+
+        f.fsm.dispatch(EvResumeTask{});
+        REQUIRE(f.fsm.current_state() == "CleanFwd");
+    }
+
+    SECTION("resume return task") {
+        FsmFixture f;
+        f.fsm.dispatch(EvScheduleStart{.at_home = true, .passes = 2.0f});
+        f.fsm.dispatch(EvFrontLimitSettled{});
+        REQUIRE(f.fsm.current_state() == "CleanReturn");
+
+        f.fsm.dispatch(EvPauseTask{});
+        REQUIRE(f.fsm.current_state() == "Paused");
+
+        f.fsm.dispatch(EvResumeTask{});
+        REQUIRE(f.fsm.current_state() == "CleanReturn");
+    }
+}
+
+TEST_CASE("FSM: manual return ends task at home", "[app][fsm]") {
+    FsmFixture f;
+    f.fsm.dispatch(EvScheduleStart{.at_home = true, .passes = 2.0f});
+    f.fsm.dispatch(EvFrontLimitSettled{});
+    REQUIRE(f.fsm.current_state() == "CleanReturn");
+
+    f.fsm.dispatch(EvManualReturn{});
+    REQUIRE(f.fsm.current_state() == "Returning");
+
+    f.fsm.dispatch(EvRearLimitSettled{});
+    REQUIRE(f.fsm.current_state() == "Charging");
+}
+
+TEST_CASE("FSM: terminate transitions active task to Terminated", "[app][fsm]") {
+    FsmFixture f;
+    f.fsm.dispatch(EvScheduleStart{.at_home = true, .passes = 1.0f});
+    f.fsm.dispatch(EvFrontLimitSettled{});
+    REQUIRE(f.fsm.current_state() == "CleanReturn");
+
+    f.fsm.dispatch(EvTerminateTask{});
+    REQUIRE(f.fsm.current_state() == "Terminated");
+}
+
+TEST_CASE("FSM: Terminated -EvFaultReset-> Idle", "[app][fsm]") {
+    FsmFixture f;
+    f.fsm.dispatch(EvScheduleStart{.at_home = true, .passes = 1.0f});
+    f.fsm.dispatch(EvTerminateTask{});
+    REQUIRE(f.fsm.current_state() == "Terminated");
+
+    f.fsm.dispatch(EvFaultReset{});
+    REQUIRE(f.fsm.current_state() == "Idle");
+}
+
+TEST_CASE("FSM: EvLowBattery in Idle does not overwrite outward state", "[app][fsm]") {
+    FsmFixture f;
+    REQUIRE(f.fsm.current_state() == "Idle");
+
+    f.fsm.dispatch(EvLowBattery{});
+    REQUIRE(f.fsm.current_state() == "Idle");
 }
 
 TEST_CASE("FSM: Returning -EvRearLimitSettled-> Charging", "[app][fsm]") {

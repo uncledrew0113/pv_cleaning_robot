@@ -124,10 +124,11 @@ bool DataCache::push(const std::string& topic, const std::string& payload,
 
     if (queue_.size() >= max_rows_ && !queue_.empty()) {
         const auto dropped_id = queue_.front().id;
-        queue_.pop_front();
         if (!append_ack_record_locked(dropped_id)) {
             spdlog::warn("[DataCache] 记录淘汰 ack 追加失败: {}", dropped_id);
+            return false;
         }
+        queue_.pop_front();
     }
 
     Record record{next_id_++, topic, payload, ts_ms};
@@ -159,10 +160,11 @@ void DataCache::confirm_sent(const std::vector<int64_t>& ids)
 
     std::lock_guard<std::mutex> lk(mtx_);
     for (const auto id : ids) {
-        if (!erase_record_by_id(queue_, id)) continue;
         if (!append_ack_record_locked(id)) {
             spdlog::warn("[DataCache] 确认发送 ack 追加失败: {}", id);
+            continue;
         }
+        erase_record_by_id(queue_, id);
     }
     maybe_compact_locked();
 }
@@ -173,18 +175,25 @@ size_t DataCache::size()
     return queue_.size();
 }
 
+void DataCache::set_test_append_hook(AppendHook hook)
+{
+    std::lock_guard<std::mutex> lk(mtx_);
+    test_append_hook_ = std::move(hook);
+}
+
 bool DataCache::append_push_record_locked(const Record& record)
 {
+    const nlohmann::json j{{"op", kPushOp},
+                           {"id", record.id},
+                           {"topic", record.topic},
+                           {"payload", record.payload},
+                           {"ts_ms", record.ts_ms}};
+    if (test_append_hook_ && !test_append_hook_(j)) return false;
+
     std::ofstream out(file_path_, std::ios::app);
     if (!out.is_open()) return false;
 
-    out << nlohmann::json{{"op", kPushOp},
-                          {"id", record.id},
-                          {"topic", record.topic},
-                          {"payload", record.payload},
-                          {"ts_ms", record.ts_ms}}
-               .dump()
-        << '\n';
+    out << j.dump() << '\n';
     if (!out.good()) return false;
 
     ++journal_stats_.append_count;
@@ -193,10 +202,13 @@ bool DataCache::append_push_record_locked(const Record& record)
 
 bool DataCache::append_ack_record_locked(int64_t id)
 {
+    const nlohmann::json j{{"op", kAckOp}, {"id", id}};
+    if (test_append_hook_ && !test_append_hook_(j)) return false;
+
     std::ofstream out(file_path_, std::ios::app);
     if (!out.is_open()) return false;
 
-    out << nlohmann::json{{"op", kAckOp}, {"id", id}}.dump() << '\n';
+    out << j.dump() << '\n';
     if (!out.good()) return false;
 
     ++journal_stats_.ack_count;

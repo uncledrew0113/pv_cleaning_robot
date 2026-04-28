@@ -16,6 +16,7 @@
 #include <catch2/catch.hpp>
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <thread>
 
 #include "../mock/mock_can_bus.h"
@@ -23,6 +24,7 @@
 #include "../mock/mock_serial_port.h"
 #include "pv_cleaning_robot/app/fault_handler.h"
 #include "pv_cleaning_robot/app/robot_fsm.h"
+#include "pv_cleaning_robot/app/robot_supervisor.h"
 #include "pv_cleaning_robot/device/brush_motor.h"
 #include "pv_cleaning_robot/device/gps_device.h"
 #include "pv_cleaning_robot/device/imu_device.h"
@@ -30,10 +32,13 @@
 #include "pv_cleaning_robot/device/walk_motor_group.h"
 #include "pv_cleaning_robot/middleware/event_bus.h"
 #include "pv_cleaning_robot/middleware/safety_monitor.h"
+#include "pv_cleaning_robot/service/config_service.h"
+#include "pv_cleaning_robot/service/command_tracker.h"
 #include "pv_cleaning_robot/service/fault_service.h"
 #include "pv_cleaning_robot/service/motion_service.h"
 #include "pv_cleaning_robot/service/nav_service.h"
 #include "pv_cleaning_robot/service/scheduler_service.h"
+#include "pv_cleaning_robot/service/thingsboard_config_manager.h"
 #include "pv_cleaning_robot/middleware/data_cache.h"
 
 using namespace robot::app;
@@ -45,17 +50,25 @@ using robot::device::LimitSwitch;
 using robot::device::WalkMotorGroup;
 using robot::middleware::EventBus;
 using robot::middleware::SafetyMonitor;
+using robot::service::ConfigService;
+using robot::service::CommandTracker;
 using robot::service::FaultService;
 using robot::service::MotionService;
 using robot::service::NavService;
 using robot::service::SchedulerService;
+using robot::service::ThingsBoardConfigManager;
 using FaultEvent = FaultService::FaultEvent;
 using FaultLevel = FaultEvent::Level;
+namespace fs = std::filesystem;
 
 // ────────────────────────────────────────────────────────────────
 // 完整任务链构建辅助
 // ────────────────────────────────────────────────────────────────
 struct TaskChainFixture {
+    std::string config_path{"/tmp/test_task_chain_supervisor.json"};
+    std::string pending_path{"/tmp/test_task_chain_supervisor.pending.json"};
+    std::string backup_path{"/tmp/test_task_chain_supervisor.backup.json"};
+
     // 底层 mock
     std::shared_ptr<MockCanBus> can{std::make_shared<MockCanBus>()};
     std::shared_ptr<MockSerialPort> imu_sp{std::make_shared<MockSerialPort>()};
@@ -79,20 +92,24 @@ struct TaskChainFixture {
     std::shared_ptr<MotionService> motion;
     std::shared_ptr<NavService> nav;
     std::shared_ptr<FaultService> fault_svc{std::make_shared<FaultService>(bus)};
+    ConfigService cfg{config_path};
     SchedulerService scheduler;
+    std::shared_ptr<CommandTracker> command_tracker{std::make_shared<CommandTracker>()};
+    std::shared_ptr<ThingsBoardConfigManager> tb_cfg;
     SafetyMonitor safety_mon;
 
     // App 层
     RobotFsm fsm;
+    std::shared_ptr<RobotSupervisor> supervisor;
     std::vector<FaultEvent> dispatched_faults;
     FaultHandler fault_handler;
 
     TaskChainFixture()
-        : motion(std::make_shared<MotionService>(group,
-                                                 brush,
-                                                 nullptr,
-                                                 bus,
-                                                 MotionService::Config{.heading_pid_en = false}))
+        : motion([this] {
+            MotionService::Config cfg;
+            cfg.heading_pid_en = false;
+            return std::make_shared<MotionService>(group, brush, nullptr, bus, cfg);
+        }())
         , nav(std::make_shared<NavService>(group, imu, gps))
         , safety_mon(group, front_sw, rear_sw, bus)
         , fsm(motion, nav, fault_svc, bus)
@@ -112,8 +129,39 @@ struct TaskChainFixture {
         brush->open();
         front_sw->open();
         rear_sw->open();
+        std::ofstream f(config_path);
+        f << R"({
+  "robot": {
+    "passes": 1.0,
+    "clean_speed_rpm": 300.0,
+    "return_speed_rpm": 280.0,
+    "brush_rpm": 1000
+  },
+  "scheduler": {
+    "windows": [
+      { "hour": 8, "minute": 0 }
+    ]
+  }
+})";
+        f.close();
+        REQUIRE(cfg.load());
+        scheduler.clear_windows();
+        scheduler.add_window({8, 0});
+        tb_cfg = std::make_shared<ThingsBoardConfigManager>(cfg, scheduler);
         fault_handler.start_listening();
         fsm.dispatch(EvInitDone{});
+        supervisor = std::make_shared<RobotSupervisor>(
+            std::shared_ptr<RobotFsm>(&fsm, [](RobotFsm*) {}),
+            tb_cfg,
+            command_tracker,
+            fault_svc,
+            nav);
+    }
+
+    ~TaskChainFixture() {
+        fs::remove(config_path);
+        fs::remove(pending_path);
+        fs::remove(backup_path);
     }
 };
 
@@ -125,7 +173,7 @@ TEST_CASE("TaskChain: N=1 完整往返任务链", "[integration][task_chain]") {
     REQUIRE(f.fsm.current_state() == "Idle");
 
     // 调度触发 → CleanFwd
-    f.fsm.dispatch(EvScheduleStart{.at_home = true, .passes = 1.0f});
+    f.fsm.dispatch(EvScheduleStart{true, false, 1.0f});
     REQUIRE(f.fsm.current_state() == "CleanFwd");
     REQUIRE_FALSE(f.can->sent_frames.empty());  // motion 已发 CAN 帧
 
@@ -143,7 +191,7 @@ TEST_CASE("TaskChain: N=1 完整往返任务链", "[integration][task_chain]") {
 // ────────────────────────────────────────────────────────────────
 TEST_CASE("TaskChain: P0 故障中断清扫任务 → Fault → Reset → Idle", "[integration][task_chain]") {
     TaskChainFixture f;
-    f.fsm.dispatch(EvScheduleStart{.at_home = true, .passes = 2.0f});
+    f.fsm.dispatch(EvScheduleStart{true, false, 2.0f});
     REQUIRE(f.fsm.current_state() == "CleanFwd");
 
     // 通过 FaultService 上报 P0（FaultHandler → dispatch EvFaultP0）
@@ -163,7 +211,7 @@ TEST_CASE("TaskChain: P0 故障中断清扫任务 → Fault → Reset → Idle",
 // ────────────────────────────────────────────────────────────────
 TEST_CASE("TaskChain: P1 故障 → Returning → Charging", "[integration][task_chain]") {
     TaskChainFixture f;
-    f.fsm.dispatch(EvScheduleStart{.at_home = true, .passes = 2.0f});
+    f.fsm.dispatch(EvScheduleStart{true, false, 2.0f});
     f.fsm.dispatch(EvFrontLimitSettled{});  // 进入 CleanReturn
     REQUIRE(f.fsm.current_state() == "CleanReturn");
 
@@ -182,7 +230,7 @@ TEST_CASE("TaskChain: P1 故障 → Returning → Charging", "[integration][task
 TEST_CASE("TaskChain: SafetyMonitor 触发 LimitSettledEvent → FSM 响应",
           "[integration][task_chain]") {
     TaskChainFixture f;
-    f.fsm.dispatch(EvScheduleStart{.at_home = true, .passes = 2.0f});
+    f.fsm.dispatch(EvScheduleStart{true, false, 2.0f});
     REQUIRE(f.fsm.current_state() == "CleanFwd");
 
     // 订阅 LimitSettledEvent 并转发给 FSM
@@ -224,8 +272,8 @@ TEST_CASE("TaskChain: SchedulerService tick() 触发 FSM 清扫启动", "[integr
     f.scheduler.add_window({lm->tm_hour, lm->tm_min});
 
     // Scheduler 回调直接调用 FSM dispatch
-    f.scheduler.set_on_task_start(
-        [&] { f.fsm.dispatch(EvScheduleStart{.at_home = true, .passes = 1.0f}); });
+    f.scheduler.set_on_window_hit(
+        [&] { REQUIRE(f.supervisor->start_scheduled_task(true, false)); });
 
     f.scheduler.tick();
     REQUIRE(f.fsm.current_state() == "CleanFwd");
@@ -236,7 +284,7 @@ TEST_CASE("TaskChain: SchedulerService tick() 触发 FSM 清扫启动", "[integr
 // ────────────────────────────────────────────────────────────────
 TEST_CASE("TaskChain: N=2 完整 4 趟任务链", "[integration][task_chain]") {
     TaskChainFixture f;
-    f.fsm.dispatch(EvScheduleStart{.at_home = true, .passes = 2.0f});
+    f.fsm.dispatch(EvScheduleStart{true, false, 2.0f});
     // 4 个半趟
     f.fsm.dispatch(EvFrontLimitSettled{});  // 半趟1
     REQUIRE(f.fsm.current_state() == "CleanReturn");
@@ -254,7 +302,7 @@ TEST_CASE("TaskChain: N=2 完整 4 趟任务链", "[integration][task_chain]") {
 TEST_CASE("TaskChain: P1 故障发生在 CleanFwd → Returning → Charging",
           "[integration][task_chain]") {
     TaskChainFixture f;
-    f.fsm.dispatch(EvScheduleStart{.at_home = true, .passes = 2.0f});
+    f.fsm.dispatch(EvScheduleStart{true, false, 2.0f});
     REQUIRE(f.fsm.current_state() == "CleanFwd");
 
     // P1 故障在正向清扫期间触发（尚未到达前端限位）
@@ -272,7 +320,7 @@ TEST_CASE("TaskChain: P1 故障发生在 CleanFwd → Returning → Charging",
 TEST_CASE("TaskChain: P0 故障复位后重新启动清扫 → CleanFwd",
           "[integration][task_chain]") {
     TaskChainFixture f;
-    f.fsm.dispatch(EvScheduleStart{.at_home = true, .passes = 1.0f});
+    f.fsm.dispatch(EvScheduleStart{true, false, 1.0f});
     REQUIRE(f.fsm.current_state() == "CleanFwd");
 
     // P0 故障 → Fault
@@ -284,7 +332,7 @@ TEST_CASE("TaskChain: P0 故障复位后重新启动清扫 → CleanFwd",
     REQUIRE(f.fsm.current_state() == "Idle");
 
     // 重新下发任务 → CleanFwd
-    f.fsm.dispatch(EvScheduleStart{.at_home = true, .passes = 1.0f});
+    f.fsm.dispatch(EvScheduleStart{true, false, 1.0f});
     REQUIRE(f.fsm.current_state() == "CleanFwd");
 }
 
@@ -295,20 +343,19 @@ TEST_CASE("TaskChain: heading_pid_en=true 完整 N=1 任务链", "[integration][
     TaskChainFixture f;
     // 临时用 PID 使能的 MotionService 替换 Fixture 内的 motion
     f.can->opened = true;  // 允许 send_ctrl() 通过 is_open() 检查
-    MotionService::Config cfg_pid{
-        .clean_speed_rpm  = 300.0f,
-        .return_speed_rpm = 300.0f,
-        .brush_rpm        = 1000,
-        .return_brush_rpm = 1000,
-        .heading_pid_en   = true
-    };
+    MotionService::Config cfg_pid;
+    cfg_pid.clean_speed_rpm = 300.0f;
+    cfg_pid.return_speed_rpm = 300.0f;
+    cfg_pid.brush_rpm = 1000;
+    cfg_pid.return_brush_rpm = 1000;
+    cfg_pid.heading_pid_en = true;
     auto motion_pid =
         std::make_shared<MotionService>(f.group, f.brush, nullptr, f.bus, cfg_pid);
     RobotFsm fsm_pid(motion_pid, f.nav, f.fault_svc, f.bus);
     fsm_pid.dispatch(EvInitDone{});
     REQUIRE(fsm_pid.current_state() == "Idle");
 
-    fsm_pid.dispatch(EvScheduleStart{.at_home = true, .passes = 1.0f});
+    fsm_pid.dispatch(EvScheduleStart{true, false, 1.0f});
     REQUIRE(fsm_pid.current_state() == "CleanFwd");
     REQUIRE_FALSE(f.can->sent_frames.empty());  // PID 路径仍发出 CAN 帧
 

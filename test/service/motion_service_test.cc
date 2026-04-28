@@ -68,6 +68,19 @@ TEST_CASE("MotionService stop_cleaning commands brush stop", "[service][motion]"
     REQUIRE(f.serial->take_tx_text().find("v 0 0.000 0\n") != std::string::npos);
 }
 
+TEST_CASE("MotionService pause_task stops brush without immediately disabling walk motors",
+          "[service][motion]") {
+    MotionFixture f;
+    REQUIRE(f.motion.start_cleaning());
+    f.serial->clear_tx();
+    f.can->sent_frames.clear();
+
+    f.motion.pause_task();
+
+    REQUIRE(f.serial->take_tx_text().find("v 0 0.000 0\n") != std::string::npos);
+    REQUIRE(f.can->sent_frames.empty());
+}
+
 TEST_CASE("MotionService start_returning reverses brush direction", "[service][motion]") {
     MotionFixture f;
     f.serial->clear_tx();

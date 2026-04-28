@@ -1,9 +1,11 @@
 #pragma once
+#include <functional>
 #include <cstdint>
 #include <deque>
 #include <mutex>
 #include <string>
 #include <vector>
+#include <nlohmann/json.hpp>
 
 namespace robot::middleware {
 
@@ -49,6 +51,9 @@ public:
     /// 当前缓存条数
     size_t size();
 
+    using AppendHook = std::function<bool(const nlohmann::json&)>;
+    void set_test_append_hook(AppendHook hook);
+
 private:
     struct JournalStats {
         size_t append_count{0};
@@ -65,6 +70,7 @@ private:
     int64_t            next_id_{1};
     std::deque<Record> queue_;
     JournalStats       journal_stats_{};
+    AppendHook         test_append_hook_;
     mutable std::mutex mtx_;
 };
 

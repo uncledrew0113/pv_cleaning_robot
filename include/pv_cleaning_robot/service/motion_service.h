@@ -55,6 +55,9 @@ class MotionService : public middleware::IRunnable {
     /// 停止清扫（停滚刷，行走归零，禁用 PID）
     void stop_cleaning();
 
+    /// 暂停任务（停滚刷，速度归零，保留驱动可恢复状态）
+    void pause_task();
+
     /// 以返回速度反向行进（滚刷反向运行，保持航向 PID）
     bool start_returning();
 

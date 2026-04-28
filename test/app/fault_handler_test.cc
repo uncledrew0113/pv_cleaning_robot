@@ -89,10 +89,14 @@ TEST_CASE("FaultHandler: P1 故障 → 调用 dispatch_fn", "[app][fault_handler
 TEST_CASE("FaultHandler: P1 故障 → start_returning_no_brush() 发出 CAN 帧",
           "[app][fault_handler]") {
     FaultHandlerFixture f;
+    f.brush_serial->clear_tx();
     f.can->sent_frames.clear();
     f.fault_svc.report(FaultLevel::P1, 0x2001, "BMS low");
 
     REQUIRE_FALSE(f.can->sent_frames.empty());
+    const auto tx = f.brush_serial->take_tx_text();
+    REQUIRE(tx.find("v 0 0.000 0\n") != std::string::npos);
+    REQUIRE(tx.find("v 0 -163840.000 0\n") == std::string::npos);
 }
 
 // ────────────────────────────────────────────────────────────────

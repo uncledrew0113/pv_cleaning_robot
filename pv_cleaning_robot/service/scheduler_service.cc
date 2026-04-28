@@ -15,14 +15,19 @@ void SchedulerService::clear_windows()
     in_window_ = false;  // 清除后立即允许下次调度触发
 }
 
-void SchedulerService::set_on_task_start(TaskCallback cb)
+std::vector<SchedulerService::TimeWindow> SchedulerService::snapshot_windows() const
 {
-    on_start_ = std::move(cb);
+    return windows_;
 }
 
-void SchedulerService::set_on_task_end(TaskCallback cb)
+void SchedulerService::set_on_window_hit(TriggerCallback cb)
 {
-    on_end_ = std::move(cb);
+    on_hit_ = std::move(cb);
+}
+
+void SchedulerService::set_on_window_expired(TriggerCallback cb)
+{
+    on_expired_ = std::move(cb);
 }
 
 void SchedulerService::tick()
@@ -41,13 +46,13 @@ void SchedulerService::tick()
         }
     }
 
-    // 窗口内且已超过最大时长则强制退出（防止任务持续到第二天）
-    if (in_window_ && on_end_) {
+    // 窗口内且已超过最大时长则强制退出（防止窗口状态持续到第二天）
+    if (in_window_ && on_expired_) {
         auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
             now - window_start_time_).count();
         if (elapsed >= kWindowDurationSec) {
             in_window_ = false;
-            on_end_();
+            on_expired_();
             return;
         }
     }
@@ -55,9 +60,9 @@ void SchedulerService::tick()
     if (in_window_now && !in_window_) {
         in_window_ = true;
         window_start_time_ = now;
-        if (on_start_) on_start_();
+        if (on_hit_) on_hit_();
     } else if (!in_window_now && in_window_) {
-        // 检查是否超时退出已在上方处理，此处额外保护
+        // 检查是否超时退出已在上方处理，此处仅清掉本轮窗口状态
         in_window_ = false;
     }
 }
