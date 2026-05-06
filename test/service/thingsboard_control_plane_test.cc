@@ -3,11 +3,10 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <rapidjson/document.h>
 #include <string>
 #include <utility>
 #include <vector>
-
-#include <nlohmann/json.hpp>
 
 #include "../mock/mock_can_bus.h"
 #include "../mock/mock_serial_port.h"
@@ -28,7 +27,6 @@
 #include "pv_cleaning_robot/service/scheduler_service.h"
 #include "pv_cleaning_robot/service/thingsboard_config_manager.h"
 #include "pv_cleaning_robot/service/thingsboard_control_plane.h"
-#include "pv_cleaning_robot/service/thingsboard_telemetry_publisher.h"
 
 using robot::middleware::DataCache;
 using robot::middleware::INetworkTransport;
@@ -42,10 +40,17 @@ using robot::service::NavService;
 using robot::service::SchedulerService;
 using robot::service::ThingsBoardConfigManager;
 using robot::service::ThingsBoardControlPlane;
-using robot::service::ThingsBoardTelemetryPublisher;
 namespace fs = std::filesystem;
 
 namespace {
+
+rapidjson::Document parse_json(const std::string& text)
+{
+    rapidjson::Document doc;
+    doc.Parse(text.c_str(), text.size());
+    REQUIRE_FALSE(doc.HasParseError());
+    return doc;
+}
 
 struct MockTransport final : INetworkTransport {
     MessageCallback rpc_cb;
@@ -119,7 +124,6 @@ struct Fixture {
     std::shared_ptr<FaultService> fault{std::make_shared<FaultService>(bus)};
     std::shared_ptr<robot::app::RobotFsm> fsm;
     std::shared_ptr<robot::app::RobotSupervisor> supervisor;
-    std::shared_ptr<ThingsBoardTelemetryPublisher> telemetry;
     std::shared_ptr<ThingsBoardControlPlane> control_plane;
 
     Fixture() {
@@ -172,18 +176,12 @@ struct Fixture {
         brush->open();
         fsm->dispatch(robot::app::EvInitDone{});
 
-        telemetry = std::make_shared<ThingsBoardTelemetryPublisher>(cfg, cloud, supervisor);
         control_plane = std::make_shared<ThingsBoardControlPlane>(
+            cfg,
             cloud,
             tb_cfg,
             command_tracker,
-            supervisor,
-            [this](const char* event_name, bool accepted, const char* reason) {
-                telemetry->publish_status_event(event_name, accepted, reason);
-            },
-            [this](const char* event_name, const robot::service::CommandSnapshot& snapshot) {
-                telemetry->publish_command_event(event_name, snapshot);
-            });
+            supervisor);
     }
 
     ~Fixture() {
@@ -194,14 +192,16 @@ struct Fixture {
         fs::remove(cache_path);
     }
 
-    nlohmann::json last_published_json(const std::string& topic_suffix) const {
+    rapidjson::Document last_published_json(const std::string& topic_suffix) const {
         for (auto it = mqtt->published.rbegin(); it != mqtt->published.rend(); ++it) {
             if (it->first.find(topic_suffix) != std::string::npos) {
-                return nlohmann::json::parse(it->second);
+                return parse_json(it->second);
             }
         }
         FAIL("expected published topic suffix not found");
-        return nlohmann::json::object();
+        rapidjson::Document empty;
+        empty.SetObject();
+        return empty;
     }
 };
 
@@ -212,16 +212,43 @@ TEST_CASE("ThingsBoardControlPlane shared attributes update pending config and e
     Fixture f;
     f.control_plane->subscribe_shared_attributes();
 
-    f.mqtt->emit_attributes(R"({"passes":2.5})");
+    f.mqtt->emit_attributes(R"({"passes":2.0})");
 
     const auto pending = f.tb_cfg->pending_config();
     REQUIRE(pending.has_value());
-    CHECK(pending->passes == Approx(2.5));
+    CHECK(pending->passes == Approx(2.0));
 
     const auto j = f.last_published_json("telemetry");
-    CHECK(j.at("event").get<std::string>() == "shared_attr_update");
-    CHECK(j.at("accepted").get<bool>() == true);
-    CHECK(j.at("reason").get<std::string>() == "ok");
+    CHECK(std::string(j["event"].GetString()) == "shared_attr_update");
+    CHECK(j["accepted"].GetBool() == true);
+    CHECK(std::string(j["reason"].GetString()) == "ok");
+}
+
+TEST_CASE("ThingsBoardControlPlane publishes startup attributes",
+          "[service][tb_control_plane]") {
+    Fixture f;
+
+    f.control_plane->publish_startup_attributes();
+
+    const auto j = f.last_published_json("attributes");
+    CHECK(std::string(j["software_version"].GetString()) == "2.0.0");
+    CHECK(std::string(j["hardware_version"].GetString()) == "A1");
+    CHECK(std::string(j["device_model"].GetString()) == "pv_cleaning_robot_test");
+    CHECK(std::string(j["device_id"].GetString()) == "pv_robot_test_001");
+    REQUIRE(j["supported_rpc_methods"].IsArray());
+    CHECK(std::string(j["config_schema_version"].GetString()) == "thingsboard-v1");
+}
+
+TEST_CASE("ThingsBoardControlPlane publishes backup fallback event",
+          "[service][tb_control_plane]") {
+    Fixture f;
+
+    f.control_plane->publish_backup_fallback_event();
+
+    const auto j = f.last_published_json("telemetry");
+    CHECK(std::string(j["event"].GetString()) == "config_backup_fallback");
+    CHECK(j["accepted"].GetBool() == true);
+    CHECK(std::string(j["reason"].GetString()) == "loaded_from_backup");
 }
 
 TEST_CASE("ThingsBoardControlPlane start RPC launches new task from idle",
@@ -234,8 +261,8 @@ TEST_CASE("ThingsBoardControlPlane start RPC launches new task from idle",
     CHECK(f.fsm->current_state() == "CleanFwd");
 
     const auto response = f.last_published_json("rpc/response/42");
-    CHECK(response.at("accepted").get<bool>() == true);
-    CHECK(response.at("result").get<std::string>() == "ok");
+    CHECK(response["accepted"].GetBool() == true);
+    CHECK(std::string(response["result"].GetString()) == "ok");
 
     bool saw_accepted = false;
     bool saw_completed = false;
@@ -243,15 +270,38 @@ TEST_CASE("ThingsBoardControlPlane start RPC launches new task from idle",
         if (topic.find("telemetry") == std::string::npos) {
             continue;
         }
-        const auto j = nlohmann::json::parse(payload);
-        if (j.value("event", "") == "command_accepted") {
+        const auto j = parse_json(payload);
+        const auto event_it = j.FindMember("event");
+        const auto reason_it = j.FindMember("reason");
+        const std::string event =
+            event_it != j.MemberEnd() && event_it->value.IsString() ? event_it->value.GetString() : "";
+        const std::string reason =
+            reason_it != j.MemberEnd() && reason_it->value.IsString() ? reason_it->value.GetString() : "";
+        if (event == "command_accepted") {
             saw_accepted = true;
         }
-        if (j.value("event", "") == "command_completed" &&
-            j.value("reason", "") == "started_new_task") {
+        if (event == "command_completed" && reason == "started_new_task") {
             saw_completed = true;
         }
     }
     CHECK(saw_accepted);
     CHECK(saw_completed);
+}
+
+TEST_CASE("ThingsBoardControlPlane publishes business telemetry from supervisor snapshot",
+          "[service][tb_control_plane]") {
+    Fixture f;
+    f.fsm->dispatch(robot::app::EvScheduleStart{true, false, 2.0f});
+    f.fsm->dispatch(robot::app::EvFrontLimitSettled{});
+    f.command_tracker->reject("return", "req-1", "return_not_allowed_in_current_state");
+
+    f.control_plane->publish_business_telemetry();
+
+    const auto j = f.last_published_json("telemetry");
+    CHECK(std::string(j["device_state"].GetString()) == "CleanReturn");
+    CHECK(std::string(j["task_state"].GetString()) == "RunningTask");
+    CHECK(j["target_half_passes"].GetInt() == 4);
+    CHECK(j["completed_half_passes"].GetInt() == 1);
+    REQUIRE(j.HasMember("last_command"));
+    CHECK(std::string(j["last_command"]["name"].GetString()) == "return");
 }

@@ -55,6 +55,7 @@
 #include "pv_cleaning_robot/app/watchdog_mgr.h"
 
 // Mock（滚刷电机未安装）
+#include "mock/mock_can_bus.h"
 #include "mock/mock_serial_port.h"
 #include "pv_cleaning_robot/service/config_service.h"
 
@@ -98,6 +99,8 @@ struct HwParams {
     float limit_test_rpm = 10.0f;
     float combined_passes = 50.0f;  ///< combined 测试趟数（1=一来回，2=两来回…）
     std::string health_jsonl_path = "/tmp/hw_system_test_health.jsonl";
+    size_t health_log_max_bytes = 10u * 1024u * 1024u;  ///< HealthService 本地轮转单文件上限
+    size_t health_log_max_files = 3u;                   ///< HealthService 本地轮转保留文件数
     std::string pid_jsonl_path = "/tmp/hw_pid_test_metrics.jsonl";  ///< PID 指标 JSONL 路径
     float pid_max_drift_deg = 15.0f;  ///< pid_combined: 全程最大 yaw 漂移警告阈值（°）
 
@@ -177,6 +180,10 @@ inline HwParams load_hw_test_config() {
         p.combined_passes = cfg.get<float>("behavior.combined_passes", p.combined_passes);
         p.health_jsonl_path =
             cfg.get<std::string>("behavior.health_jsonl_path", p.health_jsonl_path);
+        p.health_log_max_bytes = static_cast<size_t>(
+            cfg.get<int>("behavior.health_log_max_bytes", static_cast<int>(p.health_log_max_bytes)));
+        p.health_log_max_files = static_cast<size_t>(
+            cfg.get<int>("behavior.health_log_max_files", static_cast<int>(p.health_log_max_files)));
         p.pid_jsonl_path = cfg.get<std::string>("behavior.pid_jsonl_path", p.pid_jsonl_path);
         p.pid_max_drift_deg = cfg.get<float>("behavior.pid_max_drift_deg", p.pid_max_drift_deg);
         p.pid.kp = cfg.get<float>("pid.kp", p.pid.kp);
@@ -250,7 +257,7 @@ struct FullSystemFixture : DeviceFixture {
     robot::middleware::EventBus event_bus;
     std::shared_ptr<MockSerialPort> mock_brush_serial;
     std::shared_ptr<robot::device::BrushMotor> brush;
-    std::shared_ptr<robot::device::GpsDevice> gps_dummy;
+    std::shared_ptr<robot::device::GpsDevice> gps;
     std::unique_ptr<robot::middleware::SafetyMonitor> safety;
     std::shared_ptr<robot::service::NavService> nav;
     std::shared_ptr<robot::service::MotionService> motion;
@@ -274,12 +281,13 @@ struct FullSystemFixture : DeviceFixture {
         safety =
             std::make_unique<middleware::SafetyMonitor>(walk_group, front_sw, rear_sw, event_bus);
 
-        // GPS 未安装：创建占位对象，不 open，NavService 会跳过 GPS 校正
-        auto gps_serial_dummy =
-            std::make_shared<driver::LibSerialPort>("/dev/null", hal::UartConfig{9600});
-        gps_dummy = std::make_shared<device::GpsDevice>(gps_serial_dummy);
+        robot::device::GpsdSourceConfig gpsd_cfg;
+        gpsd_cfg.host = p.gpsd_host;
+        gpsd_cfg.port = p.gpsd_port;
+        gpsd_cfg.watch = p.gpsd_watch;
+        gps = device::GpsDevice::create_gpsd(gpsd_cfg);
 
-        nav = std::make_shared<service::NavService>(walk_group, imu, gps_dummy, 0.3f);
+        nav = std::make_shared<service::NavService>(walk_group, imu, gps, 0.3f);
 
         service::MotionService::Config motion_cfg;
         motion_cfg.clean_speed_rpm = p.test_speed_rpm;
@@ -343,6 +351,9 @@ struct FullSystemFixture : DeviceFixture {
         if (bms->open() != DeviceError::OK)
             spdlog::warn("[FullSystemFixture] BMS open 失败（非致命）");
 
+        if (!gps || !gps->open())
+            spdlog::warn("[FullSystemFixture] GPS(gpsd) open 失败（非致命）");
+
         // 限位开关：gpiochip5 不支持 IRQ，使用 1ms 软件轮询；测试中不设 RT 优先级，无 CPU 绑定
         if (!front_sw->open(0, 2, 0, false))
             spdlog::warn("[FullSystemFixture] front_sw open 失败");
@@ -391,10 +402,12 @@ struct FullSystemFixture : DeviceFixture {
                 brush,
                 bms,
                 imu,
-                gps_dummy,
+                gps,
                 nullptr,  // cloud = null，不需要 MQTT/LoRaWAN
                 robot::service::HealthService::Mode::DIAGNOSTICS,
                 health_jsonl_path,
+                p.health_log_max_bytes,
+                p.health_log_max_files,
                 dist_sensor);  // 距离传感器（可选）
             spdlog::info("[FullSystemFixture] HealthService 已创建: {}", health_jsonl_path);
         }
@@ -458,6 +471,82 @@ struct FullSystemFixture : DeviceFixture {
             nav_exec_thread_.join();
         if (dist_update_thread_.joinable())
             dist_update_thread_.join();
+    }
+};
+
+// ── ImuGpsHealthFixture：仅 IMU + GPS + Health 本地落盘 ─────────────────────
+struct ImuGpsHealthFixture {
+    HwParams p;
+    std::shared_ptr<MockCanBus> mock_can;
+    std::shared_ptr<robot::device::WalkMotorGroup> walk_group;
+    std::shared_ptr<MockSerialPort> mock_brush_serial;
+    std::shared_ptr<robot::device::BrushMotor> brush;
+    std::shared_ptr<MockSerialPort> mock_bms_serial;
+    std::shared_ptr<robot::device::BMS> bms;
+    std::shared_ptr<robot::driver::LibSerialPort> imu_serial;
+    std::shared_ptr<robot::device::ImuDevice> imu;
+    std::shared_ptr<robot::device::GpsDevice> gps;
+    std::shared_ptr<robot::service::HealthService> health;
+
+    ImuGpsHealthFixture()
+        : p(load_hw_test_config())
+    {
+        using namespace robot;
+
+        // HealthService 仍要求 walk / brush / bms 依赖，这里用最小 mock 底座承载，
+        // 不打开真实 CAN / BMS / Brush 硬件，仅为生成完整 JSON 提供静态状态。
+        mock_can = std::make_shared<MockCanBus>();
+        walk_group = std::make_shared<device::WalkMotorGroup>(
+            mock_can, 1u, 200u, false, 1u, 2u);
+
+        mock_brush_serial = std::make_shared<MockSerialPort>();
+        brush =
+            std::make_shared<device::BrushMotor>(mock_brush_serial, 0u, 8192.0f, false, 0.5f);
+
+        mock_bms_serial = std::make_shared<MockSerialPort>();
+        bms = std::make_shared<device::BMS>(mock_bms_serial, 95.0f, 15.0f);
+
+        imu_serial = std::make_shared<driver::LibSerialPort>(
+            p.imu_port, hal::UartConfig{p.imu_baud});
+        imu = std::make_shared<device::ImuDevice>(imu_serial);
+
+        device::GpsdSourceConfig gpsd_cfg;
+        gpsd_cfg.host = p.gpsd_host;
+        gpsd_cfg.port = p.gpsd_port;
+        gpsd_cfg.watch = p.gpsd_watch;
+        gps = device::GpsDevice::create_gpsd(gpsd_cfg);
+    }
+
+    bool init(const std::string& health_jsonl_path) {
+        if (!imu || !imu->open()) {
+            spdlog::error("[ImuGpsHealthFixture] IMU open 失败");
+            return false;
+        }
+        if (!gps || !gps->open()) {
+            spdlog::error("[ImuGpsHealthFixture] GPS(gpsd) open 失败");
+            return false;
+        }
+
+        health = std::make_shared<robot::service::HealthService>(
+            walk_group,
+            brush,
+            bms,
+            imu,
+            gps,
+            nullptr,
+            robot::service::HealthService::Mode::DIAGNOSTICS,
+            health_jsonl_path,
+            p.health_log_max_bytes,
+            p.health_log_max_files,
+            nullptr);
+        return true;
+    }
+
+    ~ImuGpsHealthFixture() {
+        if (gps)
+            gps->close();
+        if (imu)
+            imu->close();
     }
 };
 

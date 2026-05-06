@@ -2,9 +2,12 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <filesystem>
 #include <fstream>
-#include <nlohmann/json.hpp>
+#include <rapidjson/document.h>
+#include <rapidjson/stringbuffer.h>
+#include <rapidjson/writer.h>
 #include <spdlog/spdlog.h>
 
 namespace robot::middleware {
@@ -13,15 +16,85 @@ namespace {
 constexpr const char* kPushOp = "push";
 constexpr const char* kAckOp = "ack";
 constexpr size_t kCompactOpThreshold = 256;
+constexpr size_t kJournalParsePoolBytes = 2048;
 
-bool parse_snapshot_record(const nlohmann::json& j, DataCache::Record* out)
+bool parse_snapshot_record(const rapidjson::Value& value, DataCache::Record* out)
 {
     if (!out) return false;
-    out->id = j.at("id").get<int64_t>();
-    out->topic = j.at("topic").get<std::string>();
-    out->payload = j.at("payload").get<std::string>();
-    out->ts_ms = j.at("ts_ms").get<uint64_t>();
+    if (!value.IsObject()) return false;
+
+    const auto id_it = value.FindMember("id");
+    const auto topic_it = value.FindMember("topic");
+    const auto payload_it = value.FindMember("payload");
+    const auto ts_it = value.FindMember("ts_ms");
+    if (id_it == value.MemberEnd() || topic_it == value.MemberEnd() ||
+        payload_it == value.MemberEnd() || ts_it == value.MemberEnd()) {
+        return false;
+    }
+    if (!id_it->value.IsInt64() || !topic_it->value.IsString() ||
+        !payload_it->value.IsString() || !ts_it->value.IsUint64()) {
+        return false;
+    }
+
+    out->id = id_it->value.GetInt64();
+    out->topic.assign(topic_it->value.GetString(), topic_it->value.GetStringLength());
+    out->payload.assign(payload_it->value.GetString(), payload_it->value.GetStringLength());
+    out->ts_ms = ts_it->value.GetUint64();
     return true;
+}
+
+std::string build_push_line(const DataCache::Record& record)
+{
+    rapidjson::StringBuffer buffer;
+    buffer.Reserve(static_cast<rapidjson::SizeType>(
+        64 + record.topic.size() + record.payload.size()));
+    rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+    writer.StartObject();
+    writer.Key("op");
+    writer.String(kPushOp);
+    writer.Key("id");
+    writer.Int64(record.id);
+    writer.Key("topic");
+    writer.String(record.topic.c_str(), static_cast<rapidjson::SizeType>(record.topic.size()));
+    writer.Key("payload");
+    writer.String(record.payload.c_str(), static_cast<rapidjson::SizeType>(record.payload.size()));
+    writer.Key("ts_ms");
+    writer.Uint64(record.ts_ms);
+    writer.EndObject();
+    return {buffer.GetString(), buffer.GetSize()};
+}
+
+std::string build_ack_line(int64_t id)
+{
+    rapidjson::StringBuffer buffer;
+    buffer.Reserve(32);
+    rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+    writer.StartObject();
+    writer.Key("op");
+    writer.String(kAckOp);
+    writer.Key("id");
+    writer.Int64(id);
+    writer.EndObject();
+    return {buffer.GetString(), buffer.GetSize()};
+}
+
+std::string build_snapshot_line(const DataCache::Record& record)
+{
+    rapidjson::StringBuffer buffer;
+    buffer.Reserve(static_cast<rapidjson::SizeType>(
+        48 + record.topic.size() + record.payload.size()));
+    rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+    writer.StartObject();
+    writer.Key("id");
+    writer.Int64(record.id);
+    writer.Key("topic");
+    writer.String(record.topic.c_str(), static_cast<rapidjson::SizeType>(record.topic.size()));
+    writer.Key("payload");
+    writer.String(record.payload.c_str(), static_cast<rapidjson::SizeType>(record.payload.size()));
+    writer.Key("ts_ms");
+    writer.Uint64(record.ts_ms);
+    writer.EndObject();
+    return {buffer.GetString(), buffer.GetSize()};
 }
 
 bool erase_record_by_id(std::deque<DataCache::Record>& queue, int64_t id)
@@ -64,26 +137,45 @@ bool DataCache::open()
     while (std::getline(in, line)) {
         if (line.empty()) continue;
         try {
-            auto j = nlohmann::json::parse(line);
-            if (j.contains("op")) {
+            alignas(std::max_align_t) unsigned char pool_buffer[kJournalParsePoolBytes];
+            rapidjson::MemoryPoolAllocator<rapidjson::CrtAllocator> allocator(
+                pool_buffer, sizeof(pool_buffer));
+            rapidjson::Document document(&allocator);
+            document.Parse(line.c_str(), line.size());
+            if (document.HasParseError() || !document.IsObject()) {
+                throw std::runtime_error("invalid JSON line");
+            }
+            const auto op_it = document.FindMember("op");
+            if (op_it != document.MemberEnd()) {
                 saw_journal_ops = true;
-                const auto op = j.at("op").get<std::string>();
+                if (!op_it->value.IsString()) {
+                    throw std::runtime_error("invalid journal op");
+                }
+                const std::string op(op_it->value.GetString(), op_it->value.GetStringLength());
                 if (op == kPushOp) {
                     Record record{};
-                    parse_snapshot_record(j, &record);
+                    if (!parse_snapshot_record(document, &record)) {
+                        throw std::runtime_error("invalid push record");
+                    }
                     max_id = std::max(max_id, record.id);
                     erase_record_by_id(queue_, record.id);
                     queue_.push_back(std::move(record));
                     ++replay_push_count;
                 } else if (op == kAckOp) {
-                    const auto id = j.at("id").get<int64_t>();
+                    const auto id_it = document.FindMember("id");
+                    if (id_it == document.MemberEnd() || !id_it->value.IsInt64()) {
+                        throw std::runtime_error("invalid ack record");
+                    }
+                    const auto id = id_it->value.GetInt64();
                     max_id = std::max(max_id, id);
                     erase_record_by_id(queue_, id);
                     ++replay_ack_count;
                 }
             } else {
                 Record record{};
-                parse_snapshot_record(j, &record);
+                if (!parse_snapshot_record(document, &record)) {
+                    throw std::runtime_error("invalid snapshot record");
+                }
                 max_id = std::max(max_id, record.id);
                 queue_.push_back(std::move(record));
                 ++replay_push_count;
@@ -183,17 +275,19 @@ void DataCache::set_test_append_hook(AppendHook hook)
 
 bool DataCache::append_push_record_locked(const Record& record)
 {
-    const nlohmann::json j{{"op", kPushOp},
-                           {"id", record.id},
-                           {"topic", record.topic},
-                           {"payload", record.payload},
-                           {"ts_ms", record.ts_ms}};
-    if (test_append_hook_ && !test_append_hook_(j)) return false;
+    const auto line = build_push_line(record);
+    alignas(std::max_align_t) unsigned char pool_buffer[kJournalParsePoolBytes];
+    rapidjson::MemoryPoolAllocator<rapidjson::CrtAllocator> allocator(
+        pool_buffer, sizeof(pool_buffer));
+    rapidjson::Document document(&allocator);
+    document.Parse(line.c_str(), line.size());
+    if (document.HasParseError() || !document.IsObject()) return false;
+    if (test_append_hook_ && !test_append_hook_(document)) return false;
 
     std::ofstream out(file_path_, std::ios::app);
     if (!out.is_open()) return false;
 
-    out << j.dump() << '\n';
+    out << line << '\n';
     if (!out.good()) return false;
 
     ++journal_stats_.append_count;
@@ -202,13 +296,19 @@ bool DataCache::append_push_record_locked(const Record& record)
 
 bool DataCache::append_ack_record_locked(int64_t id)
 {
-    const nlohmann::json j{{"op", kAckOp}, {"id", id}};
-    if (test_append_hook_ && !test_append_hook_(j)) return false;
+    const auto line = build_ack_line(id);
+    alignas(std::max_align_t) unsigned char pool_buffer[kJournalParsePoolBytes];
+    rapidjson::MemoryPoolAllocator<rapidjson::CrtAllocator> allocator(
+        pool_buffer, sizeof(pool_buffer));
+    rapidjson::Document document(&allocator);
+    document.Parse(line.c_str(), line.size());
+    if (document.HasParseError() || !document.IsObject()) return false;
+    if (test_append_hook_ && !test_append_hook_(document)) return false;
 
     std::ofstream out(file_path_, std::ios::app);
     if (!out.is_open()) return false;
 
-    out << j.dump() << '\n';
+    out << line << '\n';
     if (!out.good()) return false;
 
     ++journal_stats_.ack_count;
@@ -236,12 +336,7 @@ bool DataCache::compact_to_snapshot_locked()
         }
 
         for (const auto& record : queue_) {
-            out << nlohmann::json{{"id", record.id},
-                                  {"topic", record.topic},
-                                  {"payload", record.payload},
-                                  {"ts_ms", record.ts_ms}}
-                       .dump()
-                << '\n';
+            out << build_snapshot_line(record) << '\n';
         }
 
         if (!out.good()) {

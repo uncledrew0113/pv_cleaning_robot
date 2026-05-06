@@ -58,6 +58,9 @@ public:
         std::string password;
         bool        tls_enabled{false};
         std::string ca_cert_path;       ///< TLS CA 文件路径
+        std::string client_cert_path;   ///< TLS 客户端证书路径（PEM）
+        std::string client_key_path;    ///< TLS 客户端私钥路径（PEM/KEY）
+        bool        insecure_skip_server_name_check{false};  ///< 仅调试用：跳过证书与 broker 主机名/IP 匹配校验
         int         keep_alive_sec{30};
         int         connect_timeout_sec{10};
         int         qos{1};

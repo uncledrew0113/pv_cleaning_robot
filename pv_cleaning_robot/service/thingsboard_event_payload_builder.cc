@@ -1,94 +1,39 @@
 #include "pv_cleaning_robot/service/thingsboard_event_payload_builder.h"
 
-#include <cstdarg>
-#include <cstdio>
+#include <rapidjson/writer.h>
+
+#include "pv_cleaning_robot/service/thingsboard_config_manager.h"
 
 namespace robot::service {
 namespace {
 
-class FixedJsonWriter {
+class RapidJsonFixedBufferStream {
 public:
-    FixedJsonWriter(char* out, size_t cap) noexcept : out_(out), cap_(cap) {
+    using Ch = char;
+
+    RapidJsonFixedBufferStream(char* out, size_t cap) noexcept : out_(out), cap_(cap) {
         if (out_ && cap_ > 0) out_[0] = '\0';
     }
 
-    size_t size() const noexcept { return overflow_ ? 0u : len_; }
-
-    void append_raw(const char* text) noexcept { append_format("%s", text ? text : ""); }
-
-    void append_char(char ch) noexcept {
-        if (!ensure_space(1u)) return;
-        out_[len_++] = ch;
-        out_[len_] = '\0';
-    }
-
-    void append_quoted(const char* text) noexcept {
-        append_char('"');
-        if (!text) text = "";
-        for (const unsigned char* p = reinterpret_cast<const unsigned char*>(text); *p != '\0'; ++p) {
-            switch (*p) {
-            case '"':
-                append_raw("\\\"");
-                break;
-            case '\\':
-                append_raw("\\\\");
-                break;
-            case '\b':
-                append_raw("\\b");
-                break;
-            case '\f':
-                append_raw("\\f");
-                break;
-            case '\n':
-                append_raw("\\n");
-                break;
-            case '\r':
-                append_raw("\\r");
-                break;
-            case '\t':
-                append_raw("\\t");
-                break;
-            default:
-                if (*p < 0x20u) {
-                    append_format("\\u%04x", static_cast<unsigned>(*p));
-                } else {
-                    append_char(static_cast<char>(*p));
-                }
-                break;
-            }
-            if (overflow_) return;
-        }
-        append_char('"');
-    }
-
-    void append_bool(bool v) noexcept { append_raw(v ? "true" : "false"); }
-    void append_u64(uint64_t v) noexcept { append_format("%llu", static_cast<unsigned long long>(v)); }
-
-private:
-    bool ensure_space(size_t extra) noexcept {
-        if (!out_ || cap_ == 0 || overflow_ || len_ + extra >= cap_) {
-            overflow_ = true;
-            if (out_ && cap_ > 0) out_[cap_ - 1] = '\0';
-            len_ = 0;
-            return false;
-        }
-        return true;
-    }
-
-    void append_format(const char* fmt, ...) noexcept {
+    void Put(char c) noexcept {
         if (!out_ || cap_ == 0 || overflow_) return;
-        va_list args;
-        va_start(args, fmt);
-        const int written = std::vsnprintf(out_ + len_, cap_ - len_, fmt, args);
-        va_end(args);
-        if (written < 0 || static_cast<size_t>(written) >= cap_ - len_) {
+        if (len_ + 1u >= cap_) {
             overflow_ = true;
-            if (out_ && cap_ > 0) out_[cap_ - 1] = '\0';
-            len_ = 0;
+            out_[cap_ - 1] = '\0';
             return;
         }
-        len_ += static_cast<size_t>(written);
+        out_[len_++] = c;
+        out_[len_] = '\0';
     }
+    void Flush() noexcept {}
+    char Peek() const noexcept { return '\0'; }
+    char Take() noexcept { return '\0'; }
+    size_t Tell() const noexcept { return len_; }
+    char* PutBegin() noexcept { return nullptr; }
+    size_t PutEnd(char*) noexcept { return 0; }
+
+    size_t size() const noexcept { return overflow_ ? 0u : len_; }
+    bool overflow() const noexcept { return overflow_; }
 
     char* out_{nullptr};
     size_t cap_{0};
@@ -112,49 +57,169 @@ const char* command_phase_name(CommandPhase phase) noexcept {
     return "unknown";
 }
 
-}  // namespace
-
-size_t ThingsBoardEventPayloadBuilder::build_status_event(const StatusEventView& view,
-                                                          char* out,
-                                                          size_t cap) noexcept {
-    FixedJsonWriter w(out, cap);
-    w.append_raw("{\"event\":");
-    w.append_quoted(view.event_name);
-    w.append_raw(",\"accepted\":");
-    w.append_bool(view.accepted);
-    w.append_raw(",\"reason\":");
-    w.append_quoted(view.reason ? view.reason : "");
-    w.append_char('}');
-    return w.size();
+template <typename WriterT>
+void write_command_fields(WriterT& writer, const CommandSnapshot& command) {
+    writer.Key("command_id");
+    writer.String(command.id.c_str());
+    writer.Key("command_name");
+    writer.String(command.name.c_str());
+    writer.Key("request_id");
+    writer.String(command.request_id.c_str());
+    writer.Key("phase");
+    writer.String(command_phase_name(command.phase));
+    writer.Key("reason");
+    writer.String(command.reason.c_str());
+    writer.Key("accepted_at_ms");
+    writer.Uint64(command.accepted_at_ms);
+    writer.Key("finished_at_ms");
+    writer.Uint64(command.finished_at_ms);
 }
 
-size_t ThingsBoardEventPayloadBuilder::build_command_event(const CommandEventView& view,
-                                                           char* out,
-                                                           size_t cap) noexcept {
-    FixedJsonWriter w(out, cap);
-    w.append_raw("{\"event\":");
-    w.append_quoted(view.event_name);
-    if (!view.command) {
-        w.append_char('}');
-        return w.size();
+template <typename WriterT>
+void write_schedule_entries(const std::vector<TbScheduleEntry>& schedules, WriterT& writer) {
+    writer.StartArray();
+    for (const auto& schedule : schedules) {
+        writer.StartObject();
+        writer.Key("hour");
+        writer.Int(schedule.hour);
+        writer.Key("minute");
+        writer.Int(schedule.minute);
+        writer.EndObject();
     }
+    writer.EndArray();
+}
 
-    w.append_raw(",\"command_id\":");
-    w.append_quoted(view.command->id.c_str());
-    w.append_raw(",\"command_name\":");
-    w.append_quoted(view.command->name.c_str());
-    w.append_raw(",\"request_id\":");
-    w.append_quoted(view.command->request_id.c_str());
-    w.append_raw(",\"phase\":");
-    w.append_quoted(command_phase_name(view.command->phase));
-    w.append_raw(",\"reason\":");
-    w.append_quoted(view.command->reason.c_str());
-    w.append_raw(",\"accepted_at_ms\":");
-    w.append_u64(view.command->accepted_at_ms);
-    w.append_raw(",\"finished_at_ms\":");
-    w.append_u64(view.command->finished_at_ms);
-    w.append_char('}');
-    return w.size();
+template <typename WriterT>
+void write_runtime_config(const char* key, const TbRuntimeConfig& config, WriterT& writer) {
+    writer.Key(key);
+    writer.StartObject();
+    writer.Key("passes");
+    writer.Double(config.passes);
+    writer.Key("clean_speed_rpm");
+    writer.Double(config.clean_speed_rpm);
+    writer.Key("return_speed_rpm");
+    writer.Double(config.return_speed_rpm);
+    writer.Key("brush_rpm");
+    writer.Int(config.brush_rpm);
+    writer.Key("parking_policy");
+    writer.String(parking_policy_config_string(config.parking_policy));
+    writer.Key("charging_side");
+    writer.String(charging_side_config_string(config.charging_side));
+    writer.Key("schedules");
+    write_schedule_entries(config.schedules, writer);
+    writer.EndObject();
+}
+
+template <typename WriterT>
+void write_command_snapshot(const char* key, const CommandSnapshot& command, WriterT& writer) {
+    writer.Key(key);
+    writer.StartObject();
+    writer.Key("id");
+    writer.String(command.id.c_str());
+    writer.Key("name");
+    writer.String(command.name.c_str());
+    writer.Key("request_id");
+    writer.String(command.request_id.c_str());
+    writer.Key("phase");
+    writer.String(command_phase_name(command.phase));
+    writer.Key("reason");
+    writer.String(command.reason.c_str());
+    writer.Key("accepted_at_ms");
+    writer.Uint64(command.accepted_at_ms);
+    writer.Key("finished_at_ms");
+    writer.Uint64(command.finished_at_ms);
+    writer.EndObject();
+}
+
+}  // namespace
+
+size_t ThingsBoardJsonCodec::build_startup_attributes(const StartupAttributesView& view,
+                                                      char* out,
+                                                      size_t cap) noexcept {
+    RapidJsonFixedBufferStream stream(out, cap);
+    rapidjson::Writer<RapidJsonFixedBufferStream> writer(stream);
+    writer.StartObject();
+    writer.Key("software_version");
+    writer.String(view.software_version ? view.software_version : "");
+    writer.Key("hardware_version");
+    writer.String(view.hardware_version ? view.hardware_version : "");
+    writer.Key("device_model");
+    writer.String(view.device_model ? view.device_model : "");
+    writer.Key("device_id");
+    writer.String(view.device_id ? view.device_id : "");
+    writer.Key("supported_rpc_methods");
+    writer.StartArray();
+    writer.String("start");
+    writer.String("stop");
+    writer.String("return");
+    writer.String("terminate");
+    writer.String("reset");
+    writer.EndArray();
+    writer.Key("config_schema_version");
+    writer.String("thingsboard-v1");
+    writer.EndObject();
+    return stream.overflow() ? 0u : stream.size();
+}
+
+size_t ThingsBoardJsonCodec::build_status_event(const StatusEventView& view,
+                                                char* out,
+                                                size_t cap) noexcept {
+    RapidJsonFixedBufferStream stream(out, cap);
+    rapidjson::Writer<RapidJsonFixedBufferStream> writer(stream);
+    writer.StartObject();
+    writer.Key("event");
+    writer.String(view.event_name ? view.event_name : "");
+    writer.Key("accepted");
+    writer.Bool(view.accepted);
+    writer.Key("reason");
+    writer.String(view.reason ? view.reason : "");
+    writer.EndObject();
+    return stream.overflow() ? 0u : stream.size();
+}
+
+size_t ThingsBoardJsonCodec::build_command_event(const CommandEventView& view,
+                                                 char* out,
+                                                 size_t cap) noexcept {
+    RapidJsonFixedBufferStream stream(out, cap);
+    rapidjson::Writer<RapidJsonFixedBufferStream> writer(stream);
+    writer.StartObject();
+    writer.Key("event");
+    writer.String(view.event_name ? view.event_name : "");
+    if (!view.command) {
+        writer.EndObject();
+        return stream.overflow() ? 0u : stream.size();
+    }
+    write_command_fields(writer, *view.command);
+    writer.EndObject();
+    return stream.overflow() ? 0u : stream.size();
+}
+
+size_t ThingsBoardJsonCodec::build_business_telemetry(const app::RobotRuntimeSnapshot& view,
+                                                      char* out,
+                                                      size_t cap) noexcept {
+    RapidJsonFixedBufferStream stream(out, cap);
+    rapidjson::Writer<RapidJsonFixedBufferStream> writer(stream);
+    writer.StartObject();
+    writer.Key("device_state");
+    writer.String(view.device_state.c_str());
+    writer.Key("task_state");
+    writer.String(view.task_state.c_str());
+    writer.Key("target_half_passes");
+    writer.Int(view.target_half_passes);
+    writer.Key("completed_half_passes");
+    writer.Int(view.completed_half_passes);
+    writer.Key("clean_count");
+    writer.Int(view.clean_count);
+    writer.Key("active_config_version");
+    writer.Uint64(view.active_config_version);
+
+    if (view.active_config) write_runtime_config("active_config", *view.active_config, writer);
+    if (view.pending_config) write_runtime_config("pending_config", *view.pending_config, writer);
+    if (view.active_command) write_command_snapshot("active_command", *view.active_command, writer);
+    if (view.last_command) write_command_snapshot("last_command", *view.last_command, writer);
+
+    writer.EndObject();
+    return stream.overflow() ? 0u : stream.size();
 }
 
 }  // namespace robot::service

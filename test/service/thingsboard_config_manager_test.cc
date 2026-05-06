@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <rapidjson/document.h>
 
 #include "pv_cleaning_robot/service/config_service.h"
 #include "pv_cleaning_robot/service/scheduler_service.h"
@@ -14,6 +15,14 @@ using robot::service::ThingsBoardConfigManager;
 namespace fs = std::filesystem;
 
 namespace {
+
+rapidjson::Document parse_json(const char* text)
+{
+    rapidjson::Document doc;
+    doc.Parse(text);
+    REQUIRE_FALSE(doc.HasParseError());
+    return doc;
+}
 
 struct Fixture {
     std::string path{"/tmp/test_tb_config_manager.json"};
@@ -30,7 +39,9 @@ struct Fixture {
     "passes": 1.0,
     "clean_speed_rpm": 300.0,
     "return_speed_rpm": 280.0,
-    "brush_rpm": 1000
+    "brush_rpm": 1000,
+    "parking_policy": "terminal_a_only",
+    "charging_side": "terminal_a"
   },
   "scheduler": {
     "windows": [
@@ -58,10 +69,7 @@ TEST_CASE("ThingsBoardConfigManager: invalid speed rejects whole update", "[serv
     Fixture f;
     const auto before = f.manager->active_config();
 
-    const nlohmann::json attrs{
-        {"clean_speed_rpm", 30},
-        {"brush_rpm", 0}
-    };
+    auto attrs = parse_json(R"({"clean_speed_rpm":30,"brush_rpm":0})");
 
     const auto result = f.manager->apply_shared_attributes(attrs);
     CHECK_FALSE(result.accepted);
@@ -72,10 +80,7 @@ TEST_CASE("ThingsBoardConfigManager: invalid speed rejects whole update", "[serv
 TEST_CASE("ThingsBoardConfigManager: schedule applies immediately, passes stay pending",
           "[service][tb_config]") {
     Fixture f;
-    const nlohmann::json attrs{
-        {"schedules", {{{"hour", 7}, {"minute", 30}}}},
-        {"passes", 2.0}
-    };
+    auto attrs = parse_json(R"({"schedules":[{"hour":7,"minute":30}],"passes":2.0})");
 
     const auto result = f.manager->apply_shared_attributes(attrs);
     REQUIRE(result.accepted);
@@ -100,11 +105,66 @@ TEST_CASE("ThingsBoardConfigManager: schedule applies immediately, passes stay p
 TEST_CASE("ThingsBoardConfigManager: promote_pending_to_active applies next-task config",
           "[service][tb_config]") {
     Fixture f;
-    REQUIRE(f.manager->apply_shared_attributes(nlohmann::json{{"passes", 2.5}}).accepted);
+    auto attrs = parse_json(R"({"passes":2.0})");
+    REQUIRE(f.manager->apply_shared_attributes(attrs).accepted);
     REQUIRE(f.manager->has_pending_config());
 
     REQUIRE(f.manager->promote_pending_to_active());
     CHECK_FALSE(f.manager->has_pending_config());
-    CHECK(f.manager->active_config().passes == Approx(2.5));
+    CHECK(f.manager->active_config().passes == Approx(2.0));
     CHECK_FALSE(fs::exists(f.pending_path));
+}
+
+TEST_CASE("ThingsBoardConfigManager: rejects passes=0.5 in this release", "[service][tb_config]") {
+    Fixture f;
+    const auto before = f.manager->active_config();
+
+    auto attrs = parse_json(R"({"passes":0.5})");
+    const auto result = f.manager->apply_shared_attributes(attrs);
+
+    CHECK_FALSE(result.accepted);
+    CHECK(result.reason == "passes must be a positive integer in this release");
+    CHECK(f.manager->active_config() == before);
+    CHECK_FALSE(f.manager->pending_config().has_value());
+}
+
+TEST_CASE("ThingsBoardConfigManager: rejects parking_policy=both in this release",
+          "[service][tb_config]") {
+    Fixture f;
+    const auto before = f.manager->active_config();
+
+    auto attrs = parse_json(R"({"parking_policy":"both"})");
+    const auto result = f.manager->apply_shared_attributes(attrs);
+
+    CHECK_FALSE(result.accepted);
+    CHECK(result.reason == "parking_policy=both is not supported in this release");
+    CHECK(f.manager->active_config() == before);
+    CHECK_FALSE(f.manager->pending_config().has_value());
+}
+
+TEST_CASE("ThingsBoardConfigManager: accepts supported single-side terminal config as pending update",
+          "[service][tb_config]") {
+    Fixture f;
+    auto attrs =
+        parse_json(R"({"passes":2.0,"parking_policy":"terminal_b_only","charging_side":"terminal_b"})");
+
+    const auto result = f.manager->apply_shared_attributes(attrs);
+    REQUIRE(result.accepted);
+
+    const auto active = f.manager->active_config();
+    CHECK(active.passes == Approx(1.0));
+    CHECK(active.parking_policy == robot::service::ParkingPolicy::TerminalAOnly);
+    CHECK(active.charging_side == robot::service::ChargingSide::TerminalA);
+
+    const auto pending = f.manager->pending_config();
+    REQUIRE(pending.has_value());
+    CHECK(pending->passes == Approx(2.0));
+    CHECK(pending->parking_policy == robot::service::ParkingPolicy::TerminalBOnly);
+    CHECK(pending->charging_side == robot::service::ChargingSide::TerminalB);
+
+    REQUIRE(f.manager->promote_pending_to_active());
+    const auto promoted = f.manager->active_config();
+    CHECK(promoted.passes == Approx(2.0));
+    CHECK(promoted.parking_policy == robot::service::ParkingPolicy::TerminalBOnly);
+    CHECK(promoted.charging_side == robot::service::ChargingSide::TerminalB);
 }

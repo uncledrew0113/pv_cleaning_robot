@@ -3,6 +3,8 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <rapidjson/document.h>
+#include <string>
 
 #include "../mock/mock_can_bus.h"
 #include "../mock/mock_serial_port.h"
@@ -38,6 +40,14 @@ using robot::service::ThingsBoardConfigManager;
 namespace fs = std::filesystem;
 
 namespace {
+
+rapidjson::Document parse_json(const char* text)
+{
+    rapidjson::Document doc;
+    doc.Parse(text);
+    REQUIRE_FALSE(doc.HasParseError());
+    return doc;
+}
 
 struct SupervisorFixture {
     std::string config_path{"/tmp/test_robot_supervisor.json"};
@@ -112,7 +122,14 @@ struct SupervisorFixture {
     }
 
     void apply_pending_config_with_passes(double passes) {
-        REQUIRE(tb_cfg->apply_shared_attributes(nlohmann::json{{"passes", passes}}).accepted);
+        const std::string json = std::string("{\"passes\":") + std::to_string(passes) + "}";
+        auto attrs = parse_json(json.c_str());
+        REQUIRE(tb_cfg->apply_shared_attributes(attrs).accepted);
+        REQUIRE(tb_cfg->has_pending_config());
+    }
+
+    void apply_pending_runtime_attrs(const rapidjson::Value& attrs) {
+        REQUIRE(tb_cfg->apply_shared_attributes(attrs).accepted);
         REQUIRE(tb_cfg->has_pending_config());
     }
 };
@@ -146,8 +163,9 @@ TEST_CASE("RobotSupervisor rejects manual start from idle when robot is not at h
 TEST_CASE("RobotSupervisor starts manual task from charging when robot is at home",
           "[app][robot_supervisor]") {
     SupervisorFixture f;
-    f.fsm->dispatch(EvScheduleStart{true, false, 0.5f});
+    f.fsm->dispatch(EvScheduleStart{true, false, 1.0f});
     f.fsm->dispatch(EvFrontLimitSettled{});
+    f.fsm->dispatch(EvRearLimitSettled{});
     REQUIRE(f.fsm->current_state() == "Charging");
 
     REQUIRE(f.supervisor->start_manual_task(true, false));
@@ -304,4 +322,33 @@ TEST_CASE("RobotSupervisor snapshot includes config and command visibility",
     REQUIRE(snap.last_command.has_value());
     REQUIRE(snap.last_command->phase == CommandPhase::Succeeded);
     REQUIRE(snap.last_command->reason == "started_new_task");
+}
+
+TEST_CASE("RobotSupervisor active config version changes with parking and charging fields",
+          "[app][robot_supervisor]") {
+    SECTION("parking_policy changes active config version") {
+        SupervisorFixture f;
+        const auto before = f.supervisor->snapshot().active_config_version;
+
+        auto attrs = parse_json(R"({"parking_policy":"terminal_b_only"})");
+        f.apply_pending_runtime_attrs(attrs);
+        REQUIRE(f.supervisor->start_scheduled_task(true, false));
+
+        const auto after = f.supervisor->snapshot().active_config_version;
+        REQUIRE(after != 0);
+        REQUIRE(after != before);
+    }
+
+    SECTION("charging_side changes active config version") {
+        SupervisorFixture f;
+        const auto before = f.supervisor->snapshot().active_config_version;
+
+        auto attrs = parse_json(R"({"charging_side":"terminal_b"})");
+        f.apply_pending_runtime_attrs(attrs);
+        REQUIRE(f.supervisor->start_scheduled_task(true, false));
+
+        const auto after = f.supervisor->snapshot().active_config_version;
+        REQUIRE(after != 0);
+        REQUIRE(after != before);
+    }
 }

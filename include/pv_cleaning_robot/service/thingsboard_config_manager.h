@@ -2,10 +2,9 @@
 
 #include <mutex>
 #include <optional>
+#include <rapidjson/document.h>
 #include <string>
 #include <vector>
-
-#include <nlohmann/json.hpp>
 
 #include "pv_cleaning_robot/service/config_service.h"
 #include "pv_cleaning_robot/service/scheduler_service.h"
@@ -59,6 +58,30 @@ inline bool supports_charging_at(ChargingSide charging_side,
     return false;
 }
 
+inline const char* parking_policy_config_string(ParkingPolicy value) noexcept {
+    switch (value) {
+    case ParkingPolicy::TerminalAOnly:
+        return "terminal_a_only";
+    case ParkingPolicy::TerminalBOnly:
+        return "terminal_b_only";
+    case ParkingPolicy::Both:
+        return "both";
+    }
+    return "unknown";
+}
+
+inline const char* charging_side_config_string(ChargingSide value) noexcept {
+    switch (value) {
+    case ChargingSide::TerminalA:
+        return "terminal_a";
+    case ChargingSide::TerminalB:
+        return "terminal_b";
+    case ChargingSide::Both:
+        return "both";
+    }
+    return "unknown";
+}
+
 struct TbScheduleEntry {
     int hour{0};
     int minute{0};
@@ -73,6 +96,8 @@ struct TbRuntimeConfig {
     double clean_speed_rpm{300.0};
     double return_speed_rpm{300.0};
     int brush_rpm{1000};
+    ParkingPolicy parking_policy{ParkingPolicy::TerminalAOnly};
+    ChargingSide charging_side{ChargingSide::TerminalA};
     std::vector<TbScheduleEntry> schedules;
 
     bool operator==(const TbRuntimeConfig& other) const {
@@ -80,6 +105,8 @@ struct TbRuntimeConfig {
                clean_speed_rpm == other.clean_speed_rpm &&
                return_speed_rpm == other.return_speed_rpm &&
                brush_rpm == other.brush_rpm &&
+               parking_policy == other.parking_policy &&
+               charging_side == other.charging_side &&
                schedules == other.schedules;
     }
 };
@@ -93,7 +120,7 @@ class ThingsBoardConfigManager {
 public:
     ThingsBoardConfigManager(ConfigService& config, SchedulerService& scheduler);
 
-    SharedAttrApplyResult apply_shared_attributes(const nlohmann::json& attrs);
+    SharedAttrApplyResult apply_shared_attributes(const rapidjson::Value& attrs);
     bool promote_pending_to_active();
 
     TbRuntimeConfig active_config() const;
@@ -101,9 +128,10 @@ public:
     bool has_pending_config() const;
 
 private:
-    static TbRuntimeConfig parse_runtime_config(const nlohmann::json& root);
-    static void apply_schedule_json(nlohmann::json& root, const nlohmann::json& schedules_json);
-    static std::vector<TbScheduleEntry> parse_schedule_entries(const nlohmann::json& schedules_json);
+    static TbRuntimeConfig parse_runtime_config(const rapidjson::Value& root);
+    static void apply_schedule_json(rapidjson::Document& root,
+                                    const rapidjson::Value& schedules_json);
+    static std::vector<TbScheduleEntry> parse_schedule_entries(const rapidjson::Value& schedules_json);
     void apply_scheduler_windows(const std::vector<TbScheduleEntry>& schedules);
 
     ConfigService& config_;

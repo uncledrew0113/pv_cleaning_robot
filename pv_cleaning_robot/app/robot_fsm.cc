@@ -61,8 +61,20 @@ void RobotFsm::dispatch<EvScheduleStart>(EvScheduleStart e) {
             return;
         }
 
-        // 计算目标半趟数（passes * 2，最小 1）
-        target_half_passes_ = std::max(1, static_cast<int>(std::round(e.passes * 2.0f)));
+        const float rounded_passes = std::round(e.passes);
+        const bool passes_is_integer =
+            std::fabs(e.passes - rounded_passes) < 1e-4f && rounded_passes >= 1.0f;
+
+        if (!passes_is_integer) {
+            sm_->process_event(EvSelfCheckFail{});
+            state_name_ = "Idle";
+            spdlog::error("[FSM] → Idle（自检失败：首版仅支持整数趟，拒绝 passes={:.1f}）",
+                          e.passes);
+            return;
+        }
+
+        // 计算目标半趟数（passes * 2）
+        target_half_passes_ = static_cast<int>(rounded_passes) * 2;
         completed_half_passes_ = 0;
 
         state_name_ = "SelfCheck";
@@ -81,23 +93,11 @@ void RobotFsm::dispatch<EvScheduleStart>(EvScheduleStart e) {
             state_name_ = "CleanFwd";
             spdlog::info("[FSM] → CleanFwd（自检通过，从停机位出发）");
             action = [this]() { motion_->start_cleaning(); };
-        } else if (e.at_front) {
-            // N=0.5 恢复：上次停在前端，本次从前端反向返回
-            going_forward_ = false;
-            if (!sm_->process_event(EvSelfCheckOkReturn{})) {
-                spdlog::warn("[FSM] 忽略 EvSelfCheckOkReturn (state={})", state_name_);
-                sm_->process_event(EvSelfCheckFail{});
-                state_name_ = "Idle";
-                return;
-            }
-            state_name_ = "CleanReturn";
-            spdlog::info("[FSM] → CleanReturn（自检：机器在前端，开始反向清扫返回）");
-            action = [this]() { motion_->start_returning(); };
         } else {
-            // 既不在停机位也不在前端 → 拒绝
+            // 首版仅允许从停机位启动
             sm_->process_event(EvSelfCheckFail{});
             state_name_ = "Idle";
-            spdlog::error("[FSM] → Idle（自检失败：设备不在已知端点，拒绝启动清扫）");
+            spdlog::error("[FSM] → Idle（自检失败：首版仅支持停机位启动，拒绝启动清扫）");
         }
     }
     if (action) action();
@@ -118,7 +118,7 @@ void RobotFsm::dispatch<EvFrontLimitSettled>(EvFrontLimitSettled e) {
                      completed_half_passes_, target_half_passes_);
 
         if (completed_half_passes_ >= target_half_passes_) {
-            // 任务完成（N=0.5 单程结束）
+            // 任务完成
             if (!sm_->process_event(EvTaskComplete{})) {
                 spdlog::warn("[FSM] 忽略 EvTaskComplete after front limit (state={})", state_name_);
                 return;

@@ -3,9 +3,9 @@
 #include <cstdint>
 #include <deque>
 #include <mutex>
+#include <rapidjson/document.h>
 #include <string>
 #include <vector>
-#include <nlohmann/json.hpp>
 
 namespace robot::middleware {
 
@@ -51,7 +51,7 @@ public:
     /// 当前缓存条数
     size_t size();
 
-    using AppendHook = std::function<bool(const nlohmann::json&)>;
+    using AppendHook = std::function<bool(const rapidjson::Document&)>;
     void set_test_append_hook(AppendHook hook);
 
 private:

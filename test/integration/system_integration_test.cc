@@ -25,10 +25,11 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <rapidjson/document.h>
+#include <rapidjson/prettywriter.h>
+#include <rapidjson/stringbuffer.h>
 #include <string>
 #include <thread>
-
-#include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
 
 #include "../mock/mock_can_bus.h"
@@ -87,6 +88,135 @@ static const char* kCfgPath      = "/tmp/pv_sys_test_config.json";
 static const char* kHealthPath   = "/tmp/pv_sys_test_health.jsonl";
 static const char* kCachePath    = "/tmp/pv_sys_test_cache.jsonl";
 
+namespace {
+
+rapidjson::Document parse_json_line(const std::string& line)
+{
+    rapidjson::Document doc;
+    doc.Parse(line.c_str(), line.size());
+    REQUIRE_FALSE(doc.HasParseError());
+    return doc;
+}
+
+std::string build_test_config_json()
+{
+    rapidjson::StringBuffer buffer;
+    rapidjson::PrettyWriter<rapidjson::StringBuffer> writer(buffer);
+    writer.StartObject();
+
+    writer.Key("logging");
+    writer.StartObject();
+    writer.Key("log_dir");
+    writer.String("/tmp/pv_sys_test_logs");
+    writer.Key("level");
+    writer.String("debug");
+    writer.Key("console");
+    writer.Bool(false);
+    writer.EndObject();
+
+    writer.Key("robot");
+    writer.StartObject();
+    writer.Key("clean_speed_rpm");
+    writer.Double(30.0);
+    writer.Key("return_speed_rpm");
+    writer.Double(30.0);
+    writer.Key("brush_rpm");
+    writer.Int(1000);
+    writer.Key("return_brush_rpm");
+    writer.Int(1000);
+    writer.Key("heading_pid_en");
+    writer.Bool(false);
+    writer.Key("edge_reverse_rpm");
+    writer.Double(0.0);
+    writer.Key("battery_full_soc");
+    writer.Double(95.0);
+    writer.Key("battery_low_soc");
+    writer.Double(15.0);
+    writer.Key("wheel_circ_m");
+    writer.Double(0.3);
+    writer.Key("track_length_m");
+    writer.Double(100.0);
+    writer.Key("passes");
+    writer.Double(1.0);
+    writer.EndObject();
+
+    writer.Key("diagnostics");
+    writer.StartObject();
+    writer.Key("mode");
+    writer.String("development");
+    writer.Key("local_path");
+    writer.String(kHealthPath);
+    writer.Key("cloud_upload");
+    writer.Bool(false);
+    writer.Key("local_log");
+    writer.Bool(true);
+    writer.Key("publish_interval_ms");
+    writer.Int(1000);
+    writer.Key("publish_interval_active_ms");
+    writer.Int(1000);
+    writer.Key("publish_interval_idle_ms");
+    writer.Int(300000);
+    writer.EndObject();
+
+    writer.Key("storage");
+    writer.StartObject();
+    writer.Key("cache_path");
+    writer.String(kCachePath);
+    writer.EndObject();
+
+    writer.Key("system");
+    writer.StartObject();
+    writer.Key("hw_watchdog");
+    writer.String("");
+    writer.EndObject();
+
+    writer.Key("device");
+    writer.StartObject();
+    writer.Key("software_version");
+    writer.String("1.0.0");
+    writer.Key("hardware_version");
+    writer.String("1.0");
+    writer.Key("model");
+    writer.String("pv_cleaning_robot");
+    writer.EndObject();
+
+    writer.Key("can");
+    writer.StartObject();
+    writer.Key("interface");
+    writer.String("can0");
+    writer.Key("walk_motor");
+    writer.StartObject();
+    writer.Key("motor_id");
+    writer.Int(1);
+    writer.Key("comm_timeout_ms");
+    writer.Int(200);
+    writer.EndObject();
+    writer.EndObject();
+
+    writer.Key("gpio");
+    writer.StartObject();
+    writer.Key("front_limit");
+    writer.StartObject();
+    writer.Key("chip");
+    writer.String("gpiochip5");
+    writer.Key("line");
+    writer.Int(0);
+    writer.EndObject();
+    writer.Key("rear_limit");
+    writer.StartObject();
+    writer.Key("chip");
+    writer.String("gpiochip5");
+    writer.Key("line");
+    writer.Int(1);
+    writer.EndObject();
+    writer.EndObject();
+
+    writer.EndObject();
+    return {buffer.GetString(), buffer.GetSize()};
+}
+
+}  // namespace
+
 // ─────────────────────────────────────────────────────────────────────────────
 // NullTransport：INetworkTransport 空实现，不建立任何真实网络连接
 // ─────────────────────────────────────────────────────────────────────────────
@@ -102,31 +232,9 @@ struct NullTransport : robot::middleware::INetworkTransport {
 // 测试专用 config.json（写入临时文件，ConfigService 从此文件加载）
 // ─────────────────────────────────────────────────────────────────────────────
 static void write_test_config() {
-    nlohmann::json cfg = {
-        {"logging",     {{"log_dir", "/tmp/pv_sys_test_logs"}, {"level", "debug"}, {"console", false}}},
-        {"robot",       {{"clean_speed_rpm", 30.0f}, {"return_speed_rpm", 30.0f},
-                         {"brush_rpm", 1000}, {"return_brush_rpm", 1000},
-                         {"heading_pid_en", false}, {"edge_reverse_rpm", 0.0f},
-                         {"battery_full_soc", 95.0f}, {"battery_low_soc", 15.0f},
-                         {"wheel_circ_m", 0.3f}, {"track_length_m", 100.0f}, {"passes", 1.0f}}},
-        {"diagnostics", {{"mode", "development"}, {"local_path", kHealthPath},
-                         {"cloud_upload", false}, {"local_log", true},
-                         {"publish_interval_ms", 1000},
-                         {"publish_interval_active_ms", 1000},
-                         {"publish_interval_idle_ms", 300000}}},
-        {"storage",     {{"cache_path", kCachePath}}},
-        {"system",      {{"hw_watchdog", ""}}},
-        {"device",      {{"software_version", "1.0.0"},
-                         {"hardware_version", "1.0"},
-                         {"model", "pv_cleaning_robot"}}},
-        {"can",         {{"interface", "can0"},
-                         {"walk_motor", {{"motor_id", 1}, {"comm_timeout_ms", 200}}}}},
-        {"gpio",        {{"front_limit", {{"chip", "gpiochip5"}, {"line", 0}}},
-                         {"rear_limit",  {{"chip", "gpiochip5"}, {"line", 1}}}}}
-    };
     std::filesystem::create_directories("/tmp");
     std::ofstream f(kCfgPath);
-    f << cfg.dump(2);
+    f << build_test_config_json();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -312,26 +420,25 @@ TEST_CASE("System: HealthService DIAGNOSTICS 模式落盘 JSONL 文件并验证 
     while (std::getline(ifs, line)) {
         if (line.empty()) continue;
         ++line_count;
-        nlohmann::json j;
-        REQUIRE_NOTHROW(j = nlohmann::json::parse(line));
+        auto j = parse_json_line(line);
 
         // DIAGNOSTICS 模式必须包含所有顶级键
-        REQUIRE(j.contains("walk"));
-        REQUIRE(j.contains("brush"));
-        REQUIRE(j.contains("bms"));
-        REQUIRE(j.contains("imu"));
-        REQUIRE(j.contains("gps"));
+        REQUIRE(j.HasMember("walk"));
+        REQUIRE(j.HasMember("brush"));
+        REQUIRE(j.HasMember("bms"));
+        REQUIRE(j.HasMember("imu"));
+        REQUIRE(j.HasMember("gps"));
 
         // walk 子键：lt/rt/lb/rb 每轮独立诊断 + ctrl_frames
-        REQUIRE(j["walk"].contains("lt"));
-        REQUIRE(j["walk"].contains("rt"));
-        REQUIRE(j["walk"].contains("lb"));
-        REQUIRE(j["walk"].contains("rb"));
-        REQUIRE(j["walk"].contains("ctrl_frames"));
+        REQUIRE(j["walk"].HasMember("lt"));
+        REQUIRE(j["walk"].HasMember("rt"));
+        REQUIRE(j["walk"].HasMember("lb"));
+        REQUIRE(j["walk"].HasMember("rb"));
+        REQUIRE(j["walk"].HasMember("ctrl_frames"));
 
         // bms 子键
-        REQUIRE(j["bms"].contains("soc"));
-        REQUIRE(j["bms"].contains("voltage"));
+        REQUIRE(j["bms"].HasMember("soc"));
+        REQUIRE(j["bms"].HasMember("voltage"));
     }
     REQUIRE(line_count == 3);
 

@@ -11,6 +11,8 @@
 #include <chrono>
 #include <ctime>
 #include <filesystem>
+#include <spdlog/logger.h>
+#include <spdlog/sinks/rotating_file_sink.h>
 #include <spdlog/spdlog.h>
 
 #include "pv_cleaning_robot/service/health_service.h"
@@ -25,6 +27,8 @@ HealthService::HealthService(std::shared_ptr<device::WalkMotorGroup> walk,
                              std::shared_ptr<CloudService> cloud,
                              Mode mode,
                              std::string local_log_path,
+                             size_t local_log_max_bytes,
+                             size_t local_log_max_files,
                              std::shared_ptr<device::DistanceSensor> dist)
     : walk_(std::move(walk))
     , brush_(std::move(brush))
@@ -35,10 +39,27 @@ HealthService::HealthService(std::shared_ptr<device::WalkMotorGroup> walk,
     , cloud_(std::move(cloud))
     , mode_(mode) {
     payload_cache_.reserve(kPayloadBufferBytes);
-    // 本地 JSONL 日志文件（仅 local_log_path 非空时开启，独立于 MQTT/LoRaWAN）
+    // 本地 JSONL 轮转日志（仅 local_log_path 非空时开启，独立于 MQTT/LoRaWAN）
     if (!local_log_path.empty()) {
-        std::filesystem::create_directories(std::filesystem::path(local_log_path).parent_path());
-        local_log_file_.open(local_log_path, std::ios::app);
+        try {
+            const auto log_path = std::filesystem::path(local_log_path);
+            const auto parent = log_path.parent_path();
+            if (!parent.empty()) {
+                std::filesystem::create_directories(parent);
+            }
+
+            auto sink = std::make_shared<spdlog::sinks::rotating_file_sink_mt>(
+                local_log_path,
+                std::max<size_t>(1u, local_log_max_bytes),
+                std::max<size_t>(1u, local_log_max_files),
+                false);
+            local_log_ = std::make_shared<spdlog::logger>("", std::move(sink));
+            local_log_->set_pattern("%v");
+            local_log_->flush_on(spdlog::level::info);
+        } catch (const std::exception& ex) {
+            spdlog::error("[HealthService] failed to initialize local rotating log: {}", ex.what());
+            local_log_.reset();
+        }
     }
 }
 
@@ -53,13 +74,15 @@ void HealthService::update() {
     if (cloud_)
         cloud_->publish_telemetry(payload_cache_);  // cloud_ 为 nullptr 时（单元测试场景）跳过
     // 本地 JSONL 落盘：每条记录一行，独立于网络，离线测试直接 cat 查看
-    if (local_log_file_.is_open()) {
-        local_log_file_.write(payload_buf_.data(), static_cast<std::streamsize>(payload_len));
-        local_log_file_.put('\n');
-        if (!local_log_file_.flush()) {
-            // flush 失败通常意味着磁盘满或 I/O 错误；关闭文件停止反复写失败
-            spdlog::error("[HealthService] local log flush failed (disk full?), closing file");
-            local_log_file_.close();
+    if (local_log_) {
+        try {
+            local_log_->log(
+                spdlog::level::info,
+                spdlog::string_view_t(payload_cache_.data(), payload_cache_.size()));
+        } catch (const std::exception& ex) {
+            spdlog::error("[HealthService] local rotating log write failed, disabling local log: {}",
+                          ex.what());
+            local_log_.reset();
         }
     }
 }

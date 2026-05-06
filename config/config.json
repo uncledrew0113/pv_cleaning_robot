@@ -59,13 +59,18 @@
 
   "network": {
     "transport_mode": "mqtt_only",
-    "mqtt": {
-      "broker_uri":   "ssl://tb.example.com:8883",
-      "client_id":    "pv_robot_001",
-      "tls_enabled":  true,
-      "ca_cert_path": "/etc/pv_robot/certs/ca.crt",
-      "keep_alive_s": 60,
-      "qos":          1
+  "mqtt": {
+    "broker_uri": "ssl://124.222.209.230:8883",
+    "client_id": "pv_robot_001",
+    "username": "",
+    "password": "",
+    "tls_enabled": true,
+    "ca_cert_path": "",
+    "client_cert_path": "config/pv_device_test1.pem",
+    "client_key_path": "config/pv_device_test1.key",
+    "insecure_skip_server_name_check": false,
+    "keep_alive_s": 60,
+    "qos": 1
     },
     "lorawan": {
       "port":              "/dev/ttyS5",
@@ -94,6 +99,8 @@
   "robot": {
     "track_length_m":   1000.0,
     "passes":           1.0,
+    "parking_policy":   "terminal_a_only",
+    "charging_side":    "terminal_a",
     "clean_speed_rpm":  300.0,
     "return_speed_rpm": 300.0,
     "return_brush_rpm": 1000,
@@ -120,7 +127,9 @@
     "publish_interval_idle_ms":   300000,
     "cloud_upload":               true,
     "local_log":                  true,
-    "local_path":                 "/data/pv_robot/logs/telemetry.jsonl"
+    "local_log_path":             "/data/pv_robot/logs/telemetry.jsonl",
+    "local_log_max_bytes":        10485760,
+    "local_log_max_files":        3
   },
 
   "device": {

@@ -97,6 +97,12 @@ cmake --build --preset rk3576-build
 
 运行时配置：`/opt/robot/config/config.json`（生产）/ `config/config.json`（开发回退）。
 
+**运维文件语义**：
+
+- `config.json`：当前生效配置。设备启动时优先加载它；运行中的立即生效配置也写回这里。
+- `config.pending.json`：待下次任务提升的配置。ThingsBoard 下发的“下次任务生效”参数会先落在这里。
+- `config.backup.json`：主配置回滚副本。主配置写入前会先更新它；若 `config.json` 损坏，启动时会尝试从这里恢复。
+
 **关键配置项**：
 
 | 键 | 说明 |
@@ -110,7 +116,7 @@ cmake --build --preset rk3576-build
 | `network.mqtt.ca_cert_path` | CA 证书路径 |
 | `diagnostics.mode` | `"production"` → HEALTH 精简模式；`"development"` → DIAGNOSTICS 完整模式 |
 | `diagnostics.local_path` | 本地 JSONL 落盘路径（空字符串禁用） |
-| `robot.passes` | 清扫趟数（`0.5`=单程，`1.0`=往返一趟） |
+| `robot.passes` | 清扫趟数（首版仅支持整数趟；`1.0`=往返一趟） |
 | `robot.heading_pid_en` | 是否启用 IMU 航向 PID 差速补偿（需 IMU 已接线） |
 
 兼容说明：若 `gps.source` 缺失，程序会临时回退读取旧配置 `serial.gps.*`。

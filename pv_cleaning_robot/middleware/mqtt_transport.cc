@@ -1,8 +1,10 @@
 #include "pv_cleaning_robot/middleware/mqtt_transport.h"
 #include <mqtt/async_client.h>
 #include <mqtt/connect_options.h>
+#include <mqtt/exception.h>
 #include <mqtt/ssl_options.h>
 #include <chrono>
+#include <filesystem>
 #include <spdlog/spdlog.h>
 
 namespace robot::middleware {
@@ -74,6 +76,11 @@ MqttTransport::~MqttTransport()
 
 bool MqttTransport::connect()
 {
+    spdlog::info("[MqttTransport] connecting: broker_uri='{}' client_id='{}' tls_enabled={} skip_server_name_check={}",
+                 cfg_.broker_uri,
+                 cfg_.client_id,
+                 cfg_.tls_enabled,
+                 cfg_.insecure_skip_server_name_check);
     mqtt::connect_options opts;
     opts.set_keep_alive_interval(cfg_.keep_alive_sec);
     opts.set_connect_timeout(std::chrono::seconds(cfg_.connect_timeout_sec));
@@ -87,9 +94,23 @@ bool MqttTransport::connect()
 
     if (cfg_.tls_enabled) {
         mqtt::ssl_options ssl;
+        spdlog::info(
+            "[MqttTransport] TLS config: ca='{}' exists={} client_cert='{}' exists={} client_key='{}' exists={} skip_server_name_check={}",
+            cfg_.ca_cert_path,
+            (!cfg_.ca_cert_path.empty() && std::filesystem::exists(cfg_.ca_cert_path)),
+            cfg_.client_cert_path,
+            (!cfg_.client_cert_path.empty() && std::filesystem::exists(cfg_.client_cert_path)),
+            cfg_.client_key_path,
+            (!cfg_.client_key_path.empty() && std::filesystem::exists(cfg_.client_key_path)),
+            cfg_.insecure_skip_server_name_check);
         if (!cfg_.ca_cert_path.empty())
             ssl.set_trust_store(cfg_.ca_cert_path);
-        ssl.set_verify(true);
+        if (!cfg_.client_cert_path.empty())
+            ssl.set_key_store(cfg_.client_cert_path);
+        if (!cfg_.client_key_path.empty())
+            ssl.set_private_key(cfg_.client_key_path);
+        ssl.set_enable_server_cert_auth(true);
+        ssl.set_verify(!cfg_.insecure_skip_server_name_check);
         opts.set_ssl(ssl);
     }
 
@@ -97,8 +118,20 @@ bool MqttTransport::connect()
         client_->connect(opts)->wait_for(
             std::chrono::seconds(cfg_.connect_timeout_sec));
         connected_.store(client_->is_connected());
+        spdlog::info("[MqttTransport] connect result: connected={}", connected_.load());
         return connected_.load();
+    } catch (const mqtt::exception& ex) {
+        spdlog::error("[MqttTransport] connect mqtt::exception: what='{}' reason_code={}",
+                      ex.what(),
+                      ex.get_reason_code());
+        connected_.store(false);
+        return false;
+    } catch (const std::exception& ex) {
+        spdlog::error("[MqttTransport] connect std::exception: {}", ex.what());
+        connected_.store(false);
+        return false;
     } catch (...) {
+        spdlog::error("[MqttTransport] connect unknown exception");
         connected_.store(false);
         return false;
     }

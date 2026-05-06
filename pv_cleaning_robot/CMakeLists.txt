@@ -13,6 +13,9 @@ if(NOT PV_ENABLE_OTA)
     "${CMAKE_CURRENT_SOURCE_DIR}/middleware/ota_manager.cc")
 endif()
 
+list(REMOVE_ITEM ROBOT_SOURCES
+  "${CMAKE_CURRENT_SOURCE_DIR}/service/business_telemetry_snapshot.cc")
+
 # ── 主可执行文件 ─────────────────────────────────────────────────────────
 add_executable(${PROJECT_NAME}
     main.cc

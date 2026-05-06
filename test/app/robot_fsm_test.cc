@@ -85,10 +85,16 @@ TEST_CASE("FSM: EvScheduleStart(at_home=true) → CleanFwd", "[app][fsm]") {
     REQUIRE(f.fsm.current_state() == "CleanFwd");
 }
 
-TEST_CASE("FSM: EvScheduleStart(at_front=true) → CleanReturn（N=0.5 恢复）", "[app][fsm]") {
+TEST_CASE("FSM: EvScheduleStart(at_front=true only) → Idle（首版拒绝前端启动）", "[app][fsm]") {
     FsmFixture f;
-    f.fsm.dispatch(EvScheduleStart{.at_home = false, .at_front = true, .passes = 0.5f});
-    REQUIRE(f.fsm.current_state() == "CleanReturn");
+    f.fsm.dispatch(EvScheduleStart{.at_home = false, .at_front = true, .passes = 1.0f});
+    REQUIRE(f.fsm.current_state() == "Idle");
+}
+
+TEST_CASE("FSM: EvScheduleStart(passes=0.5) → Idle（首版拒绝非整数趟）", "[app][fsm]") {
+    FsmFixture f;
+    f.fsm.dispatch(EvScheduleStart{.at_home = true, .at_front = false, .passes = 0.5f});
+    REQUIRE(f.fsm.current_state() == "Idle");
 }
 
 TEST_CASE("FSM: EvScheduleStart(at_home=false, at_front=false) → Idle（自检失败）", "[app][fsm]") {
@@ -120,15 +126,6 @@ TEST_CASE("FSM: CleanReturn -EvRearLimitSettled-> CleanFwd（还有趟数）", "
 // ────────────────────────────────────────────────────────────────
 // 任务完成 → Charging
 // ────────────────────────────────────────────────────────────────
-TEST_CASE("FSM: N=0.5 单程 CleanFwd -EvFrontLimit-> Charging", "[app][fsm]") {
-    FsmFixture f;
-    // N=0.5 → 1 个半趟（0.5*2=1），到前端即完成
-    f.fsm.dispatch(EvScheduleStart{.at_home = true, .passes = 0.5f});
-    REQUIRE(f.fsm.current_state() == "CleanFwd");
-    f.fsm.dispatch(EvFrontLimitSettled{});
-    REQUIRE(f.fsm.current_state() == "Charging");
-}
-
 TEST_CASE("FSM: N=1 往返完成后 → Charging", "[app][fsm]") {
     FsmFixture f;
     // N=1 → 2个半趟
@@ -279,8 +276,9 @@ TEST_CASE("FSM: Returning -EvRearLimitSettled-> Charging", "[app][fsm]") {
 // ────────────────────────────────────────────────────────────────
 TEST_CASE("FSM: Charging -EvChargeDone-> Idle", "[app][fsm]") {
     FsmFixture f;
-    f.fsm.dispatch(EvScheduleStart{.at_home = true, .passes = 0.5f});
-    f.fsm.dispatch(EvFrontLimitSettled{});  // → Charging（N=0.5）
+    f.fsm.dispatch(EvScheduleStart{.at_home = true, .passes = 1.0f});
+    f.fsm.dispatch(EvFrontLimitSettled{});
+    f.fsm.dispatch(EvRearLimitSettled{});
     REQUIRE(f.fsm.current_state() == "Charging");
     f.fsm.dispatch(EvChargeDone{});
     REQUIRE(f.fsm.current_state() == "Idle");
@@ -291,8 +289,9 @@ TEST_CASE("FSM: Charging -EvChargeDone-> Idle", "[app][fsm]") {
 // ────────────────────────────────────────────────────────────────
 TEST_CASE("FSM: Charging 状态可再次 EvScheduleStart", "[app][fsm]") {
     FsmFixture f;
-    f.fsm.dispatch(EvScheduleStart{.at_home = true, .passes = 0.5f});
+    f.fsm.dispatch(EvScheduleStart{.at_home = true, .passes = 1.0f});
     f.fsm.dispatch(EvFrontLimitSettled{});
+    f.fsm.dispatch(EvRearLimitSettled{});
     REQUIRE(f.fsm.current_state() == "Charging");
 
     // 第二次调度

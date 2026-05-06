@@ -9,9 +9,12 @@
 #include "pv_cleaning_robot/service/health_payload_builder.h"
 #include "pv_cleaning_robot/middleware/thread_executor.h"
 #include <array>
-#include <fstream>
 #include <memory>
 #include <string>
+
+namespace spdlog {
+class logger;
+}
 
 namespace robot::service {
 
@@ -35,6 +38,8 @@ public:
                   std::shared_ptr<CloudService>           cloud,
                   Mode                                    mode = Mode::HEALTH,
                   std::string                             local_log_path = "",
+                  size_t                                  local_log_max_bytes = 10u * 1024u * 1024u,
+                  size_t                                  local_log_max_files = 3u,
                   std::shared_ptr<device::DistanceSensor> dist = nullptr);
 
     void update() override;  ///< 由 ThreadExecutor 调用
@@ -53,7 +58,7 @@ private:
     Mode                                mode_;
     mutable std::array<char, kPayloadBufferBytes> payload_buf_{};
     mutable std::string                 payload_cache_;
-    std::ofstream                       local_log_file_; ///< 本地 JSONL 落盘文件（local_log_path 非空时打开）
+    std::shared_ptr<spdlog::logger>     local_log_; ///< 本地 JSONL 轮转日志器（local_log_path 非空时创建）
 };
 
 } // namespace robot::service

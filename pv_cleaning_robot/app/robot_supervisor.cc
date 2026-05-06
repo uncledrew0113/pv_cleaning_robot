@@ -1,7 +1,8 @@
 #include "pv_cleaning_robot/app/robot_supervisor.h"
 
 #include <functional>
-#include <nlohmann/json.hpp>
+#include <rapidjson/stringbuffer.h>
+#include <rapidjson/writer.h>
 #include <spdlog/spdlog.h>
 #include <string>
 #include <utility>
@@ -174,18 +175,34 @@ std::string RobotSupervisor::task_state_from_device_state(const std::string& dev
 }
 
 uint64_t RobotSupervisor::runtime_config_version(const service::TbRuntimeConfig& config) {
-    nlohmann::json schedules = nlohmann::json::array();
+    rapidjson::StringBuffer buffer;
+    rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+    writer.StartObject();
+    writer.Key("passes");
+    writer.Double(config.passes);
+    writer.Key("clean_speed_rpm");
+    writer.Double(config.clean_speed_rpm);
+    writer.Key("return_speed_rpm");
+    writer.Double(config.return_speed_rpm);
+    writer.Key("brush_rpm");
+    writer.Int(config.brush_rpm);
+    writer.Key("parking_policy");
+    writer.String(service::parking_policy_config_string(config.parking_policy));
+    writer.Key("charging_side");
+    writer.String(service::charging_side_config_string(config.charging_side));
+    writer.Key("schedules");
+    writer.StartArray();
     for (const auto& schedule : config.schedules) {
-        schedules.push_back({{"hour", schedule.hour}, {"minute", schedule.minute}});
+        writer.StartObject();
+        writer.Key("hour");
+        writer.Int(schedule.hour);
+        writer.Key("minute");
+        writer.Int(schedule.minute);
+        writer.EndObject();
     }
-    const auto payload = nlohmann::json{
-        {"passes", config.passes},
-        {"clean_speed_rpm", config.clean_speed_rpm},
-        {"return_speed_rpm", config.return_speed_rpm},
-        {"brush_rpm", config.brush_rpm},
-        {"schedules", std::move(schedules)},
-    };
-    return static_cast<uint64_t>(std::hash<std::string>{}(payload.dump()));
+    writer.EndArray();
+    writer.EndObject();
+    return static_cast<uint64_t>(std::hash<std::string>{}(std::string(buffer.GetString(), buffer.GetSize())));
 }
 
 }  // namespace robot::app

@@ -32,8 +32,8 @@ struct StateTerminated  {};  ///< 人工终止，等待复位重新投入服务
 /// 调度器触发（SchedulerService 或 RPC "start"）
 struct EvScheduleStart {
     bool  at_home{false};  ///< 尾端限位是否触发（设备在停机位）
-    bool  at_front{false}; ///< 前端限位是否触发（设备在前端，N=0.5 恢复场景）
-    float passes{1.0f};    ///< 本次任务趟数（0.5=单程，1=一来回，2=两来回…）
+    bool  at_front{false}; ///< 前端限位是否触发（设备在前端）
+    float passes{1.0f};    ///< 本次任务趟数（首版仅支持整数趟）
 };
 struct EvFrontLimitSettled {};  ///< 前端限位防抖完成（SafetyMonitor 延迟后发布）
 struct EvRearLimitSettled  {};  ///< 尾端限位防抖完成
@@ -51,7 +51,6 @@ struct EvTerminateTask     {};  ///< 人工终止任务，失能后等待复位
 
 // ── 内部事件（仅在 dispatch<> 中使用，不对外派发）──────────────────
 struct EvSelfCheckOk       {};  ///< 自检通过，从停机位正向出发
-struct EvSelfCheckOkReturn {};  ///< 自检通过，从前端反向出发（N=0.5 恢复）
 struct EvSelfCheckFail     {};  ///< 自检失败，留在 Idle
 struct EvTaskComplete      {};  ///< 所有指定趟数完成 → Charging
 struct EvResumeForward     {};  ///< 从暂停态恢复正向清扫
@@ -62,9 +61,8 @@ struct EvResumeReturn      {};  ///< 从暂停态恢复返程清扫
 /// 转换逻辑概述：
 ///   Idle/Charging   --EvScheduleStart→ SelfCheck（自检）
 ///   SelfCheck       --[ok,正向]→       CleanFwd
-///   SelfCheck       --[ok,反向]→       CleanReturn（N=0.5 恢复）
 ///   SelfCheck       --[fail]→          Idle（拒绝）
-///   CleanFwd        --EvFrontLimitSettled→ CleanReturn  或  Charging（N=0.5 单程结束）
+///   CleanFwd        --EvFrontLimitSettled→ CleanReturn  或  Charging（任务完成）
 ///   CleanReturn     --EvRearLimitSettled→  CleanFwd     或  Charging（趟数完成）
 ///   CleanFwd/Return --EvFaultP0→        Fault
 ///   CleanFwd/Return --EvFaultP1→        Returning（停刷）
@@ -103,7 +101,6 @@ public:
                 state<StateCharging>        + event<EvScheduleStart>         = state<StateSelfCheck>,
                 // 自检结论
                 state<StateSelfCheck>       + event<EvSelfCheckOk>           = state<StateCleanFwd>,
-                state<StateSelfCheck>       + event<EvSelfCheckOkReturn>     = state<StateCleanReturn>,
                 state<StateSelfCheck>       + event<EvSelfCheckFail>         = state<StateIdle>,
                 // 清扫往复
                 state<StateCleanFwd>        + event<EvFrontLimitSettled>     = state<StateCleanReturn>,
@@ -153,9 +150,9 @@ private:
     std::unique_ptr<sml::sm<Fsm>> sm_;
 
     // N 趟计数
-    int  target_half_passes_{2};     ///< passes * 2（0.5→1, 1→2, 2→4）
+    int  target_half_passes_{2};     ///< passes * 2（1→2, 2→4, 3→6）
     int  completed_half_passes_{0};  ///< 已完成半趟数
-    bool going_forward_{true};       ///< 当前方向（N=0.5 跨任务翻转）
+    bool going_forward_{true};       ///< 当前方向（用于暂停后恢复）
 };
 
 } // namespace robot::app

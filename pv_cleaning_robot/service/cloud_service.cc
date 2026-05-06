@@ -1,8 +1,33 @@
 #include "pv_cleaning_robot/service/cloud_service.h"
-#include <nlohmann/json.hpp>
+
+#include <cstddef>
+
+#include <rapidjson/document.h>
+#include <rapidjson/stringbuffer.h>
+#include <rapidjson/writer.h>
+
 #include <spdlog/spdlog.h>
 
 namespace robot::service {
+namespace {
+
+constexpr size_t kSharedAttrsPoolBytes = 4096;
+constexpr size_t kRpcPoolBytes = 4096;
+
+std::string stringify_json_value(const rapidjson::Value& value)
+{
+    rapidjson::StringBuffer buffer;
+    if (value.IsString()) {
+        buffer.Reserve(static_cast<rapidjson::SizeType>(value.GetStringLength() + 8));
+    } else {
+        buffer.Reserve(256);
+    }
+    rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+    value.Accept(writer);
+    return {buffer.GetString(), buffer.GetSize()};
+}
+
+}  // namespace
 
 CloudService::CloudService(std::shared_ptr<middleware::NetworkManager> network,
                            std::shared_ptr<middleware::DataCache>      cache)
@@ -87,8 +112,15 @@ void CloudService::on_shared_attributes_message(const std::string& payload)
     if (!cb) return;
 
     try {
-        auto j = nlohmann::json::parse(payload);
-        cb(j);
+        alignas(std::max_align_t) unsigned char pool_buffer[kSharedAttrsPoolBytes];
+        rapidjson::MemoryPoolAllocator<rapidjson::CrtAllocator> allocator(
+            pool_buffer, sizeof(pool_buffer));
+        rapidjson::Document document(&allocator);
+        document.Parse(payload.c_str(), payload.size());
+        if (document.HasParseError()) {
+            throw std::runtime_error("invalid JSON");
+        }
+        cb(document);
     } catch (const std::exception& ex) {
         spdlog::warn("[CloudService] Failed to process shared attributes payload: {}", ex.what());
     }
@@ -113,13 +145,23 @@ void CloudService::on_rpc_message(const std::string& topic,
 
     std::string method;
     std::string params;
-    try {
-        auto j = nlohmann::json::parse(payload);
-        method = j.value("method", "");
-        params = j.contains("params") ? j["params"].dump() : "{}";
-    } catch (...) {
+    alignas(std::max_align_t) unsigned char pool_buffer[kRpcPoolBytes];
+    rapidjson::MemoryPoolAllocator<rapidjson::CrtAllocator> allocator(
+        pool_buffer, sizeof(pool_buffer));
+    rapidjson::Document document(&allocator);
+    document.Parse(payload.c_str(), payload.size());
+    if (document.HasParseError() || !document.IsObject()) {
         return;
     }
+    const auto method_it = document.FindMember("method");
+    if (method_it != document.MemberEnd()) {
+        if (!method_it->value.IsString()) {
+            return;
+        }
+        method.assign(method_it->value.GetString(), method_it->value.GetStringLength());
+    }
+    const auto params_it = document.FindMember("params");
+    params = params_it != document.MemberEnd() ? stringify_json_value(params_it->value) : "{}";
 
     std::string response{"false"};
     {

@@ -26,7 +26,8 @@ TEST_CASE("集成测试 - GPSD TCP 服务可连接并收到真实报文", "[hw_g
         std::chrono::steady_clock::now() + std::chrono::seconds(kp.gpsd_message_timeout_sec);
     while (std::chrono::steady_clock::now() < deadline) {
         const auto diag = gps->get_diagnostics();
-        if (diag.sentence_count > 0) break;
+        if (diag.sentence_count > 0)
+            break;
         std::this_thread::sleep_for(100ms);
     }
 
@@ -63,7 +64,8 @@ TEST_CASE("集成测试 - GPSD TCP 服务可获得真实有效定位", "[hw_gpsd
     const auto deadline =
         std::chrono::steady_clock::now() + std::chrono::seconds(kp.gpsd_fix_timeout_sec);
     while (std::chrono::steady_clock::now() < deadline) {
-        if (gps->get_latest().valid) break;
+        if (gps->get_latest().valid)
+            break;
         std::this_thread::sleep_for(200ms);
     }
 
@@ -102,7 +104,7 @@ TEST_CASE("集成测试 - GPSD TCP 服务连续读取并打印真实数据", "[h
 
     const auto start = std::chrono::steady_clock::now();
     auto next_print = start;
-    constexpr auto kDuration = 10s;
+    constexpr auto kDuration = 60s;
     constexpr auto kPrintInterval = 1s;
 
     while (std::chrono::steady_clock::now() - start < kDuration) {

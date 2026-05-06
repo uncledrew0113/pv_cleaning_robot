@@ -5,7 +5,7 @@
  *
  * 使用真实 IMU / BMS / WalkMotorGroup / LimitSwitch；
  * BrushMotor 使用 MockModbusMaster（滚刷未安装）；
- * GPS 使用占位对象（GPS 未安装）。
+ * GPS 使用真实 gpsd TCP 数据源（打开失败时仅记录 warning，不阻塞其余硬件用例）。
  *
  * 测试段：
  *   [hw_system][full_init]          — 全栈初始化、FSM → Idle、无崩溃
@@ -15,6 +15,7 @@
  *   [hw_system][watchdog_heartbeat] — WatchdogMgr 正常心跳不触发超时
  *   [hw_system][combined]           — N 趟完整任务链 + 全程持续采集健康数据
  *   [hw_system][pid_combined]       — N 趟完整任务链 + PID 控制 + yaw 指标采集到 pid_metrics.jsonl
+ *   [hw_system][imu_gps_health_only]— 仅 IMU/GPS 持续采集，并由 HealthService 本地落盘
  *
  * 运行方法（目标机）：
  *   ./hw_tests "[hw_system]"
@@ -25,7 +26,9 @@
 #include <catch2/catch.hpp>
 #include <chrono>
 #include <fstream>
-#include <nlohmann/json.hpp>
+#include <rapidjson/document.h>
+#include <rapidjson/stringbuffer.h>
+#include <rapidjson/writer.h>
 #include <spdlog/spdlog.h>
 #include <string>
 #include <thread>
@@ -33,6 +36,181 @@
 #include "hw_config.h"
 
 using namespace std::chrono_literals;
+
+namespace {
+
+rapidjson::Document parse_json_line(const std::string& line)
+{
+    rapidjson::Document doc;
+    doc.Parse(line.c_str(), line.size());
+    REQUIRE_FALSE(doc.HasParseError());
+    return doc;
+}
+
+std::vector<std::filesystem::path> collect_rotated_health_logs(const std::string& base_path)
+{
+    std::vector<std::filesystem::path> paths;
+    const auto base = std::filesystem::path(base_path);
+    const auto dir = base.parent_path().empty() ? std::filesystem::path(".") : base.parent_path();
+    const auto filename = base.filename().string();
+
+    if (!std::filesystem::exists(dir)) {
+        return paths;
+    }
+
+    for (const auto& entry : std::filesystem::directory_iterator(dir)) {
+        if (!entry.is_regular_file()) {
+            continue;
+        }
+        const auto candidate = entry.path().filename().string();
+        if (candidate == filename || candidate.rfind(filename + ".", 0) == 0) {
+            paths.push_back(entry.path());
+        }
+    }
+
+    std::sort(paths.begin(), paths.end());
+    return paths;
+}
+
+void remove_rotated_health_logs(const std::string& base_path)
+{
+    for (const auto& path : collect_rotated_health_logs(base_path)) {
+        std::error_code ec;
+        std::filesystem::remove(path, ec);
+    }
+}
+
+std::string build_pid_sample_json(int64_t ts_ms,
+                                  int seg,
+                                  const std::string& state,
+                                  float yaw,
+                                  float omega_z)
+{
+    rapidjson::StringBuffer buffer;
+    rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+    writer.StartObject();
+    writer.Key("ts_ms");
+    writer.Int64(ts_ms);
+    writer.Key("seg");
+    writer.Int(seg);
+    writer.Key("state");
+    writer.String(state.c_str(), static_cast<rapidjson::SizeType>(state.size()));
+    writer.Key("yaw");
+    writer.Double(yaw);
+    writer.Key("omega_z");
+    writer.Double(omega_z);
+    writer.EndObject();
+    return {buffer.GetString(), buffer.GetSize()};
+}
+
+std::string build_segment_summary_json(int seg,
+                                       const char* direction,
+                                       const std::string& from_state,
+                                       const std::string& to_state,
+                                       float max_drift_deg,
+                                       float duration_s)
+{
+    rapidjson::StringBuffer buffer;
+    rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+    writer.StartObject();
+    writer.Key("type");
+    writer.String("segment_summary");
+    writer.Key("seg");
+    writer.Int(seg);
+    writer.Key("direction");
+    writer.String(direction);
+    writer.Key("from_state");
+    writer.String(from_state.c_str(), static_cast<rapidjson::SizeType>(from_state.size()));
+    writer.Key("to_state");
+    writer.String(to_state.c_str(), static_cast<rapidjson::SizeType>(to_state.size()));
+    writer.Key("max_drift_deg");
+    writer.Double(max_drift_deg);
+    writer.Key("duration_s");
+    writer.Double(duration_s);
+    writer.EndObject();
+    return {buffer.GetString(), buffer.GetSize()};
+}
+
+std::string build_final_summary_json(int total_segs,
+                                     int total_records,
+                                     float max_drift_all_deg,
+                                     float kp,
+                                     float ki,
+                                     float kd,
+                                     float deadband_rate_dps)
+{
+    rapidjson::StringBuffer buffer;
+    rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+    writer.StartObject();
+    writer.Key("type");
+    writer.String("final_summary");
+    writer.Key("total_segs");
+    writer.Int(total_segs);
+    writer.Key("total_records");
+    writer.Int(total_records);
+    writer.Key("max_drift_all_deg");
+    writer.Double(max_drift_all_deg);
+    writer.Key("kp");
+    writer.Double(kp);
+    writer.Key("ki");
+    writer.Double(ki);
+    writer.Key("kd");
+    writer.Double(kd);
+    writer.Key("deadband_rate_dps");
+    writer.Double(deadband_rate_dps);
+    writer.EndObject();
+    return {buffer.GetString(), buffer.GetSize()};
+}
+
+}  // namespace
+
+// ────────────────────────────────────────────────────────────────────────────
+// [hw_system][imu_gps_health_only] — 仅 IMU/GPS 持续采集并由 HealthService 落盘
+// ────────────────────────────────────────────────────────────────────────────
+TEST_CASE("System（真实硬件）仅 IMU/GPS 持续采集并本地落盘",
+          "[hw_system][imu_gps_health_only]") {
+    hw::ImuGpsHealthFixture f;
+    const std::string health_path = "/data/pv_robot/logs/hw_imu_gps_health_only.jsonl";
+    remove_rotated_health_logs(health_path);
+
+    REQUIRE(f.init(health_path));
+    REQUIRE(f.health != nullptr);
+
+    for (int i = 0; i < 20; ++i) {
+        f.health->update();
+        std::this_thread::sleep_for(100ms);
+    }
+
+    const auto paths = collect_rotated_health_logs(health_path);
+    REQUIRE_FALSE(paths.empty());
+
+    int line_count = 0;
+    bool saw_imu = false;
+    bool saw_gps = false;
+
+    for (const auto& path : paths) {
+        std::ifstream ifs(path);
+        REQUIRE(ifs.is_open());
+
+        std::string line;
+        while (std::getline(ifs, line)) {
+            if (line.empty()) {
+                continue;
+            }
+            ++line_count;
+            auto j = parse_json_line(line);
+            REQUIRE(j.IsObject());
+            REQUIRE(j.HasMember("imu"));
+            REQUIRE(j.HasMember("gps"));
+            saw_imu = true;
+            saw_gps = true;
+        }
+    }
+
+    CHECK(line_count >= 10);
+    CHECK(saw_imu);
+    CHECK(saw_gps);
+}
 
 // ────────────────────────────────────────────────────────────────────────────
 // [hw_system][full_init] — 全栈初始化
@@ -112,35 +290,34 @@ TEST_CASE("System（真实硬件）HealthService DIAGNOSTICS 落盘真实传感�
         ++line_count;
 
         // 每行必须是合法 JSON
-        nlohmann::json j;
-        REQUIRE_NOTHROW(j = nlohmann::json::parse(line));
+        auto j = parse_json_line(line);
 
         // DIAGNOSTICS 模式必须包含所有顶级键
-        REQUIRE(j.contains("walk"));
-        REQUIRE(j.contains("brush"));
-        REQUIRE(j.contains("bms"));
-        REQUIRE(j.contains("imu"));
-        REQUIRE(j.contains("gps"));
+        REQUIRE(j.HasMember("walk"));
+        REQUIRE(j.HasMember("brush"));
+        REQUIRE(j.HasMember("bms"));
+        REQUIRE(j.HasMember("imu"));
+        REQUIRE(j.HasMember("gps"));
 
         // walk：LT/RT/LB/RB 独立诊断 + ctrl_frames
-        REQUIRE(j["walk"].contains("lt"));
-        REQUIRE(j["walk"].contains("rt"));
-        REQUIRE(j["walk"].contains("lb"));
-        REQUIRE(j["walk"].contains("rb"));
-        REQUIRE(j["walk"].contains("ctrl_frames"));
+        REQUIRE(j["walk"].HasMember("lt"));
+        REQUIRE(j["walk"].HasMember("rt"));
+        REQUIRE(j["walk"].HasMember("lb"));
+        REQUIRE(j["walk"].HasMember("rb"));
+        REQUIRE(j["walk"].HasMember("ctrl_frames"));
 
         // bms：核心字段存在
-        REQUIRE(j["bms"].contains("soc"));
-        REQUIRE(j["bms"].contains("voltage"));
-        REQUIRE(j["bms"].contains("current"));
+        REQUIRE(j["bms"].HasMember("soc"));
+        REQUIRE(j["bms"].HasMember("voltage"));
+        REQUIRE(j["bms"].HasMember("current"));
 
         // imu：核心字段存在
-        REQUIRE(j["imu"].contains("pitch"));
-        REQUIRE(j["imu"].contains("roll"));
-        REQUIRE(j["imu"].contains("yaw"));
+        REQUIRE(j["imu"].HasMember("pitch"));
+        REQUIRE(j["imu"].HasMember("roll"));
+        REQUIRE(j["imu"].HasMember("yaw"));
 
         // 检查 BMS 电压是否合理（BMS 在线时 > 0）
-        float voltage = j["bms"]["voltage"].get<float>();
+        float voltage = j["bms"]["voltage"].GetFloat();
         if (voltage > 0.1f)
             has_nonzero_voltage = true;
 
@@ -148,10 +325,10 @@ TEST_CASE("System（真实硬件）HealthService DIAGNOSTICS 落盘真实传感�
             "[hw_system][health_real_data] line #{}: soc={:.1f}% volt={:.2f}V "
             "imu_yaw={:.2f} walk_lt_rpm={:.2f}",
             line_count,
-            j["bms"]["soc"].get<float>(),
+            j["bms"]["soc"].GetFloat(),
             voltage,
-            j["imu"]["yaw"].get<float>(),
-            j["walk"]["lt"]["rpm"].get<float>());
+            j["imu"]["yaw"].GetFloat(),
+            j["walk"]["lt"]["rpm"].GetFloat());
     }
 
     CHECK(line_count == 5);
@@ -449,6 +626,9 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + 全程持续采集健�
                  f.p.combined_passes,
                  static_cast<int>(passes_half));
     spdlog::warn("[hw_system][combined] 全程持续记录健康数据到: {}", f.p.health_jsonl_path);
+    spdlog::warn("[hw_system][combined] 本地日志轮转: max_bytes={} max_files={}",
+                 f.p.health_log_max_bytes,
+                 f.p.health_log_max_files);
     spdlog::warn("[hw_system][combined] 每段限位超时: {}s（触发后重置）", f.p.limit_timeout_sec);
     spdlog::warn("[hw_system][combined] 请确保：导轨就位，轨道无人员/障碍物");
     spdlog::warn("[hw_system][combined] ====================================");
@@ -564,30 +744,41 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + 全程持续采集健�
     // 无故障
     CHECK(f.dispatched_faults.empty());
 
-    // JSONL 存在，行数一致，每行含合法 JSON 及时间戳
+    // 本地健康日志存在；若启用了轮转，则允许出现 base + .1/.2...
     REQUIRE(std::filesystem::exists(f.p.health_jsonl_path));
     {
-        std::ifstream ifs(f.p.health_jsonl_path);
-        REQUIRE(ifs.is_open());
+        const auto health_files = collect_rotated_health_logs(f.p.health_jsonl_path);
+        REQUIRE_FALSE(health_files.empty());
 
-        int line_count = 0;
-        std::string line;
-        while (std::getline(ifs, line)) {
-            if (line.empty())
-                continue;
-            ++line_count;
-            nlohmann::json j;
-            REQUIRE_NOTHROW(j = nlohmann::json::parse(line));
-            REQUIRE(j.contains("ts"));  // 时间戳
-            REQUIRE(j.contains("walk"));
-            REQUIRE(j.contains("bms"));
-            REQUIRE(j.contains("imu"));
-            // 验证时间戳格式（不为空）
-            CHECK(!j["ts"].get<std::string>().empty());
+        int total_retained_lines = 0;
+        for (const auto& path : health_files) {
+            std::ifstream ifs(path);
+            REQUIRE(ifs.is_open());
+
+            std::string line;
+            while (std::getline(ifs, line)) {
+                if (line.empty()) {
+                    continue;
+                }
+                ++total_retained_lines;
+                auto j = parse_json_line(line);
+                REQUIRE(j.HasMember("ts"));  // 时间戳
+                REQUIRE(j.HasMember("walk"));
+                REQUIRE(j.HasMember("bms"));
+                REQUIRE(j.HasMember("imu"));
+                CHECK(!std::string(j["ts"].GetString()).empty());
+            }
         }
-        CHECK(line_count == total_health_records);
+
+        // 未发生轮转时，保留行数应等于本次采样条数。
+        // 发生轮转时，只要求保留文件中仍有合法 JSONL 记录。
+        CHECK(total_retained_lines > 0);
+        CHECK(total_retained_lines <= total_health_records);
         spdlog::info(
-            "[hw_system][combined] JSONL {} 行，路径: {}", line_count, f.p.health_jsonl_path);
+            "[hw_system][combined] 保留健康日志 {} 个文件，共 {} 行，主路径: {}",
+            health_files.size(),
+            total_retained_lines,
+            f.p.health_jsonl_path);
     }
 
     // IMU 末帧（仅记录）
@@ -691,13 +882,13 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + PID 控制 + yaw 指�
             std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - t_test_start)
                 .count();
 
-        nlohmann::json rec;
-        rec["ts_ms"] = ts_ms;
-        rec["seg"] = cur_seg;
-        rec["state"] = f.fsm->current_state();
-        rec["yaw"] = std::round(yaw * 100.0f) / 100.0f;
-        rec["omega_z"] = std::round(omega_z_dps * 100.0f) / 100.0f;
-        pid_ofs << rec.dump() << '\n';
+        pid_ofs << build_pid_sample_json(
+                       ts_ms,
+                       cur_seg,
+                       f.fsm->current_state(),
+                       std::round(yaw * 100.0f) / 100.0f,
+                       std::round(omega_z_dps * 100.0f) / 100.0f)
+                << '\n';
 
         spdlog::info(
             "[hw_system][pid_combined] #{} seg={} yaw={:.2f}° omega_z={:.2f}°/s "
@@ -764,15 +955,14 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + PID 控制 + yaw 指�
 
         // 写段摘要到 pid_metrics.jsonl
         const float seg_dur = std::chrono::duration<float>(clock::now() - seg_start).count();
-        nlohmann::json seg_sum;
-        seg_sum["type"] = "segment_summary";
-        seg_sum["seg"] = seg_idx;
-        seg_sum["direction"] = going_fwd ? "fwd" : "ret";
-        seg_sum["from_state"] = state;
-        seg_sum["to_state"] = next;
-        seg_sum["max_drift_deg"] = std::round(max_drift_all * 100.0f) / 100.0f;
-        seg_sum["duration_s"] = std::round(seg_dur * 10.0f) / 10.0f;
-        pid_ofs << seg_sum.dump() << '\n';
+        pid_ofs << build_segment_summary_json(
+                       seg_idx,
+                       going_fwd ? "fwd" : "ret",
+                       state,
+                       next,
+                       std::round(max_drift_all * 100.0f) / 100.0f,
+                       std::round(seg_dur * 10.0f) / 10.0f)
+                << '\n';
 
         spdlog::info(
             "[hw_system][pid_combined] ✓ 段 {} 完成：{} → {}（已采集 {} 条，耗时 {:.1f}s）",
@@ -792,16 +982,15 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + PID 控制 + yaw 指�
     }
 
     // 写全局摘要到 pid_metrics.jsonl
-    nlohmann::json final_sum;
-    final_sum["type"] = "final_summary";
-    final_sum["total_segs"] = seg_idx;
-    final_sum["total_records"] = total_health_records;
-    final_sum["max_drift_all_deg"] = std::round(max_drift_all * 100.0f) / 100.0f;
-    final_sum["kp"] = f.p.pid.kp;
-    final_sum["ki"] = f.p.pid.ki;
-    final_sum["kd"] = f.p.pid.kd;
-    final_sum["deadband_rate_dps"] = f.p.pid.deadband_rate_dps;
-    pid_ofs << final_sum.dump() << '\n';
+    pid_ofs << build_final_summary_json(
+                   seg_idx,
+                   total_health_records,
+                   std::round(max_drift_all * 100.0f) / 100.0f,
+                   f.p.pid.kp,
+                   f.p.pid.ki,
+                   f.p.pid.kd,
+                   f.p.pid.deadband_rate_dps)
+            << '\n';
     pid_ofs.close();
 
     spdlog::info(

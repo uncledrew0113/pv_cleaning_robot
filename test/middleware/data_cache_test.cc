@@ -5,6 +5,7 @@
 #include <catch2/catch.hpp>
 #include <filesystem>
 #include <fstream>
+#include <rapidjson/document.h>
 #include <string>
 
 #include "pv_cleaning_robot/middleware/data_cache.h"
@@ -205,6 +206,48 @@ TEST_CASE("DataCache: ack journal survives restart without full rewrite semantic
     fs::remove(path + ".tmp");
 }
 
+TEST_CASE("DataCache: journal file keeps push and ack JSONL record format",
+          "[middleware][data_cache]") {
+    const std::string path = "/tmp/test_dc_journal_format.jsonl";
+    fs::remove(path);
+    fs::remove(path + ".tmp");
+
+    DataCache cache(path);
+    REQUIRE(cache.open());
+    REQUIRE(cache.push("topic/test", R"({"v":1})", 1234));
+
+    const auto batch = cache.pop_batch(10);
+    REQUIRE(batch.size() == 1);
+    cache.confirm_sent({batch[0].id});
+    cache.close();
+
+    std::ifstream in(path);
+    REQUIRE(in.is_open());
+
+    std::string push_line;
+    std::string ack_line;
+    REQUIRE(std::getline(in, push_line));
+    REQUIRE(std::getline(in, ack_line));
+
+    rapidjson::Document push_json;
+    push_json.Parse(push_line.c_str());
+    REQUIRE_FALSE(push_json.HasParseError());
+    CHECK(std::string(push_json["op"].GetString()) == "push");
+    CHECK(push_json["id"].GetInt64() == batch[0].id);
+    CHECK(std::string(push_json["topic"].GetString()) == "topic/test");
+    CHECK(std::string(push_json["payload"].GetString()) == R"({"v":1})");
+    CHECK(push_json["ts_ms"].GetUint64() == 1234);
+
+    rapidjson::Document ack_json;
+    ack_json.Parse(ack_line.c_str());
+    REQUIRE_FALSE(ack_json.HasParseError());
+    CHECK(std::string(ack_json["op"].GetString()) == "ack");
+    CHECK(ack_json["id"].GetInt64() == batch[0].id);
+
+    fs::remove(path);
+    fs::remove(path + ".tmp");
+}
+
 TEST_CASE("DataCache: compact snapshot keeps only live records",
           "[middleware][data_cache]") {
     std::string path = "/tmp/test_dc_compact.jsonl";
@@ -264,8 +307,9 @@ TEST_CASE("DataCache: full-queue eviction does not drop a record when ack journa
     REQUIRE(cache.push("t/a", R"({"v":1})"));
     REQUIRE(cache.push("t/b", R"({"v":2})"));
 
-    cache.set_test_append_hook([](const nlohmann::json& j) {
-        return j.value("op", "") != "ack";
+    cache.set_test_append_hook([](const rapidjson::Document& j) {
+        const auto op_it = j.FindMember("op");
+        return op_it == j.MemberEnd() || std::string(op_it->value.GetString()) != "ack";
     });
 
     REQUIRE_FALSE(cache.push("t/c", R"({"v":3})"));

@@ -1,6 +1,7 @@
 #include <catch2/catch.hpp>
 
 #include <memory>
+#include <rapidjson/document.h>
 #include <string>
 
 #include "pv_cleaning_robot/service/cloud_service.h"
@@ -15,11 +16,17 @@ namespace {
 struct MockTransport final : INetworkTransport {
     MessageCallback rpc_cb;
     MessageCallback attr_cb;
+    std::string last_publish_topic;
+    std::string last_publish_payload;
 
     bool connect() override { return true; }
     void disconnect() override {}
     bool is_connected() const override { return true; }
-    bool publish(const std::string&, const std::string&) override { return true; }
+    bool publish(const std::string& topic, const std::string& payload) override {
+        last_publish_topic = topic;
+        last_publish_payload = payload;
+        return true;
+    }
     bool subscribe(const std::string& topic, MessageCallback cb) override {
         if (topic.find("attributes") != std::string::npos) {
             attr_cb = std::move(cb);
@@ -32,6 +39,12 @@ struct MockTransport final : INetworkTransport {
     void emit_attributes(const std::string& payload) {
         if (attr_cb) {
             attr_cb("v1/devices/me/attributes", payload);
+        }
+    }
+
+    void emit_rpc(const std::string& request_id, const std::string& payload) {
+        if (rpc_cb) {
+            rpc_cb("v1/devices/me/rpc/request/" + request_id, payload);
         }
     }
 };
@@ -48,11 +61,33 @@ TEST_CASE("CloudService shared attributes ignore messages before callback regist
     int call_count = 0;
 
     mqtt->emit_attributes(R"({"passes":2})");
-    cloud.subscribe_shared_attributes([&](const nlohmann::json& attrs) {
-        REQUIRE(attrs.at("passes").get<int>() == 3);
+    cloud.subscribe_shared_attributes([&](const rapidjson::Document& attrs) {
+        const auto it = attrs.FindMember("passes");
+        REQUIRE(it != attrs.MemberEnd());
+        REQUIRE(it->value.GetInt() == 3);
         ++call_count;
     });
     mqtt->emit_attributes(R"({"passes":3})");
 
     REQUIRE(call_count == 1);
+}
+
+TEST_CASE("CloudService RPC parsing preserves params JSON string for handler",
+          "[service][cloud]") {
+    auto mqtt = std::make_shared<MockTransport>();
+    auto net = std::make_shared<NetworkManager>(mqtt, nullptr, NetworkManager::Mode::MQTT_ONLY);
+    auto cache = std::make_shared<DataCache>("/tmp/cloud_service_rpc_test.jsonl");
+    CloudService cloud(net, cache);
+
+    std::string handler_params;
+    cloud.register_rpc("set_speed", [&](const std::string& params) {
+        handler_params = params;
+        return std::string{R"({"ok":true})"};
+    });
+
+    mqtt->emit_rpc("42", R"({"method":"set_speed","params":{"speed":80,"mode":"clean"}})");
+
+    REQUIRE(handler_params == R"({"speed":80,"mode":"clean"})");
+    REQUIRE(mqtt->last_publish_topic == "v1/devices/me/rpc/response/42");
+    REQUIRE(mqtt->last_publish_payload == R"({"ok":true})");
 }

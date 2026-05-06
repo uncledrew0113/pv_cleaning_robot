@@ -36,13 +36,12 @@ set(COMMON_SRCS
   ${PROJ}/middleware/data_cache.cc
   ${PROJ}/middleware/safety_monitor.cc
   ${PROJ}/middleware/network_manager.cc
+  ${PROJ}/middleware/mqtt_transport.cc
   ${PROJ}/middleware/logger.cc
   ${PROJ}/middleware/thread_executor.cc
 
   # 服务层
   ${PROJ}/service/config_service.cc
-  ${PROJ}/service/business_payload_builder.cc
-  ${PROJ}/service/business_telemetry_snapshot.cc
   ${PROJ}/service/command_tracker.cc
   ${PROJ}/service/fault_service.cc
   ${PROJ}/service/scheduler_service.cc
@@ -55,7 +54,6 @@ set(COMMON_SRCS
   ${PROJ}/service/cloud_service.cc
   ${PROJ}/service/thingsboard_control_plane.cc
   ${PROJ}/service/thingsboard_config_manager.cc
-  ${PROJ}/service/thingsboard_telemetry_publisher.cc
 
   # App 层
   ${PROJ}/app/robot_fsm.cc
@@ -105,14 +103,12 @@ add_executable(unit_tests
   # 服务层
   service/cloud_service_test.cc
   service/business_payload_builder_test.cc
-  service/business_telemetry_snapshot_test.cc
   service/command_tracker_test.cc
   service/config_service_test.cc
   service/fault_service_test.cc
   service/health_payload_builder_test.cc
   service/thingsboard_event_payload_builder_test.cc
   service/thingsboard_control_plane_test.cc
-  service/thingsboard_telemetry_publisher_test.cc
   service/thingsboard_config_manager_test.cc
   service/scheduler_service_test.cc
   service/motion_service_test.cc
@@ -128,6 +124,7 @@ add_executable(unit_tests
   # 集成测试（非硬件，可在 QEMU 中运行）
   integration/task_chain_test.cc
   integration/system_integration_test.cc
+  integration/thingsboard_real_integration_test.cc
 
   ${COMMON_SRCS}
 )

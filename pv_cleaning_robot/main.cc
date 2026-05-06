@@ -45,7 +45,6 @@
 
 // Service
 #include "pv_cleaning_robot/service/cloud_service.h"
-#include "pv_cleaning_robot/service/business_telemetry_snapshot.h"
 #include "pv_cleaning_robot/service/command_tracker.h"
 #include "pv_cleaning_robot/service/fault_service.h"
 #include "pv_cleaning_robot/service/health_service.h"
@@ -54,14 +53,12 @@
 #include "pv_cleaning_robot/service/scheduler_service.h"
 #include "pv_cleaning_robot/service/thingsboard_control_plane.h"
 #include "pv_cleaning_robot/service/thingsboard_config_manager.h"
-#include "pv_cleaning_robot/service/thingsboard_telemetry_publisher.h"
 
 // App
 #include <atomic>
 #include <csignal>
 #include <algorithm>
 #include <memory>
-#include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
 #include <string>
 #include <thread>
@@ -271,6 +268,15 @@ int main() {
     mqtt_cfg.broker_uri = cfg.get<std::string>("network.mqtt.broker_uri", "tcp://localhost:1883");
     mqtt_cfg.client_id = cfg.get<std::string>("network.mqtt.client_id", "pv_robot_001");
     mqtt_cfg.tls_enabled = cfg.get<bool>("network.mqtt.tls_enabled", false);
+    mqtt_cfg.username = cfg.get<std::string>("network.mqtt.username", "");
+    mqtt_cfg.password = cfg.get<std::string>("network.mqtt.password", "");
+    mqtt_cfg.ca_cert_path = cfg.get<std::string>("network.mqtt.ca_cert_path", "");
+    mqtt_cfg.client_cert_path = cfg.get<std::string>("network.mqtt.client_cert_path", "");
+    mqtt_cfg.client_key_path = cfg.get<std::string>("network.mqtt.client_key_path", "");
+    mqtt_cfg.insecure_skip_server_name_check =
+        cfg.get<bool>("network.mqtt.insecure_skip_server_name_check", false);
+    mqtt_cfg.keep_alive_sec = cfg.get<int>("network.mqtt.keep_alive_s", 60);
+    mqtt_cfg.qos = cfg.get<int>("network.mqtt.qos", 1);
     auto mqtt = std::make_shared<robot::middleware::MqttTransport>(mqtt_cfg);
 
     std::string transport_mode = cfg.get<std::string>("network.transport_mode", "mqtt_only");
@@ -324,11 +330,14 @@ int main() {
     robot::service::SchedulerService scheduler;
     {
         auto windows_json = cfg.get_subtree("scheduler.windows");
-        if (windows_json.is_array()) {
-            for (auto& w : windows_json) {
+        if (windows_json.IsArray()) {
+            for (const auto& w : windows_json.GetArray()) {
                 robot::service::SchedulerService::TimeWindow tw;
-                tw.hour = w.value("hour", 8);
-                tw.minute = w.value("minute", 0);
+                const auto hour_it = w.FindMember("hour");
+                const auto minute_it = w.FindMember("minute");
+                tw.hour = (hour_it != w.MemberEnd() && hour_it->value.IsInt()) ? hour_it->value.GetInt() : 8;
+                tw.minute =
+                    (minute_it != w.MemberEnd() && minute_it->value.IsInt()) ? minute_it->value.GetInt() : 0;
                 scheduler.add_window(tw);
             }
         }
@@ -338,8 +347,6 @@ int main() {
         std::make_shared<robot::service::ThingsBoardConfigManager>(cfg, scheduler);
     auto command_tracker = std::make_shared<robot::service::CommandTracker>();
 
-    net_mgr->connect();
-
     auto fault = std::make_shared<robot::service::FaultService>(event_bus);
 
     // ── 14. 应用层 ─────────────────────────────────────────────────────
@@ -347,26 +354,29 @@ int main() {
     fsm->dispatch(robot::app::EvInitDone{});
     auto supervisor =
         std::make_shared<robot::app::RobotSupervisor>(fsm, tb_cfg, command_tracker, fault, nav);
-    auto tb_telemetry =
-        std::make_shared<robot::service::ThingsBoardTelemetryPublisher>(cfg, cloud, supervisor);
     auto tb_control = std::make_shared<robot::service::ThingsBoardControlPlane>(
+        cfg,
         cloud,
         tb_cfg,
         command_tracker,
-        supervisor,
-        [tb_telemetry](const char* event_name, bool accepted, const char* reason) {
-            tb_telemetry->publish_status_event(event_name, accepted, reason);
-        },
-        [tb_telemetry](const char* event_name,
-                     const robot::service::CommandSnapshot& snapshot) {
-            tb_telemetry->publish_command_event(event_name, snapshot);
-        });
+        supervisor);
     tb_control->subscribe_shared_attributes();
+    // 在 connect() 前完成 shared attributes / RPC 注册，避免首个云端下行消息丢失。
+    tb_control->register_rpc_handlers(
+        [&rear_switch, &rear_open_ok]() {
+            return rear_open_ok && !rear_switch->read_current_level();
+        },
+        [&front_switch, &front_open_ok]() {
+            return front_open_ok && !front_switch->read_current_level();
+        });
+
+    net_mgr->connect();
+
     if (net_mgr->is_connected()) {
         if (cfg.last_load_used_backup()) {
-            tb_telemetry->publish_backup_fallback_event();
+            tb_control->publish_backup_fallback_event();
         }
-        tb_telemetry->publish_startup_attributes();
+        tb_control->publish_startup_attributes();
         log->info("[Main] 设备静态属性已发布至云端");
     }
 
@@ -394,15 +404,6 @@ int main() {
             }
         });
 
-    // ── 云端 RPC 处理器 ─────────────────────────────────────────────
-    tb_control->register_rpc_handlers(
-        [&rear_switch, &rear_open_ok]() {
-            return rear_open_ok && !rear_switch->read_current_level();
-        },
-        [&front_switch, &front_open_ok]() {
-            return front_open_ok && !front_switch->read_current_level();
-        });
-
     robot::app::FaultHandler fault_handler(
         motion, event_bus, [fsm](const robot::service::FaultService::FaultEvent& evt) {
             using Level = robot::service::FaultService::FaultEvent::Level;
@@ -428,9 +429,15 @@ int main() {
     // HealthService 已内嵌 DiagnosticsCollector 逻辑：
     //   production  -> Mode::HEALTH      （精简状态字段）
     //   development -> Mode::DIAGNOSTICS （完整诊断字段）
-    // local_path 非空时额外把每帧 JSON payload 以 JSONL 追加到本地文件，
+    // local_log_path 非空时额外把每帧 JSON payload 以 JSONL 追加到本地文件，
     // 离线调试阶段可直接 cat/grep 查看，完全独立于 MQTT/LoRaWAN。
-    std::string local_tel_path = cfg.get<std::string>("diagnostics.local_path", "");
+    std::string local_tel_path = cfg.get<std::string>(
+        "diagnostics.local_log_path",
+        cfg.get<std::string>("diagnostics.local_path", ""));
+    const size_t local_log_max_bytes = static_cast<size_t>(std::max(
+        1, cfg.get<int>("diagnostics.local_log_max_bytes", 10 * 1024 * 1024)));
+    const size_t local_log_max_files =
+        static_cast<size_t>(std::max(1, cfg.get<int>("diagnostics.local_log_max_files", 3)));
     auto reporter = std::make_shared<robot::service::HealthService>(
         walk_group,
         brush_motor,
@@ -440,7 +447,9 @@ int main() {
         cloud,
         diag_mode == "development" ? robot::service::HealthService::Mode::DIAGNOSTICS
                                    : robot::service::HealthService::Mode::HEALTH,
-        local_tel_path);
+        local_tel_path,
+        local_log_max_bytes,
+        local_log_max_files);
 
     // ── 16. 线程执行器 ────────────────────────────────────────────────
     // ── RK3576 CPU 拓扑 ───────────────────────────────────────────────
@@ -492,8 +501,8 @@ int main() {
         std::max(1, cfg.get<int>("diagnostics.publish_interval_idle_ms", 300000));
     robot::middleware::ThreadExecutor cloud_exec({"cloud", report_period, SCHED_OTHER, 0, 0x0F});
     cloud_exec.add_runnable(reporter);
-    cloud_exec.add_runnable(std::make_shared<robot::middleware::RunnableAdapter>([tb_telemetry]() {
-        tb_telemetry->publish_business_telemetry();
+    cloud_exec.add_runnable(std::make_shared<robot::middleware::RunnableAdapter>([tb_control]() {
+        tb_control->publish_business_telemetry();
     }));
     cloud_exec.add_runnable(cloud);
     int cloud_wd = watchdog.register_thread("cloud", 5000);
