@@ -51,6 +51,7 @@ ChargingSide parse_charging_side_string(const std::string& value)
 
 void validate_release_runtime_config(const TbRuntimeConfig& cfg)
 {
+    // 当前 release 明确只支持整数趟和单侧停车。
     if (!is_integer_passes(cfg.passes)) {
         throw std::runtime_error("passes must be a positive integer in this release");
     }
@@ -172,6 +173,7 @@ SharedAttrApplyResult ThingsBoardConfigManager::apply_shared_attributes(
     }
 
     try {
+        // schedules 立即影响调度器，因此同时写 active 和 pending。
         if (const auto it = attrs.FindMember("schedules"); it != attrs.MemberEnd()) {
             const auto& schedules_json = it->value;
             parse_schedule_entries(schedules_json);
@@ -181,6 +183,8 @@ SharedAttrApplyResult ThingsBoardConfigManager::apply_shared_attributes(
             touches_pending = touches_pending || pending_root_before.has_value();
         }
 
+        // 任务相关参数只写 pending。这样不会在运行中途直接改变当前任务语义，
+        // 而是等下一次任务启动前由 promote_pending_to_active() 提升。
         auto* robot = ensure_object_member(
             pending_root_after, "robot", pending_root_after.GetAllocator());
 
@@ -309,6 +313,11 @@ bool ThingsBoardConfigManager::promote_pending_to_active()
         return true;
     }
 
+    // 提升顺序固定为：
+    // 1. 清 pending 文件
+    // 2. 用 pending 覆盖 active
+    // 3. 刷新 scheduler
+    // 若中途失败，尽量把 pending 写回，避免配置真相丢失。
     if (!config_.clear_pending()) {
         return false;
     }

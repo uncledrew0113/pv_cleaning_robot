@@ -1,5 +1,7 @@
 #include "pv_cleaning_robot/service/thingsboard_control_plane.h"
 
+#include <vector>
+
 #include <rapidjson/document.h>
 #include <rapidjson/stringbuffer.h>
 #include <rapidjson/writer.h>
@@ -30,6 +32,7 @@ ThingsBoardControlPlane::ThingsBoardControlPlane(
 
 void ThingsBoardControlPlane::subscribe_shared_attributes() {
     cloud_->subscribe_shared_attributes([this](const rapidjson::Document& attrs) {
+        // ControlPlane 只负责把协议入口接到配置管理器，再把结果转成 telemetry event。
         const auto result = tb_cfg_->apply_shared_attributes(attrs);
         const auto reason = result.reason.empty() ? "ok" : result.reason;
         publish_status_event("shared_attr_update", result.accepted, reason.c_str());
@@ -39,17 +42,43 @@ void ThingsBoardControlPlane::subscribe_shared_attributes() {
     });
 }
 
+void ThingsBoardControlPlane::request_shared_attributes_snapshot() const {
+    static const std::vector<std::string> kReleaseSharedKeys{
+        "passes",
+        "clean_speed_rpm",
+        "return_speed_rpm",
+        "brush_rpm",
+        "parking_policy",
+        "charging_side",
+        "schedules",
+    };
+    if (!cloud_->request_shared_attributes_snapshot(kReleaseSharedKeys)) {
+        spdlog::warn("[ThingsBoardControlPlane] 请求 shared attributes 快照失败");
+    }
+}
+
 void ThingsBoardControlPlane::register_rpc_handlers(const std::function<bool()>& is_at_home,
                                                     const std::function<bool()>& is_at_front) {
+    // 当前 release 只暴露 5 个 RPC。每个 handler 内部都遵循同一套模式：
+    // 1. 读取当前状态 / 现场条件
+    // 2. 交给 RobotSupervisor 判定是否允许
+    // 3. 发布 command event
+    // 4. 回 RPC response
     cloud_->register_rpc("start", [this, is_at_home, is_at_front](const std::string& /*params*/) {
         const auto state = supervisor_->current_state();
         const bool at_home = is_at_home();
         const bool at_front = is_at_front();
+        spdlog::info("[ThingsBoardControlPlane] RPC start received: state='{}' at_home={} at_front={}",
+                     state,
+                     at_home,
+                     at_front);
 
         if (state == "Paused") {
             if (!supervisor_->resume_paused_task()) {
+                spdlog::warn("[ThingsBoardControlPlane] RPC start rejected: resume_not_allowed_in_current_state");
                 return reject_rpc_command("start", "resume_not_allowed_in_current_state");
             }
+            spdlog::info("[ThingsBoardControlPlane] RPC start completed: resumed_paused_task");
             return complete_rpc_command("start", "resumed_paused_task");
         }
 
@@ -58,44 +87,63 @@ void ThingsBoardControlPlane::register_rpc_handlers(const std::function<bool()>&
                                            ? "start_not_allowed_in_current_state"
                                        : !at_home ? "robot_not_at_home"
                                                   : "promote_pending_config_failed";
+            spdlog::warn("[ThingsBoardControlPlane] RPC start rejected: {}", reason);
             return reject_rpc_command("start", reason.c_str());
         }
 
+        spdlog::info("[ThingsBoardControlPlane] RPC start completed: started_new_task");
         return complete_rpc_command("start", "started_new_task");
     });
 
     cloud_->register_rpc("stop", [this](const std::string& /*params*/) {
+        spdlog::info("[ThingsBoardControlPlane] RPC stop received: state='{}'",
+                     supervisor_->current_state());
         if (!supervisor_->pause_task()) {
+            spdlog::warn("[ThingsBoardControlPlane] RPC stop rejected: stop_not_allowed_in_current_state");
             return reject_rpc_command("stop", "stop_not_allowed_in_current_state");
         }
 
+        spdlog::info("[ThingsBoardControlPlane] RPC stop completed: paused_task");
         return complete_rpc_command("stop", "paused_task");
     });
 
     cloud_->register_rpc("return", [this](const std::string& /*params*/) {
+        spdlog::info("[ThingsBoardControlPlane] RPC return received: state='{}'",
+                     supervisor_->current_state());
         if (!supervisor_->return_task()) {
+            spdlog::warn("[ThingsBoardControlPlane] RPC return rejected: return_not_allowed_in_current_state");
             return reject_rpc_command("return", "return_not_allowed_in_current_state");
         }
 
+        spdlog::info("[ThingsBoardControlPlane] RPC return completed: returning_to_home");
         return complete_rpc_command("return", "returning_to_home");
     });
 
     cloud_->register_rpc("terminate", [this](const std::string& /*params*/) {
+        spdlog::info("[ThingsBoardControlPlane] RPC terminate received: state='{}'",
+                     supervisor_->current_state());
         if (!supervisor_->terminate_task()) {
+            spdlog::warn("[ThingsBoardControlPlane] RPC terminate rejected: terminate_not_allowed_in_current_state");
             return reject_rpc_command("terminate", "terminate_not_allowed_in_current_state");
         }
 
+        spdlog::info("[ThingsBoardControlPlane] RPC terminate completed: terminated_task");
         return complete_rpc_command("terminate", "terminated_task");
     });
 
     cloud_->register_rpc("reset", [this, is_at_home](const std::string& /*params*/) {
         const bool at_home = is_at_home();
+        spdlog::info("[ThingsBoardControlPlane] RPC reset received: state='{}' at_home={}",
+                     supervisor_->current_state(),
+                     at_home);
         if (!supervisor_->reset_task(at_home)) {
             const std::string reason = !at_home ? "robot_not_at_home"
                                                 : "reset_not_allowed_in_current_state";
+            spdlog::warn("[ThingsBoardControlPlane] RPC reset rejected: {}", reason);
             return reject_rpc_command("reset", reason.c_str());
         }
 
+        spdlog::info("[ThingsBoardControlPlane] RPC reset completed: reset_to_idle");
         return complete_rpc_command("reset", "reset_to_idle");
     });
 }
@@ -146,6 +194,8 @@ void ThingsBoardControlPlane::publish_command_event(const char* event_name,
 }
 
 void ThingsBoardControlPlane::publish_business_telemetry() const {
+    // business telemetry 的业务真相完全来自 supervisor snapshot。
+    // ControlPlane 不再派生第二份平行状态，避免云端真相和本地真相分叉。
     const auto runtime_snap = supervisor_->snapshot();
     const size_t len = ThingsBoardJsonCodec::build_business_telemetry(
         runtime_snap, business_payload_buf_.data(), business_payload_buf_.size());
@@ -212,11 +262,28 @@ std::string ThingsBoardControlPlane::reject_rpc_command(const char* command_name
 
 std::string ThingsBoardControlPlane::complete_rpc_command(const char* command_name,
                                                           const char* completion_reason) {
+    spdlog::info("[ThingsBoardControlPlane] complete_rpc_command begin: command='{}' reason='{}'",
+                 command_name,
+                 completion_reason);
     const auto cmd_id = command_tracker_->accept(command_name, "");
+    spdlog::info("[ThingsBoardControlPlane] command accepted: command='{}' cmd_id={}",
+                 command_name,
+                 cmd_id);
     publish_command_event("command_accepted", *command_tracker_->active());
+    spdlog::info("[ThingsBoardControlPlane] command_accepted event published: command='{}'",
+                 command_name);
     command_tracker_->mark_running(cmd_id);
+    spdlog::info("[ThingsBoardControlPlane] command marked running: command='{}' cmd_id={}",
+                 command_name,
+                 cmd_id);
     command_tracker_->finish_success(cmd_id, completion_reason);
+    spdlog::info("[ThingsBoardControlPlane] command finished success: command='{}' cmd_id={} reason='{}'",
+                 command_name,
+                 cmd_id,
+                 completion_reason);
     publish_command_event("command_completed", *command_tracker_->last_completed());
+    spdlog::info("[ThingsBoardControlPlane] command_completed event published: command='{}'",
+                 command_name);
     return rpc_reply(true);
 }
 

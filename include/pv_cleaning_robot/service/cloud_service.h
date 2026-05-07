@@ -4,6 +4,7 @@
 #include <rapidjson/document.h>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include "pv_cleaning_robot/middleware/data_cache.h"
 #include "pv_cleaning_robot/middleware/event_bus.h"
@@ -12,12 +13,17 @@
 
 namespace robot::service {
 
-/// @brief 云端通信服务——遥测上报 + RPC 下行处理
+/// @brief 云端通信服务——遥测上报 + RPC / shared attributes 下行处理
 ///
 /// 负责：
-///   1. 定期从各 Service 收集 Status/Diagnostics 并通过 NetworkManager 上报
+///   1. 上报 telemetry / attributes
 ///   2. 订阅 ThingsBoard RPC request topic，分发到注册的 RPC 处理器
-///   3. 网络离线时将遥测写入 DataCache；网络恢复后回填上报
+///   3. 订阅 ThingsBoard shared attributes 下行，并把解析后的 JSON 回调给上层
+///   4. 网络离线时将 telemetry 写入 DataCache；网络恢复后回填上报
+///
+/// 当前它只负责协议路由和离线缓存，不负责业务判定：
+/// - 是否接受某个 RPC，由上层 ControlPlane / Supervisor 决定
+/// - shared attributes 是否接受，由 ThingsBoardConfigManager 决定
 class CloudService : public middleware::IRunnable {
    public:
     using RpcHandler = std::function<std::string(const std::string& params)>;
@@ -27,6 +33,8 @@ class CloudService : public middleware::IRunnable {
     struct Topics {
         std::string telemetry{"v1/devices/me/telemetry"};
         std::string attributes{"v1/devices/me/attributes"};
+        std::string attributes_request_prefix{"v1/devices/me/attributes/request/"};
+        std::string attributes_response{"v1/devices/me/attributes/response/+"};
         std::string rpc_request{"v1/devices/me/rpc/request/+"};
         std::string rpc_response_prefix{"v1/devices/me/rpc/response/"};
     };
@@ -54,6 +62,11 @@ class CloudService : public middleware::IRunnable {
     /// @note 建议在 NetworkManager::connect() 之前调用，避免启动阶段首个共享属性消息丢失
     void subscribe_shared_attributes(AttrCallback cb);
 
+    /// 主动请求当前 shared attributes 快照。
+    /// @param shared_keys 首版关心的 shared attribute 键集合；为空时不发送请求。
+    /// @note 这用于弥补“设备离线期间平台改过 shared attributes，但重连后平台不一定主动补推”。
+    bool request_shared_attributes_snapshot(const std::vector<std::string>& shared_keys);
+
     /// 尝试将 DataCache 中的积压数据上传（网络恢复时调用）
     void flush_cache();
 
@@ -61,6 +74,7 @@ class CloudService : public middleware::IRunnable {
 
    private:
     void on_rpc_message(const std::string& topic, const std::string& payload);
+    void on_shared_attributes_response_message(const std::string& payload);
     void on_shared_attributes_message(const std::string& payload);
 
     /// RPC params 大小上限（防止超大 payload 耗尽栈空间）

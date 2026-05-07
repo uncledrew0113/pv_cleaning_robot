@@ -25,6 +25,7 @@
 #include <atomic>
 #include <catch2/catch.hpp>
 #include <chrono>
+#include <cstdlib>
 #include <fstream>
 #include <rapidjson/document.h>
 #include <rapidjson/stringbuffer.h>
@@ -38,6 +39,17 @@
 using namespace std::chrono_literals;
 
 namespace {
+
+bool real_tb_test_enabled()
+{
+    const char* value = std::getenv("TB_REAL_TEST");
+    if (!value) {
+        return false;
+    }
+    const std::string env_value(value);
+    return !(env_value.empty() || env_value == "0" || env_value == "false" ||
+             env_value == "FALSE");
+}
 
 rapidjson::Document parse_json_line(const std::string& line)
 {
@@ -163,6 +175,123 @@ std::string build_final_summary_json(int total_segs,
 }
 
 }  // namespace
+
+// ────────────────────────────────────────────────────────────────────────────
+// [hw_system][tb_rpc_runtime] — 真实硬件 + 真实 ThingsBoard RPC 驱动状态变化
+// ────────────────────────────────────────────────────────────────────────────
+TEST_CASE("System（真实硬件）ThingsBoard RPC start/stop/return 驱动运行态变化",
+          "[hw_system][tb_rpc_runtime]") {
+    if (!real_tb_test_enabled()) {
+        SUCCEED("Set TB_REAL_TEST=1 to enable real ThingsBoard hardware/runtime RPC test");
+        return;
+    }
+
+    hw::ThingsBoardRuntimeFixture f;
+    REQUIRE(f.init_thingsboard_runtime());
+    REQUIRE(f.tb_control != nullptr);
+    REQUIRE(f.supervisor != nullptr);
+    REQUIRE(f.fsm->current_state() == "Idle");
+
+    spdlog::warn("[hw_system][tb_rpc_runtime] ThingsBoard 平台准备：");
+    spdlog::warn("[hw_system][tb_rpc_runtime] 1. 确认设备在线");
+    spdlog::warn("[hw_system][tb_rpc_runtime] 2. 打开最新 telemetry，关注 device_state/task_state");
+    spdlog::warn("[hw_system][tb_rpc_runtime] 3. 准备依次发送 RPC: start -> stop -> return");
+    spdlog::warn("[hw_system][tb_rpc_runtime] 4. return 之后，请人工触发【尾端/回家限位】让状态进入 Charging");
+    spdlog::warn("[hw_system][tb_rpc_runtime] 当前 at_home={} at_front={}",
+                 f.is_at_home(),
+                 f.is_at_front());
+
+    REQUIRE(f.is_at_home());
+    f.tb_control->publish_startup_attributes();
+    f.tb_control->publish_business_telemetry();
+
+    spdlog::warn("[hw_system][tb_rpc_runtime] ACTION REQUIRED: 在 ThingsBoard 平台发送 RPC `start`");
+    REQUIRE(f.wait_state_with_thingsboard({"CleanFwd", "CleanReturn"}, std::chrono::seconds(120)));
+    {
+        const auto snap = f.supervisor->snapshot();
+        CHECK((snap.device_state == "CleanFwd" || snap.device_state == "CleanReturn"));
+        CHECK(snap.task_state == "RunningTask");
+    }
+
+    spdlog::warn("[hw_system][tb_rpc_runtime] ACTION REQUIRED: 在 ThingsBoard 平台发送 RPC `stop`");
+    REQUIRE(f.wait_state_with_thingsboard({"Paused"}, std::chrono::seconds(120)));
+    {
+        const auto snap = f.supervisor->snapshot();
+        CHECK(snap.device_state == "Paused");
+        CHECK(snap.task_state == "PausedTask");
+    }
+
+    spdlog::warn(
+        "[hw_system][tb_rpc_runtime] ACTION REQUIRED: 在 ThingsBoard 平台发送 RPC `return`");
+    REQUIRE(f.wait_state_with_thingsboard({"Returning"}, std::chrono::seconds(120)));
+    {
+        const auto snap = f.supervisor->snapshot();
+        CHECK(snap.device_state == "Returning");
+        CHECK(snap.task_state == "ReturningTask");
+    }
+
+    spdlog::warn("[hw_system][tb_rpc_runtime] ACTION REQUIRED: 人工触发【尾端/回家限位】");
+    REQUIRE(f.wait_state_with_thingsboard({"Charging"}, std::chrono::seconds(180)));
+    {
+        const auto snap = f.supervisor->snapshot();
+        CHECK(snap.device_state == "Charging");
+        CHECK(snap.task_state == "ChargingTask");
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// [hw_system][tb_terminate_reset] — 真实硬件 + 真实 ThingsBoard terminate/reset
+// ────────────────────────────────────────────────────────────────────────────
+TEST_CASE("System（真实硬件）ThingsBoard RPC terminate/reset 驱动结束与复位",
+          "[hw_system][tb_terminate_reset]") {
+    if (!real_tb_test_enabled()) {
+        SUCCEED("Set TB_REAL_TEST=1 to enable real ThingsBoard terminate/reset test");
+        return;
+    }
+
+    hw::ThingsBoardRuntimeFixture f;
+    REQUIRE(f.init_thingsboard_runtime());
+    REQUIRE(f.tb_control != nullptr);
+    REQUIRE(f.supervisor != nullptr);
+    REQUIRE(f.fsm->current_state() == "Idle");
+
+    spdlog::warn("[hw_system][tb_terminate_reset] ThingsBoard 平台准备：");
+    spdlog::warn("[hw_system][tb_terminate_reset] 1. 确认设备在线");
+    spdlog::warn("[hw_system][tb_terminate_reset] 2. 准备依次发送 RPC: start -> stop -> terminate -> reset");
+    spdlog::warn("[hw_system][tb_terminate_reset] 3. reset 之前，请确保机器人回到【尾端/回家位】或手动压住回家限位");
+    spdlog::warn("[hw_system][tb_terminate_reset] 当前 at_home={} at_front={}",
+                 f.is_at_home(),
+                 f.is_at_front());
+
+    REQUIRE(f.is_at_home());
+    f.tb_control->publish_startup_attributes();
+    f.tb_control->publish_business_telemetry();
+
+    spdlog::warn(
+        "[hw_system][tb_terminate_reset] ACTION REQUIRED: 在 ThingsBoard 平台发送 RPC `start`");
+    REQUIRE(f.wait_state_with_thingsboard({"CleanFwd", "CleanReturn"}, std::chrono::seconds(120)));
+
+    spdlog::warn(
+        "[hw_system][tb_terminate_reset] ACTION REQUIRED: 在 ThingsBoard 平台发送 RPC `stop`");
+    REQUIRE(f.wait_state_with_thingsboard({"Paused"}, std::chrono::seconds(120)));
+
+    spdlog::warn(
+        "[hw_system][tb_terminate_reset] ACTION REQUIRED: 在 ThingsBoard 平台发送 RPC `terminate`");
+    REQUIRE(f.wait_state_with_thingsboard({"Terminated"}, std::chrono::seconds(120)));
+    {
+        const auto snap = f.supervisor->snapshot();
+        CHECK(snap.device_state == "Terminated");
+        CHECK(snap.task_state == "TerminatedTask");
+    }
+
+    spdlog::warn("[hw_system][tb_terminate_reset] ACTION REQUIRED: 确保 at_home=true，然后在 ThingsBoard 平台发送 RPC `reset`");
+    REQUIRE(f.wait_state_with_thingsboard({"Idle"}, std::chrono::seconds(180)));
+    {
+        const auto snap = f.supervisor->snapshot();
+        CHECK(snap.device_state == "Idle");
+        CHECK(snap.task_state == "IdleTask");
+    }
+}
 
 // ────────────────────────────────────────────────────────────────────────────
 // [hw_system][imu_gps_health_only] — 仅 IMU/GPS 持续采集并由 HealthService 落盘

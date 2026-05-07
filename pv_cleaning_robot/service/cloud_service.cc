@@ -1,6 +1,8 @@
 #include "pv_cleaning_robot/service/cloud_service.h"
 
+#include <atomic>
 #include <cstddef>
+#include <cstdint>
 
 #include <rapidjson/document.h>
 #include <rapidjson/stringbuffer.h>
@@ -13,6 +15,7 @@ namespace {
 
 constexpr size_t kSharedAttrsPoolBytes = 4096;
 constexpr size_t kRpcPoolBytes = 4096;
+std::atomic<uint64_t> g_attr_request_id{1};
 
 std::string stringify_json_value(const rapidjson::Value& value)
 {
@@ -41,15 +44,23 @@ CloudService::CloudService(std::shared_ptr<middleware::NetworkManager> network,
     , cache_(std::move(cache))
     , topics_(std::move(topics))
 {
-    // 订阅 RPC 下行
+    // ThingsBoard RPC 下行:
+    //   v1/devices/me/rpc/request/{request_id}
+    // CloudService 只负责 topic 路由、JSON 解析和 response topic 回写。
     network_->subscribe(topics_.rpc_request,
         [this](const std::string& t, const std::string& p) {
             on_rpc_message(t, p);
         });
-    // 订阅共享属性下行（服务端推送，初始接入时也会收到全量属性）
+    // ThingsBoard shared attributes 下行:
+    //   v1/devices/me/attributes
+    // 服务端推送以及设备初始接入时的全量属性都会走这里。
     network_->subscribe(topics_.attributes,
         [this](const std::string& /*t*/, const std::string& p) {
             on_shared_attributes_message(p);
+        });
+    network_->subscribe(topics_.attributes_response,
+        [this](const std::string& /*t*/, const std::string& p) {
+            on_shared_attributes_response_message(p);
         });
 }
 
@@ -80,6 +91,38 @@ void CloudService::subscribe_shared_attributes(AttrCallback cb)
     attr_cb_ = std::move(cb);
 }
 
+bool CloudService::request_shared_attributes_snapshot(const std::vector<std::string>& shared_keys)
+{
+    if (shared_keys.empty()) {
+        return false;
+    }
+
+    rapidjson::StringBuffer buffer;
+    rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+    writer.StartObject();
+    writer.Key("sharedKeys");
+    std::string joined_keys;
+    for (size_t i = 0; i < shared_keys.size(); ++i) {
+        if (shared_keys[i].empty()) {
+            continue;
+        }
+        if (!joined_keys.empty()) {
+            joined_keys.push_back(',');
+        }
+        joined_keys += shared_keys[i];
+    }
+    if (joined_keys.empty()) {
+        return false;
+    }
+    writer.String(joined_keys.c_str(), static_cast<rapidjson::SizeType>(joined_keys.size()));
+    writer.EndObject();
+
+    const auto request_id = g_attr_request_id.fetch_add(1, std::memory_order_relaxed);
+    return network_->publish(
+        topics_.attributes_request_prefix + std::to_string(request_id),
+        std::string(buffer.GetString(), buffer.GetSize()));
+}
+
 void CloudService::flush_cache()
 {
     if (!cache_ || !network_->is_connected()) return;
@@ -102,6 +145,41 @@ void CloudService::update()
     flush_cache();
 }
 
+void CloudService::on_shared_attributes_response_message(const std::string& payload)
+{
+    AttrCallback cb;
+    {
+        std::lock_guard<std::mutex> lk(attr_cb_mtx_);
+        cb = attr_cb_;
+    }
+    if (!cb) return;
+
+    try {
+        alignas(std::max_align_t) unsigned char pool_buffer[kSharedAttrsPoolBytes];
+        rapidjson::MemoryPoolAllocator<rapidjson::CrtAllocator> allocator(
+            pool_buffer, sizeof(pool_buffer));
+        rapidjson::Document document(&allocator);
+        document.Parse(payload.c_str(), payload.size());
+        if (document.HasParseError() || !document.IsObject()) {
+            throw std::runtime_error("invalid shared attributes response JSON");
+        }
+
+        const auto shared_it = document.FindMember("shared");
+        if (shared_it == document.MemberEnd() || !shared_it->value.IsObject()) {
+            spdlog::warn("[CloudService] Shared attributes response missing object field 'shared'");
+            return;
+        }
+
+        rapidjson::Document shared_attrs;
+        shared_attrs.SetObject();
+        shared_attrs.CopyFrom(shared_it->value, shared_attrs.GetAllocator());
+        cb(shared_attrs);
+    } catch (const std::exception& ex) {
+        spdlog::warn("[CloudService] Failed to process shared attributes response payload: {}",
+                     ex.what());
+    }
+}
+
 void CloudService::on_shared_attributes_message(const std::string& payload)
 {
     AttrCallback cb;
@@ -112,6 +190,8 @@ void CloudService::on_shared_attributes_message(const std::string& payload)
     if (!cb) return;
 
     try {
+        // shared attributes 是热路径入口之一。这里优先使用局部 pool，
+        // 常见小包不再向通用 heap 反复申请碎片化的小块内存。
         alignas(std::max_align_t) unsigned char pool_buffer[kSharedAttrsPoolBytes];
         rapidjson::MemoryPoolAllocator<rapidjson::CrtAllocator> allocator(
             pool_buffer, sizeof(pool_buffer));
@@ -129,6 +209,7 @@ void CloudService::on_shared_attributes_message(const std::string& payload)
 void CloudService::on_rpc_message(const std::string& topic,
                                   const std::string& payload)
 {
+    spdlog::info("[CloudService] RPC message arrived: topic='{}' payload={}", topic, payload);
     // ThingsBoard RPC topic: v1/devices/me/rpc/request/{request_id}
     // 从 topic 末尾提取 request_id
     std::string request_id;
@@ -145,6 +226,7 @@ void CloudService::on_rpc_message(const std::string& topic,
 
     std::string method;
     std::string params;
+    // RPC 请求和 shared attributes 一样，优先走局部 pool，减少 parse 热路径上的 heap churn。
     alignas(std::max_align_t) unsigned char pool_buffer[kRpcPoolBytes];
     rapidjson::MemoryPoolAllocator<rapidjson::CrtAllocator> allocator(
         pool_buffer, sizeof(pool_buffer));
@@ -172,12 +254,27 @@ void CloudService::on_rpc_message(const std::string& topic,
             spdlog::warn("[CloudService] Rejected unknown RPC method: {}", method);
             return;
         }
-        try { response = it->second(params); } catch (...) {}
+        spdlog::info("[CloudService] invoking RPC handler: method='{}' params={}", method, params);
+        try {
+            response = it->second(params);
+            spdlog::info("[CloudService] RPC handler returned: method='{}' response={}",
+                         method,
+                         response);
+        } catch (...) {
+            spdlog::warn("[CloudService] RPC handler threw exception: method='{}'", method);
+        }
     }
 
     // 回复
     if (!request_id.empty()) {
-        network_->publish(topics_.rpc_response_prefix + request_id, response);
+        const auto response_topic = topics_.rpc_response_prefix + request_id;
+        spdlog::info("[CloudService] publishing RPC response: topic='{}' payload={}",
+                     response_topic,
+                     response);
+        const bool ok = network_->publish(response_topic, response);
+        spdlog::info("[CloudService] published RPC response: topic='{}' ok={}",
+                     response_topic,
+                     ok);
     }
 }
 

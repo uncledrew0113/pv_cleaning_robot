@@ -373,6 +373,7 @@ int main() {
     net_mgr->connect();
 
     if (net_mgr->is_connected()) {
+        tb_control->request_shared_attributes_snapshot();
         if (cfg.last_load_used_backup()) {
             tb_control->publish_backup_fallback_event();
         }

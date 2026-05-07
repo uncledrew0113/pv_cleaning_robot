@@ -125,6 +125,7 @@ add_executable(unit_tests
   integration/task_chain_test.cc
   integration/system_integration_test.cc
   integration/thingsboard_real_integration_test.cc
+  integration/thingsboard_runtime_mock_integration_test.cc
 
   ${COMMON_SRCS}
 )

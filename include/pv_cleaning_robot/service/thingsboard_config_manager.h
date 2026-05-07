@@ -116,11 +116,29 @@ struct SharedAttrApplyResult {
     std::string reason;
 };
 
+/// @brief ThingsBoard 共享属性配置管理器
+///
+/// 职责边界：
+/// - 解析并校验 shared attributes
+/// - 维护 active / pending 两份运行配置视图
+/// - 管理 config.json / config.pending.json 的持久化
+/// - 将 schedule 立即同步到 SchedulerService
+///
+/// 当前首版限制：
+/// - `passes` 只允许正整数
+/// - `parking_policy=both` 明确拒绝
+/// - 任务相关参数先进 `pending`，下一次任务启动前再提升到 `active`
+/// - 当前没有 shared attributes 版本合并机制；谁最后到达并通过校验，谁覆盖当前视图
+///   - 设备上线后会主动请求一次 shared attributes 快照
+///   - 如果平台随后再次修改，后到达的更新会覆盖先到达的快照结果
 class ThingsBoardConfigManager {
 public:
     ThingsBoardConfigManager(ConfigService& config, SchedulerService& scheduler);
 
+    /// 应用服务端 shared attributes。
+    /// 返回值只表示“当前 release 规则下是否接受”，不会吞掉拒绝原因。
     SharedAttrApplyResult apply_shared_attributes(const rapidjson::Value& attrs);
+    /// 将 pending 提升为 active，并清空 pending 持久化文件。
     bool promote_pending_to_active();
 
     TbRuntimeConfig active_config() const;

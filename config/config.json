@@ -68,7 +68,7 @@
     "ca_cert_path": "",
     "client_cert_path": "config/pv_device_test1.pem",
     "client_key_path": "config/pv_device_test1.key",
-    "insecure_skip_server_name_check": false,
+    "insecure_skip_server_name_check": true,
     "keep_alive_s": 60,
     "qos": 1
     },

@@ -54,7 +54,8 @@ rapidjson::Document parse_json(const std::string& text)
 
 struct MockTransport final : INetworkTransport {
     MessageCallback rpc_cb;
-    MessageCallback attr_cb;
+    MessageCallback attr_update_cb;
+    MessageCallback attr_response_cb;
     std::vector<std::pair<std::string, std::string>> published;
     bool connected{false};
 
@@ -69,8 +70,10 @@ struct MockTransport final : INetworkTransport {
         return true;
     }
     bool subscribe(const std::string& topic, MessageCallback cb) override {
-        if (topic.find("attributes") != std::string::npos) {
-            attr_cb = std::move(cb);
+        if (topic == "v1/devices/me/attributes") {
+            attr_update_cb = std::move(cb);
+        } else if (topic == "v1/devices/me/attributes/response/+") {
+            attr_response_cb = std::move(cb);
         } else {
             rpc_cb = std::move(cb);
         }
@@ -78,8 +81,8 @@ struct MockTransport final : INetworkTransport {
     }
 
     void emit_attributes(const std::string& payload) {
-        if (attr_cb) {
-            attr_cb("v1/devices/me/attributes", payload);
+        if (attr_update_cb) {
+            attr_update_cb("v1/devices/me/attributes", payload);
         }
     }
 
@@ -237,6 +240,19 @@ TEST_CASE("ThingsBoardControlPlane publishes startup attributes",
     CHECK(std::string(j["device_id"].GetString()) == "pv_robot_test_001");
     REQUIRE(j["supported_rpc_methods"].IsArray());
     CHECK(std::string(j["config_schema_version"].GetString()) == "thingsboard-v1");
+}
+
+TEST_CASE("ThingsBoardControlPlane requests release shared attribute snapshot",
+          "[service][tb_control_plane]") {
+    Fixture f;
+
+    f.control_plane->request_shared_attributes_snapshot();
+
+    REQUIRE_FALSE(f.mqtt->published.empty());
+    const auto& [topic, payload] = f.mqtt->published.back();
+    CHECK(topic.find("v1/devices/me/attributes/request/") == 0);
+    CHECK(payload ==
+          R"({"sharedKeys":"passes,clean_speed_rpm,return_speed_rpm,brush_rpm,parking_policy,charging_side,schedules"})");
 }
 
 TEST_CASE("ThingsBoardControlPlane publishes backup fallback event",

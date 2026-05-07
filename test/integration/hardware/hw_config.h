@@ -19,6 +19,7 @@
 #include <chrono>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <spdlog/spdlog.h>
 #include <string>
 #include <thread>
@@ -39,19 +40,27 @@
 #include "pv_cleaning_robot/device/walk_motor_group.h"
 
 // Middleware
+#include "pv_cleaning_robot/middleware/data_cache.h"
 #include "pv_cleaning_robot/middleware/event_bus.h"
+#include "pv_cleaning_robot/middleware/mqtt_transport.h"
+#include "pv_cleaning_robot/middleware/network_manager.h"
 #include "pv_cleaning_robot/middleware/safety_monitor.h"
 
 // Service
 #include "pv_cleaning_robot/service/cloud_service.h"
+#include "pv_cleaning_robot/service/command_tracker.h"
 #include "pv_cleaning_robot/service/fault_service.h"
 #include "pv_cleaning_robot/service/health_service.h"
 #include "pv_cleaning_robot/service/motion_service.h"
 #include "pv_cleaning_robot/service/nav_service.h"
+#include "pv_cleaning_robot/service/scheduler_service.h"
+#include "pv_cleaning_robot/service/thingsboard_config_manager.h"
+#include "pv_cleaning_robot/service/thingsboard_control_plane.h"
 
 // App
 #include "pv_cleaning_robot/app/fault_handler.h"
 #include "pv_cleaning_robot/app/robot_fsm.h"
+#include "pv_cleaning_robot/app/robot_supervisor.h"
 #include "pv_cleaning_robot/app/watchdog_mgr.h"
 
 // Mock（滚刷电机未安装）
@@ -199,6 +208,66 @@ inline HwParams load_hw_test_config() {
                      e.what());
     }
     return p;
+}
+
+struct TbRuntimePaths {
+    std::filesystem::path repo_root;
+    std::filesystem::path config_path;
+};
+
+inline std::optional<TbRuntimePaths> find_tb_runtime_paths() {
+    auto current = std::filesystem::current_path();
+    for (int i = 0; i < 6; ++i) {
+        const auto candidate = current / "config" / "config.json";
+        if (std::filesystem::exists(candidate)) {
+            return TbRuntimePaths{current, candidate};
+        }
+        if (!current.has_parent_path()) {
+            break;
+        }
+        current = current.parent_path();
+    }
+    return std::nullopt;
+}
+
+inline std::filesystem::path resolve_tb_repo_relative(const std::filesystem::path& repo_root,
+                                                      const std::string& path) {
+    if (path.empty()) {
+        return {};
+    }
+    std::filesystem::path p(path);
+    if (p.is_absolute()) {
+        return p;
+    }
+    return repo_root / p;
+}
+
+inline robot::middleware::MqttTransport::Config build_tb_mqtt_config(
+    robot::service::ConfigService& cfg, const std::filesystem::path& repo_root)
+{
+    robot::middleware::MqttTransport::Config mqtt_cfg;
+    mqtt_cfg.broker_uri = cfg.get<std::string>("network.mqtt.broker_uri", "");
+    mqtt_cfg.client_id = cfg.get<std::string>("network.mqtt.client_id", "pv_robot_001");
+    mqtt_cfg.username = cfg.get<std::string>("network.mqtt.username", "");
+    mqtt_cfg.password = cfg.get<std::string>("network.mqtt.password", "");
+    mqtt_cfg.tls_enabled = cfg.get<bool>("network.mqtt.tls_enabled", false);
+    mqtt_cfg.ca_cert_path =
+        resolve_tb_repo_relative(repo_root, cfg.get<std::string>("network.mqtt.ca_cert_path", ""))
+            .string();
+    mqtt_cfg.client_cert_path = resolve_tb_repo_relative(
+                                    repo_root,
+                                    cfg.get<std::string>("network.mqtt.client_cert_path", ""))
+                                    .string();
+    mqtt_cfg.client_key_path = resolve_tb_repo_relative(
+                                   repo_root,
+                                   cfg.get<std::string>("network.mqtt.client_key_path", ""))
+                                   .string();
+    mqtt_cfg.insecure_skip_server_name_check =
+        cfg.get<bool>("network.mqtt.insecure_skip_server_name_check", false);
+    mqtt_cfg.keep_alive_sec = cfg.get<int>("network.mqtt.keep_alive_s", 60);
+    mqtt_cfg.connect_timeout_sec = cfg.get<int>("network.mqtt.connect_timeout_s", 10);
+    mqtt_cfg.qos = cfg.get<int>("network.mqtt.qos", 1);
+    return mqtt_cfg;
 }
 
 // ── DeviceFixture：Driver + Device 层（限位 / 电机单元测试使用）────────────
@@ -547,6 +616,132 @@ struct ImuGpsHealthFixture {
             gps->close();
         if (imu)
             imu->close();
+    }
+};
+
+// ── ThingsBoardRuntimeFixture：真实硬件 + 真实 ThingsBoard 运行时联调 ─────────
+struct ThingsBoardRuntimeFixture : FullSystemFixture {
+    std::optional<TbRuntimePaths> tb_paths;
+    std::string tb_cache_path{"/tmp/hw_tb_runtime_cache.jsonl"};
+    std::unique_ptr<robot::service::ConfigService> tb_cfg_file;
+    robot::service::SchedulerService scheduler;
+    std::shared_ptr<robot::middleware::MqttTransport> mqtt;
+    std::shared_ptr<robot::middleware::NetworkManager> net_mgr;
+    std::shared_ptr<robot::middleware::DataCache> data_cache;
+    std::shared_ptr<robot::service::CloudService> cloud;
+    std::shared_ptr<robot::service::ThingsBoardConfigManager> tb_cfg;
+    std::shared_ptr<robot::service::CommandTracker> command_tracker;
+    std::shared_ptr<robot::app::RobotSupervisor> supervisor;
+    std::shared_ptr<robot::service::ThingsBoardControlPlane> tb_control;
+
+    ThingsBoardRuntimeFixture()
+        : FullSystemFixture(false)
+    {}
+
+    bool is_at_home() const {
+        return rear_sw && !rear_sw->read_current_level();
+    }
+
+    bool is_at_front() const {
+        return front_sw && !front_sw->read_current_level();
+    }
+
+    bool init_thingsboard_runtime(const std::string& health_jsonl_path = "") {
+        tb_paths = find_tb_runtime_paths();
+        if (!tb_paths.has_value()) {
+            spdlog::error("[ThingsBoardRuntimeFixture] 未找到 config/config.json");
+            return false;
+        }
+
+        tb_cfg_file =
+            std::make_unique<robot::service::ConfigService>(tb_paths->config_path.string());
+        if (!tb_cfg_file->load()) {
+            spdlog::error("[ThingsBoardRuntimeFixture] 配置加载失败: {}",
+                          tb_paths->config_path.string());
+            return false;
+        }
+
+        if (!FullSystemFixture::init(health_jsonl_path)) {
+            return false;
+        }
+
+        std::filesystem::remove(tb_cache_path);
+        data_cache = std::make_shared<robot::middleware::DataCache>(tb_cache_path);
+        if (!data_cache->open()) {
+            spdlog::error("[ThingsBoardRuntimeFixture] DataCache open 失败");
+            return false;
+        }
+
+        auto mqtt_cfg = build_tb_mqtt_config(*tb_cfg_file, tb_paths->repo_root);
+        if (mqtt_cfg.broker_uri.empty()) {
+            spdlog::error("[ThingsBoardRuntimeFixture] network.mqtt.broker_uri 为空");
+            return false;
+        }
+
+        mqtt = std::make_shared<robot::middleware::MqttTransport>(mqtt_cfg);
+        net_mgr = std::make_shared<robot::middleware::NetworkManager>(
+            mqtt, nullptr, robot::middleware::NetworkManager::Mode::MQTT_ONLY);
+        cloud = std::make_shared<robot::service::CloudService>(net_mgr, data_cache);
+        tb_cfg =
+            std::make_shared<robot::service::ThingsBoardConfigManager>(*tb_cfg_file, scheduler);
+        command_tracker = std::make_shared<robot::service::CommandTracker>();
+        supervisor = std::make_shared<robot::app::RobotSupervisor>(
+            fsm, tb_cfg, command_tracker, fault, nav);
+        tb_control = std::make_shared<robot::service::ThingsBoardControlPlane>(
+            *tb_cfg_file, cloud, tb_cfg, command_tracker, supervisor);
+
+        tb_control->subscribe_shared_attributes();
+        tb_control->register_rpc_handlers(
+            [this] { return is_at_home(); }, [this] { return is_at_front(); });
+
+        if (!net_mgr->connect()) {
+            return false;
+        }
+        tb_control->request_shared_attributes_snapshot();
+        return true;
+    }
+
+    bool wait_state_with_thingsboard(const std::vector<std::string>& expected,
+                                     std::chrono::seconds timeout,
+                                     std::chrono::milliseconds poll_period =
+                                         std::chrono::milliseconds(500)) {
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
+        while (std::chrono::steady_clock::now() < deadline) {
+            const auto state = fsm->current_state();
+            for (const auto& item : expected) {
+                if (state == item) {
+                    return true;
+                }
+            }
+            if (bms) {
+                bms->update();
+            }
+            if (health) {
+                health->update();
+            }
+            if (tb_control) {
+                tb_control->publish_business_telemetry();
+            }
+            std::this_thread::sleep_for(poll_period);
+        }
+
+        const auto final_state = fsm->current_state();
+        for (const auto& item : expected) {
+            if (final_state == item) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    ~ThingsBoardRuntimeFixture() {
+        if (net_mgr) {
+            net_mgr->disconnect();
+        }
+        if (data_cache) {
+            data_cache->close();
+        }
+        std::filesystem::remove(tb_cache_path);
     }
 };
 

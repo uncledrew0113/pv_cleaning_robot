@@ -15,7 +15,8 @@ namespace {
 
 struct MockTransport final : INetworkTransport {
     MessageCallback rpc_cb;
-    MessageCallback attr_cb;
+    MessageCallback attr_update_cb;
+    MessageCallback attr_response_cb;
     std::string last_publish_topic;
     std::string last_publish_payload;
 
@@ -28,8 +29,10 @@ struct MockTransport final : INetworkTransport {
         return true;
     }
     bool subscribe(const std::string& topic, MessageCallback cb) override {
-        if (topic.find("attributes") != std::string::npos) {
-            attr_cb = std::move(cb);
+        if (topic == "v1/devices/me/attributes") {
+            attr_update_cb = std::move(cb);
+        } else if (topic == "v1/devices/me/attributes/response/+") {
+            attr_response_cb = std::move(cb);
         } else {
             rpc_cb = std::move(cb);
         }
@@ -37,8 +40,14 @@ struct MockTransport final : INetworkTransport {
     }
 
     void emit_attributes(const std::string& payload) {
-        if (attr_cb) {
-            attr_cb("v1/devices/me/attributes", payload);
+        if (attr_update_cb) {
+            attr_update_cb("v1/devices/me/attributes", payload);
+        }
+    }
+
+    void emit_attributes_response(const std::string& request_id, const std::string& payload) {
+        if (attr_response_cb) {
+            attr_response_cb("v1/devices/me/attributes/response/" + request_id, payload);
         }
     }
 
@@ -90,4 +99,42 @@ TEST_CASE("CloudService RPC parsing preserves params JSON string for handler",
     REQUIRE(handler_params == R"({"speed":80,"mode":"clean"})");
     REQUIRE(mqtt->last_publish_topic == "v1/devices/me/rpc/response/42");
     REQUIRE(mqtt->last_publish_payload == R"({"ok":true})");
+}
+
+TEST_CASE("CloudService requests shared attributes snapshot using ThingsBoard topics",
+          "[service][cloud]") {
+    auto mqtt = std::make_shared<MockTransport>();
+    auto net = std::make_shared<NetworkManager>(mqtt, nullptr, NetworkManager::Mode::MQTT_ONLY);
+    auto cache = std::make_shared<DataCache>("/tmp/cloud_service_attr_request_test.jsonl");
+    CloudService cloud(net, cache);
+
+    REQUIRE(cloud.request_shared_attributes_snapshot({"passes", "clean_speed_rpm", "charging_side"}));
+    REQUIRE(mqtt->last_publish_topic.find("v1/devices/me/attributes/request/") == 0);
+    REQUIRE(mqtt->last_publish_payload ==
+            R"({"sharedKeys":"passes,clean_speed_rpm,charging_side"})");
+}
+
+TEST_CASE("CloudService shared attributes response routes nested shared object to callback",
+          "[service][cloud]") {
+    auto mqtt = std::make_shared<MockTransport>();
+    auto net = std::make_shared<NetworkManager>(mqtt, nullptr, NetworkManager::Mode::MQTT_ONLY);
+    auto cache = std::make_shared<DataCache>("/tmp/cloud_service_attr_response_test.jsonl");
+    CloudService cloud(net, cache);
+
+    int call_count = 0;
+    cloud.subscribe_shared_attributes([&](const rapidjson::Document& attrs) {
+        REQUIRE(attrs.IsObject());
+        const auto passes_it = attrs.FindMember("passes");
+        const auto side_it = attrs.FindMember("charging_side");
+        REQUIRE(passes_it != attrs.MemberEnd());
+        REQUIRE(side_it != attrs.MemberEnd());
+        REQUIRE(passes_it->value.GetInt() == 3);
+        REQUIRE(std::string(side_it->value.GetString()) == "terminal_b");
+        ++call_count;
+    });
+
+    mqtt->emit_attributes_response(
+        "7", R"({"shared":{"passes":3,"charging_side":"terminal_b"}})");
+
+    REQUIRE(call_count == 1);
 }

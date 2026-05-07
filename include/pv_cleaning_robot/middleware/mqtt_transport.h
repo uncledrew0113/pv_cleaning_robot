@@ -49,6 +49,17 @@ inline bool mqtt_topic_matches(const std::string& filter, const std::string& top
 }  // namespace detail
 
 /// @brief MQTT 传输层（paho-mqtt-cpp，QoS=1，持久会话）
+///
+/// 当前主要用于 ThingsBoard MQTT 接入。
+/// 支持：
+/// - 明文 TCP
+/// - TLS + CA 校验
+/// - TLS + 客户端证书/私钥
+///
+/// 注意：
+/// `insecure_skip_server_name_check` 仅用于现场调试。当服务端证书的
+/// CN/SAN 与 broker_uri 中使用的 IP/主机名不匹配时，可临时绕过该校验；
+/// 正式上线应恢复为 false，并改用匹配证书身份的域名或证书。
 class MqttTransport : public INetworkTransport {
 public:
     struct Config {
@@ -80,6 +91,7 @@ public:
 
 private:
     friend class MqttCallback;  // 定义在 mqtt_transport.cc，授权访问私有成员
+    void subscribe_all_registered_topics();
 
     Config cfg_;
     std::unique_ptr<mqtt::async_client> client_;
@@ -87,6 +99,7 @@ private:
     std::unordered_map<std::string, MessageCallback> subscriptions_;
     mutable std::mutex sub_mtx_;
     std::atomic<bool> connected_{false};
+    std::atomic<bool> initial_connect_completed_{false};
 };
 
 } // namespace robot::middleware

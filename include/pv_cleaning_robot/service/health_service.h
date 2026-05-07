@@ -18,11 +18,15 @@ class logger;
 
 namespace robot::service {
 
-/// @brief 遥测上报服务（HEALTH / DIAGNOSTICS 双模式，1 Hz）
+/// @brief 遥测上报服务（HEALTH / DIAGNOSTICS 双模式）
 ///
 /// HEALTH 模式（生产）：精简 Status 字段，适合 4G/LoRaWAN 低带宽场景。
 /// DIAGNOSTICS 模式（开发）：完整 Diagnostics 字段，便于快速定位问题。
 /// 通过 config.json 的 diagnostics.mode 字段在启动时选择，无需更换类。
+///
+/// 实际上报频率不在本类内部固定，而是由外部 ThreadExecutor 调度决定。
+/// 当前主程序会根据 RobotSupervisor 的运行态在 active / idle 两档周期之间切换，
+/// 因此 Health telemetry 和 business telemetry 会一起跟随该周期变化。
 ///
 /// 当 local_log_path 非空时，update() 在每次上报时额外把 JSON payload 以
 /// JSONL 格式追加写入本地文件，完全独立于 MQTT/LoRaWAN，离线测试阶段也可用。
