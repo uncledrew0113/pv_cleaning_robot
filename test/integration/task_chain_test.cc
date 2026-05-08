@@ -65,9 +65,10 @@ namespace fs = std::filesystem;
 // 完整任务链构建辅助
 // ────────────────────────────────────────────────────────────────
 struct TaskChainFixture {
-    std::string config_path{"/tmp/test_task_chain_supervisor.json"};
-    std::string pending_path{"/tmp/test_task_chain_supervisor.pending.json"};
-    std::string backup_path{"/tmp/test_task_chain_supervisor.backup.json"};
+    std::string runtime_path{"/tmp/test_task_chain_supervisor.runtime.json"};
+    std::string fixed_path{"/tmp/test_task_chain_supervisor.fixed.json"};
+    std::string pending_path{"/tmp/test_task_chain_supervisor.runtime.pending.json"};
+    std::string backup_path{"/tmp/test_task_chain_supervisor.runtime.backup.json"};
 
     // 底层 mock
     std::shared_ptr<MockCanBus> can{std::make_shared<MockCanBus>()};
@@ -92,7 +93,7 @@ struct TaskChainFixture {
     std::shared_ptr<MotionService> motion;
     std::shared_ptr<NavService> nav;
     std::shared_ptr<FaultService> fault_svc{std::make_shared<FaultService>(bus)};
-    ConfigService cfg{config_path};
+    ConfigService cfg{runtime_path, fixed_path};
     SchedulerService scheduler;
     std::shared_ptr<CommandTracker> command_tracker{std::make_shared<CommandTracker>()};
     std::shared_ptr<ThingsBoardConfigManager> tb_cfg;
@@ -130,7 +131,8 @@ struct TaskChainFixture {
         brush->open();
         left_sw->open();
         right_sw->open();
-        std::ofstream f(config_path);
+        {
+        std::ofstream f(runtime_path);
         f << R"({
   "robot": {
     "passes": 1.0,
@@ -145,11 +147,18 @@ struct TaskChainFixture {
     ]
   }
 })";
-        f.close();
+        }
+        {
+        std::ofstream f(fixed_path);
+        f << R"({})";
+        }
         REQUIRE(cfg.load());
         scheduler.clear_windows();
         scheduler.add_window({8, 0});
         tb_cfg = std::make_shared<ThingsBoardConfigManager>(cfg, scheduler);
+        motion->set_parking_side_provider(
+            [this]() { return tb_cfg->active_config().parking_side; });
+        motion->set_runtime_config_provider([this]() { return tb_cfg->active_config(); });
         fault_handler.start_listening();
         fsm.dispatch(EvInitDone{});
         supervisor = std::make_shared<RobotSupervisor>(
@@ -161,7 +170,8 @@ struct TaskChainFixture {
     }
 
     ~TaskChainFixture() {
-        fs::remove(config_path);
+        fs::remove(runtime_path);
+        fs::remove(fixed_path);
         fs::remove(pending_path);
         fs::remove(backup_path);
     }
@@ -209,21 +219,17 @@ TEST_CASE("TaskChain: P0 故障中断清扫任务 → Fault → Reset → Idle",
 }
 
 // ────────────────────────────────────────────────────────────────
-// 场景 3：P1 故障安全返回链
+// 场景 3：P1 故障进入 Fault
 // ────────────────────────────────────────────────────────────────
-TEST_CASE("TaskChain: P1 故障 → Returning → Charging", "[integration][task_chain]") {
+TEST_CASE("TaskChain: P1 故障 → Fault", "[integration][task_chain]") {
     TaskChainFixture f;
     f.fsm.dispatch(EvScheduleStart{true, false, 2.0f});
     f.fsm.dispatch(EvFarEndLimitSettled{});  // 进入 CleanReturn
     REQUIRE(f.fsm.current_state() == "CleanReturn");
 
-    // P1 故障（FaultHandler → dispatch EvFaultP1 → Returning）
+    // P1 故障（FaultHandler → dispatch EvFaultP1 → Fault）
     f.fault_svc->report(FaultLevel::P1, 0x2001, "BMS low");
-    REQUIRE(f.fsm.current_state() == "Returning");
-
-    // 安全返回到停机位
-    f.fsm.dispatch(EvParkingSideLimitSettled{});
-    REQUIRE(f.fsm.current_state() == "Charging");
+    REQUIRE(f.fsm.current_state() == "Fault");
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -275,7 +281,7 @@ TEST_CASE("TaskChain: SchedulerService tick() 触发 FSM 清扫启动", "[integr
 
     // Scheduler 回调直接调用 FSM dispatch
     f.scheduler.set_on_window_hit(
-        [&] { REQUIRE(f.supervisor->start_task(true)); });
+        [&] { REQUIRE(f.supervisor->start_task(true, true, 80.0f)); });
 
     f.scheduler.tick();
     REQUIRE(f.fsm.current_state() == "CleanFwd");
@@ -301,7 +307,7 @@ TEST_CASE("TaskChain: N=2 完整 4 趟任务链", "[integration][task_chain]") {
 // ────────────────────────────────────────────────────────────────
 // 场景 7：P1 故障发生在 CleanFwd 阶段（未到前端）
 // ────────────────────────────────────────────────────────────────
-TEST_CASE("TaskChain: P1 故障发生在 CleanFwd → Returning → Charging",
+TEST_CASE("TaskChain: P1 故障发生在 CleanFwd → Fault",
           "[integration][task_chain]") {
     TaskChainFixture f;
     f.fsm.dispatch(EvScheduleStart{true, false, 2.0f});
@@ -309,11 +315,7 @@ TEST_CASE("TaskChain: P1 故障发生在 CleanFwd → Returning → Charging",
 
     // P1 故障在正向清扫期间触发（尚未到达对侧限位）
     f.fault_svc->report(FaultLevel::P1, 0x2002, "slope_too_steep");
-    REQUIRE(f.fsm.current_state() == "Returning");
-
-    // 返回停机位
-    f.fsm.dispatch(EvParkingSideLimitSettled{});
-    REQUIRE(f.fsm.current_state() == "Charging");
+    REQUIRE(f.fsm.current_state() == "Fault");
 }
 
 // ────────────────────────────────────────────────────────────────

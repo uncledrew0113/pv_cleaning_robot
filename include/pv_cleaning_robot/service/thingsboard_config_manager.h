@@ -40,7 +40,11 @@ struct TbRuntimeConfig {
     double clean_speed_rpm{300.0};
     double return_speed_rpm{300.0};
     int brush_rpm{1000};
+    int return_brush_rpm{1000};
     ParkingSide parking_side{ParkingSide::Left};
+    double start_battery_soc{30.0};
+    double charge_start_soc{15.0};
+    double charge_stop_soc{95.0};
     std::vector<TbScheduleEntry> schedules;
 
     bool operator==(const TbRuntimeConfig& other) const {
@@ -48,7 +52,11 @@ struct TbRuntimeConfig {
                clean_speed_rpm == other.clean_speed_rpm &&
                return_speed_rpm == other.return_speed_rpm &&
                brush_rpm == other.brush_rpm &&
+               return_brush_rpm == other.return_brush_rpm &&
                parking_side == other.parking_side &&
+               start_battery_soc == other.start_battery_soc &&
+               charge_start_soc == other.charge_start_soc &&
+               charge_stop_soc == other.charge_stop_soc &&
                schedules == other.schedules;
     }
 };
@@ -63,13 +71,15 @@ struct SharedAttrApplyResult {
 /// 职责边界：
 /// - 解析并校验 shared attributes
 /// - 维护 active / pending 两份运行配置视图
-/// - 管理 config.json / config.pending.json 的持久化
-/// - 将 schedule 立即同步到 SchedulerService
+/// - 管理 config.runtime.json / config.runtime.pending.json 的持久化
+/// - 将 scheduler.windows 立即同步到 SchedulerService
 ///
-/// 当前首版限制：
+/// 当前规则：
 /// - `passes` 只允许正整数
 /// - `parking_side` 只允许 `left` / `right`
-/// - 任务相关参数先进 `pending`，下一次任务启动前再提升到 `active`
+/// - `scheduler.windows` 立即生效并写回 active runtime
+/// - 其余运行时参数全部进入 `pending`，仅在下一次新任务启动前提升到 `active`
+///   - 允许提升的状态：`Idle` / `Stopped` / `Charging`
 /// - 当前没有 shared attributes 版本合并机制；谁最后到达并通过校验，谁覆盖当前视图
 ///   - 设备上线后会主动请求一次 shared attributes 快照
 ///   - 如果平台随后再次修改，后到达的更新会覆盖先到达的快照结果

@@ -42,16 +42,27 @@ const rapidjson::Value* find_path(const rapidjson::Value& root,
 
 }  // namespace
 
-ConfigService::ConfigService(std::string config_path)
+ConfigService::ConfigService(std::string config_path, std::string fixed_path)
     : config_path_(std::move(config_path))
+    , fixed_path_(fixed_path.empty() ? derive_fixed_path(config_path_) : std::move(fixed_path))
+    , pending_path_(derive_companion_path(config_path_, "pending"))
 {
     root_.SetObject();
+    fixed_root_.SetObject();
 }
 
 bool ConfigService::load()
 {
     std::lock_guard<std::mutex> lk(mtx_);
     last_load_used_backup_ = false;
+    fixed_root_.SetObject();
+    fixed_loaded_ = false;
+    if (!fixed_path_.empty()) {
+        if (auto fixed_root = read_json_file(fixed_path_)) {
+            fixed_root_.Swap(*fixed_root);
+            fixed_loaded_ = true;
+        }
+    }
 
     if (auto main_root = read_json_file(config_path_)) {
         root_.Swap(*main_root);
@@ -69,6 +80,26 @@ bool ConfigService::load()
 
     root_.SetObject();
     loaded_ = false;
+    return false;
+}
+
+bool ConfigService::load_fixed()
+{
+    std::lock_guard<std::mutex> lk(mtx_);
+    if (fixed_path_.empty()) {
+        fixed_root_.SetObject();
+        fixed_loaded_ = false;
+        return false;
+    }
+
+    if (auto fixed_root = read_json_file(fixed_path_)) {
+        fixed_root_.Swap(*fixed_root);
+        fixed_loaded_ = true;
+        return true;
+    }
+
+    fixed_root_.SetObject();
+    fixed_loaded_ = false;
     return false;
 }
 
@@ -141,20 +172,20 @@ bool ConfigService::replace_and_save(const rapidjson::Value& new_root)
 bool ConfigService::save_pending(const rapidjson::Value& pending_root) const
 {
     std::lock_guard<std::mutex> lk(mtx_);
-    return write_json_file(derive_companion_path(config_path_, "pending"), pending_root);
+    return write_json_file(pending_path_, pending_root);
 }
 
 std::optional<rapidjson::Document> ConfigService::load_pending() const
 {
     std::lock_guard<std::mutex> lk(mtx_);
-    return read_json_file(derive_companion_path(config_path_, "pending"));
+    return read_json_file(pending_path_);
 }
 
 bool ConfigService::clear_pending() const
 {
     std::lock_guard<std::mutex> lk(mtx_);
     std::error_code ec;
-    std::filesystem::remove(derive_companion_path(config_path_, "pending"), ec);
+    std::filesystem::remove(pending_path_, ec);
     return !ec;
 }
 
@@ -171,6 +202,23 @@ std::string ConfigService::derive_companion_path(const std::string& active_path,
         return active_path + "." + suffix;
     }
     return active_path.substr(0, dot) + "." + suffix + active_path.substr(dot);
+}
+
+std::string ConfigService::derive_fixed_path(const std::string& runtime_path)
+{
+    const std::string runtime_marker = ".runtime.json";
+    if (runtime_path.size() >= runtime_marker.size() &&
+        runtime_path.compare(runtime_path.size() - runtime_marker.size(),
+                             runtime_marker.size(),
+                             runtime_marker) == 0) {
+        return runtime_path.substr(0, runtime_path.size() - runtime_marker.size()) + ".fixed.json";
+    }
+
+    const auto dot = runtime_path.rfind('.');
+    if (dot == std::string::npos) {
+        return runtime_path + ".fixed";
+    }
+    return runtime_path.substr(0, dot) + ".fixed" + runtime_path.substr(dot);
 }
 
 bool ConfigService::write_json_file(const std::string& path, const rapidjson::Value& root)

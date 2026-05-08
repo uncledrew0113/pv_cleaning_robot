@@ -22,6 +22,16 @@ using robot::device::BrushMotor;
 using robot::device::WalkMotorGroup;
 using robot::middleware::EventBus;
 
+namespace {
+
+MotionService::Config make_motion_config() {
+    MotionService::Config cfg;
+    cfg.heading_pid_en = false;
+    return cfg;
+}
+
+}  // namespace
+
 // ────────────────────────────────────────────────────────────────
 // 构建辅助
 // ────────────────────────────────────────────────────────────────
@@ -45,7 +55,7 @@ struct FaultHandlerFixture {
                                                  brush,
                                                  nullptr,
                                                  bus,
-                                                 MotionService::Config{.heading_pid_en = false}))
+                                                 make_motion_config()))
         , handler(motion, bus, [this](FaultEvent e) { dispatched.push_back(e); }) {
         can->open_result = true;
         can->send_result = true;
@@ -138,7 +148,7 @@ TEST_CASE("FaultHandler: 析构后 EventBus publish 不崩溃", "[app][fault_han
     brush_serial->open_result = true;
     brush->open();
     auto motion = std::make_shared<MotionService>(
-        group, brush, nullptr, bus, MotionService::Config{.heading_pid_en = false});
+        group, brush, nullptr, bus, make_motion_config());
     FaultService fault_svc(bus);
 
     {

@@ -45,10 +45,12 @@ public:
     void subscribe_shared_attributes();
     /// 设备上线后主动请求一次当前 release 关心的 shared attributes 快照。
     void request_shared_attributes_snapshot() const;
-    /// 注册当前 release 支持的 RPC: start / stop / return / terminate / reset
-    void register_rpc_handlers(const std::function<bool()>& is_at_start_parking_side,
-                               const std::function<bool()>& is_at_start_far_end,
-                               const std::function<bool()>& is_at_active_parking_side);
+    /// 注册当前 release 支持的 RPC: start / stop / return / reset
+    void register_rpc_handlers(const std::function<bool()>& is_start_position_valid,
+                               const std::function<bool()>& is_at_start_parking_side,
+                               const std::function<bool()>& is_at_active_parking_side,
+                               const std::function<float()>& current_battery_soc,
+                               std::function<void()> reboot_device);
     void publish_backup_fallback_event() const;
     void publish_startup_attributes() const;
     void publish_status_event(const char* event_name, bool accepted, const char* reason) const;

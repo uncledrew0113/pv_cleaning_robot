@@ -1,5 +1,7 @@
 #include "pv_cleaning_robot/service/thingsboard_control_plane.h"
 
+#include <chrono>
+#include <thread>
 #include <vector>
 
 #include <rapidjson/document.h>
@@ -43,12 +45,17 @@ void ThingsBoardControlPlane::subscribe_shared_attributes() {
 }
 
 void ThingsBoardControlPlane::request_shared_attributes_snapshot() const {
+    // snapshot keys 必须与 ConfigManager 能识别的 runtime 字段保持一致。
+    // 其中 scheduler.windows 是唯一立即生效项，其余字段即使拉到，也只会先落 pending。
     static const std::vector<std::string> kReleaseSharedKeys{
         "passes",
         "clean_speed_rpm",
         "return_speed_rpm",
         "brush_rpm",
         "parking_side",
+        "start_battery_soc",
+        "charge_start_soc",
+        "charge_stop_soc",
         "schedules",
     };
     if (!cloud_->request_shared_attributes_snapshot(kReleaseSharedKeys)) {
@@ -57,40 +64,45 @@ void ThingsBoardControlPlane::request_shared_attributes_snapshot() const {
 }
 
 void ThingsBoardControlPlane::register_rpc_handlers(
+    const std::function<bool()>& is_start_position_valid,
     const std::function<bool()>& is_at_start_parking_side,
-    const std::function<bool()>& is_at_start_far_end,
-    const std::function<bool()>& is_at_active_parking_side) {
-    // 当前 release 只暴露 5 个 RPC。每个 handler 内部都遵循同一套模式：
+    const std::function<bool()>& is_at_active_parking_side,
+    const std::function<float()>& current_battery_soc,
+    std::function<void()> reboot_device) {
+    // 当前 release 只暴露 4 个 RPC。每个 handler 内部都遵循同一套模式：
     // 1. 读取当前状态 / 现场条件
     // 2. 交给 RobotSupervisor 判定是否允许
     // 3. 发布 command event
     // 4. 回 RPC response
     cloud_->register_rpc("start",
-                         [this, is_at_start_parking_side, is_at_start_far_end](const std::string& request_id,
-                                                         const std::string& /*params*/) {
+                         [this,
+                          is_start_position_valid,
+                          is_at_start_parking_side,
+                          current_battery_soc](const std::string& request_id,
+                                               const std::string& /*params*/) {
         const auto state = supervisor_->current_state();
+        const bool position_valid = is_start_position_valid();
         const bool at_parking_side = is_at_start_parking_side();
-        const bool at_far_end = is_at_start_far_end();
-        spdlog::info("[ThingsBoardControlPlane] RPC start received: state='{}' at_parking_side={} at_far_end={}",
+        const float battery_soc = current_battery_soc();
+        spdlog::info("[ThingsBoardControlPlane] RPC start received: state='{}' position_valid={} at_parking_side={} battery_soc={:.1f}",
                      state,
+                     position_valid,
                      at_parking_side,
-                     at_far_end);
+                     battery_soc);
 
-        if (state == "Paused") {
-            if (!supervisor_->resume_paused_task()) {
-                spdlog::warn("[ThingsBoardControlPlane] RPC start rejected: resume_not_allowed_in_current_state");
-                return reject_rpc_command(
-                    "start", request_id, "resume_not_allowed_in_current_state");
-            }
-            spdlog::info("[ThingsBoardControlPlane] RPC start completed: resumed_paused_task");
-            return complete_rpc_command("start", request_id, "resumed_paused_task");
-        }
-
-        if (!supervisor_->start_task(at_parking_side)) {
-            const std::string reason = (state != "Idle" && state != "Charging")
-                                           ? "start_not_allowed_in_current_state"
-                                       : !at_parking_side ? "robot_not_at_parking_side"
-                                                  : "promote_pending_config_failed";
+        if (!supervisor_->start_task(at_parking_side, position_valid, battery_soc)) {
+            // start 被允许时，Supervisor 内部会先尝试 promote pending -> active。
+            // 因此这里在构造 reject reason 时，优先读取“若此刻成功启动会采用的配置视图”。
+            const auto runtime_cfg = tb_cfg_->has_pending_config() ? *tb_cfg_->pending_config()
+                                                                   : tb_cfg_->active_config();
+            const std::string reason =
+                (state != "Idle" && state != "Charging" && state != "Stopped")
+                    ? "start_not_allowed_in_current_state"
+                : !position_valid ? "robot_position_invalid"
+                : !at_parking_side ? "robot_not_at_parking_side"
+                : battery_soc < static_cast<float>(runtime_cfg.start_battery_soc)
+                    ? "battery_below_start_threshold"
+                    : "promote_pending_config_failed";
             spdlog::warn("[ThingsBoardControlPlane] RPC start rejected: {}", reason);
             return reject_rpc_command("start", request_id, reason.c_str());
         }
@@ -102,58 +114,45 @@ void ThingsBoardControlPlane::register_rpc_handlers(
     cloud_->register_rpc("stop", [this](const std::string& request_id, const std::string& /*params*/) {
         spdlog::info("[ThingsBoardControlPlane] RPC stop received: state='{}'",
                      supervisor_->current_state());
-        if (!supervisor_->pause_task()) {
+        if (!supervisor_->stop_task()) {
             spdlog::warn("[ThingsBoardControlPlane] RPC stop rejected: stop_not_allowed_in_current_state");
             return reject_rpc_command("stop", request_id, "stop_not_allowed_in_current_state");
         }
 
-        spdlog::info("[ThingsBoardControlPlane] RPC stop completed: paused_task");
-        return complete_rpc_command("stop", request_id, "paused_task");
+        spdlog::info("[ThingsBoardControlPlane] RPC stop completed: stopped_task");
+        return complete_rpc_command("stop", request_id, "stopped_task");
     });
 
     cloud_->register_rpc("return",
-                         [this](const std::string& request_id, const std::string& /*params*/) {
-        spdlog::info("[ThingsBoardControlPlane] RPC return received: state='{}'",
-                     supervisor_->current_state());
-        if (!supervisor_->return_task()) {
+                         [this, is_at_active_parking_side](const std::string& request_id,
+                                                           const std::string& /*params*/) {
+        const bool at_parking_side = is_at_active_parking_side();
+        spdlog::info("[ThingsBoardControlPlane] RPC return received: state='{}' at_parking_side={}",
+                     supervisor_->current_state(),
+                     at_parking_side);
+        if (!supervisor_->return_task(at_parking_side)) {
             spdlog::warn("[ThingsBoardControlPlane] RPC return rejected: return_not_allowed_in_current_state");
             return reject_rpc_command("return", request_id, "return_not_allowed_in_current_state");
         }
 
-        spdlog::info("[ThingsBoardControlPlane] RPC return completed: returning_to_home");
-        return complete_rpc_command("return", request_id, "returning_to_home");
-    });
-
-    cloud_->register_rpc("terminate",
-                         [this](const std::string& request_id, const std::string& /*params*/) {
-        spdlog::info("[ThingsBoardControlPlane] RPC terminate received: state='{}'",
-                     supervisor_->current_state());
-        if (!supervisor_->terminate_task()) {
-            spdlog::warn("[ThingsBoardControlPlane] RPC terminate rejected: terminate_not_allowed_in_current_state");
-            return reject_rpc_command(
-                "terminate", request_id, "terminate_not_allowed_in_current_state");
-        }
-
-        spdlog::info("[ThingsBoardControlPlane] RPC terminate completed: terminated_task");
-        return complete_rpc_command("terminate", request_id, "terminated_task");
+        spdlog::info("[ThingsBoardControlPlane] RPC return completed: returning_to_parking_side");
+        return complete_rpc_command("return", request_id, "returning_to_parking_side");
     });
 
     cloud_->register_rpc("reset",
-                         [this, is_at_active_parking_side](const std::string& request_id,
-                                            const std::string& /*params*/) {
-        const bool at_parking_side = is_at_active_parking_side();
-        spdlog::info("[ThingsBoardControlPlane] RPC reset received: state='{}' at_parking_side={}",
-                     supervisor_->current_state(),
-                     at_parking_side);
-        if (!supervisor_->reset_task(at_parking_side)) {
-            const std::string reason = !at_parking_side ? "robot_not_at_parking_side"
-                                                : "reset_not_allowed_in_current_state";
-            spdlog::warn("[ThingsBoardControlPlane] RPC reset rejected: {}", reason);
-            return reject_rpc_command("reset", request_id, reason.c_str());
-        }
-
-        spdlog::info("[ThingsBoardControlPlane] RPC reset completed: reset_to_idle");
-        return complete_rpc_command("reset", request_id, "reset_to_idle");
+                         [this, reboot_device = std::move(reboot_device)](
+                             const std::string& request_id,
+                             const std::string& /*params*/) {
+        spdlog::info("[ThingsBoardControlPlane] RPC reset received: state='{}'",
+                     supervisor_->current_state());
+        auto reply = complete_rpc_command("reset", request_id, "rebooting_device");
+        std::thread([reboot_device]() {
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            if (reboot_device) {
+                reboot_device();
+            }
+        }).detach();
+        return reply;
     });
 }
 

@@ -9,7 +9,7 @@
  *
  * 硬件接线要求：
  *   CAN  : can0，行走电机组 M1502E_111（motor_id_base=1）
- *   IMU  : /dev/ttyS1，WIT Motion 9轴（9600 baud，与 config.json 对齐）
+ *   IMU  : /dev/ttyS1，WIT Motion 9轴（9600 baud，与仓库 split config 对齐）
  *   GPIO : gpiochip5 line0 = 左限位（LEFT），line1 = 右限位（RIGHT）
  *   滚刷 : 无真实硬件，BrushMotor 层不参与本测试（扫描序列直接操作 WalkMotorGroup）
  *

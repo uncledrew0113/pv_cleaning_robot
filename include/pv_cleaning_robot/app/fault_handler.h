@@ -9,7 +9,7 @@ namespace robot::app {
 /// @brief 故障处理器——根据故障等级决定处理策略
 ///
 /// P0 → 立即原地停机，置 FSM Fault 状态
-/// P1 → 停止清扫，启动返回停机位流程，置 FSM Returning 状态
+/// P1 → 上报故障并急停，置 FSM Fault 状态
 /// P2 → 降速继续，告警上报（由 FaultService 发布 EventBus）
 /// P3 → 仅记录日志
 class FaultHandler {

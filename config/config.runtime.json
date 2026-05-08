@@ -1,0 +1,31 @@
+{
+  "scheduler": {
+    "windows": [
+      { "hour": 8, "minute": 0 },
+      { "hour": 14, "minute": 30 }
+    ]
+  },
+  "robot": {
+    "track_length_m": 1000.0,
+    "passes": 1.0,
+    "parking_side": "left",
+    "clean_speed_rpm": 20.0,
+    "return_speed_rpm": 20.0,
+    "return_brush_rpm": 1000,
+    "brush_rpm": 1000,
+    "edge_reverse_rpm": 0.0,
+    "heading_pid_en": true,
+    "pid": {
+      "kp": 2.0,
+      "ki": 0.0,
+      "kd": 0.0,
+      "max_output": 30.0,
+      "integral_limit": 10.0,
+      "deadband_rate_dps": 2.0
+    },
+    "start_battery_soc": 30.0,
+    "charge_start_soc": 15.0,
+    "charge_stop_soc": 95.0,
+    "wheel_circ_m": 0.3
+  }
+}

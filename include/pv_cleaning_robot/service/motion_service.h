@@ -8,6 +8,7 @@
 #include "pv_cleaning_robot/device/walk_motor_group.h"
 #include "pv_cleaning_robot/middleware/event_bus.h"
 #include "pv_cleaning_robot/middleware/thread_executor.h"
+#include "pv_cleaning_robot/service/thingsboard_config_manager.h"
 
 namespace robot::service {
 
@@ -47,6 +48,11 @@ class MotionService : public middleware::IRunnable {
                   std::shared_ptr<device::ImuDevice> imu,
                   middleware::EventBus& bus,
                   Config cfg);
+
+    /// 以“停机位在右侧”为运动方向基线；provider 返回 Left 时整体取反。
+    void set_parking_side_provider(std::function<ParkingSide()> provider);
+    /// 新任务启动前从 active runtime 同步速度/滚刷参数。
+    void set_runtime_config_provider(std::function<TbRuntimeConfig()> provider);
 
     // ── 运动控制 ──────────────────────────────────────────────────────────
     /// 开始清扫前进（使能行走 + 滚刷，锁定航向目标）
@@ -92,12 +98,17 @@ class MotionService : public middleware::IRunnable {
     std::shared_ptr<device::ImuDevice> imu_;
     middleware::EventBus& bus_;
     Config cfg_;
+    std::function<ParkingSide()> parking_side_provider_;
+    std::function<TbRuntimeConfig()> runtime_config_provider_;
 
     /// EMA 滤波后的 yaw（替代 update() 中的 static 局部变量，解决多实例共享和重启污染）
     float filtered_yaw_{0.0f};
     bool filtered_yaw_inited_{false};
     float filtered_omega_z_{0.0f};   ///< EMA 滤波后的 Z 轴角速度（°/s），用于速率 PID 输入
     bool filtered_omega_z_inited_{false};  ///< 首次调用时硬初始化标志
+
+    int task_direction_sign() const;
+    void sync_runtime_config();
 };
 
 }  // namespace robot::service

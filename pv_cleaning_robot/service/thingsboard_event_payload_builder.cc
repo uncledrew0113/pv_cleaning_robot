@@ -103,6 +103,12 @@ void write_runtime_config(const char* key, const TbRuntimeConfig& config, Writer
     writer.Int(config.brush_rpm);
     writer.Key("parking_side");
     writer.String(parking_side_config_string(config.parking_side));
+    writer.Key("start_battery_soc");
+    writer.Double(config.start_battery_soc);
+    writer.Key("charge_start_soc");
+    writer.Double(config.charge_start_soc);
+    writer.Key("charge_stop_soc");
+    writer.Double(config.charge_stop_soc);
     writer.Key("schedules");
     write_schedule_entries(config.schedules, writer);
     writer.EndObject();
@@ -150,7 +156,6 @@ size_t ThingsBoardJsonCodec::build_startup_attributes(const StartupAttributesVie
     writer.String("start");
     writer.String("stop");
     writer.String("return");
-    writer.String("terminate");
     writer.String("reset");
     writer.EndArray();
     writer.Key("config_schema_version");

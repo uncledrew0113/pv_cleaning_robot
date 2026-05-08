@@ -1,0 +1,100 @@
+{
+  "logging": {
+    "log_dir": "/data/pv_robot/logs",
+    "level": "info",
+    "console": true
+  },
+  "can": {
+    "interface": "can0",
+    "walk_motor": {
+      "motor_id": 1,
+      "comm_timeout_ms": 500,
+      "termination_init_enabled": true,
+      "termination_init_retry_count": 3,
+      "termination_motor_id": 2
+    }
+  },
+  "serial": {
+    "imu": { "port": "/dev/ttyS1", "baudrate": 9600 },
+    "gps": { "port": "/dev/ttyS2", "baudrate": 115200 },
+    "brush": {
+      "port": "/dev/ttyS3",
+      "baudrate": 115200,
+      "axis": 0,
+      "counts_per_rev": 8192,
+      "watchdog_enabled": true,
+      "watchdog_timeout_s": 0.5
+    },
+    "bms": { "port": "/dev/ttyS8", "baudrate": 9600 },
+    "distance_sensor": {
+      "port": "/dev/ttyS9",
+      "baudrate": 9600,
+      "slave_id": 1,
+      "channel_count": 4,
+      "decimal_mode": 0,
+      "analog_type": 0
+    }
+  },
+  "gps": {
+    "source": "gpsd",
+    "serial": {
+      "port": "/dev/ttyS2",
+      "baudrate": 115200
+    },
+    "gpsd": {
+      "host": "127.0.0.1",
+      "port": 2947,
+      "watch": "?WATCH={\"enable\":true,\"json\":true};"
+    }
+  },
+  "gpio": {
+    "left_limit": { "chip": "gpiochip5", "line": 0 },
+    "right_limit": { "chip": "gpiochip5", "line": 1 },
+    "use_irq": false
+  },
+  "network": {
+    "transport_mode": "mqtt_only",
+    "mqtt": {
+      "broker_uri": "ssl://124.222.209.230:8883",
+      "client_id": "pv_robot_001",
+      "username": "",
+      "password": "",
+      "tls_enabled": true,
+      "ca_cert_path": "",
+      "client_cert_path": "config/pv_device_test1.pem",
+      "client_key_path": "config/pv_device_test1.key",
+      "insecure_skip_server_name_check": true,
+      "keep_alive_s": 60,
+      "qos": 1
+    },
+    "lorawan": {
+      "port": "/dev/ttyS5",
+      "baudrate": 115200,
+      "dev_eui": "",
+      "app_key": "",
+      "report_interval_s": 300
+    }
+  },
+  "storage": {
+    "cache_path": "/data/pv_robot/telemetry_cache.jsonl"
+  },
+  "system": {
+    "hw_watchdog": "/dev/watchdog"
+  },
+  "diagnostics": {
+    "mode": "development",
+    "publish_interval_ms": 1000,
+    "publish_interval_active_ms": 1000,
+    "publish_interval_idle_ms": 300000,
+    "cloud_upload": true,
+    "local_log": true,
+    "local_log_path": "/data/pv_robot/logs/telemetry.jsonl",
+    "local_log_max_bytes": 10485760,
+    "local_log_max_files": 3
+  },
+  "device": {
+    "software_version": "1.0.0",
+    "hardware_version": "1.0",
+    "model": "pv_cleaning_robot"
+  }
+}

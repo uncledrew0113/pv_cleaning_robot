@@ -3,7 +3,7 @@
  * @brief PV 清扫机器人主程序入口（配置文件驱动依赖注入）
  *
  * 启动流程：
- *   1. 加载 config/config.json
+ *   1. 优先加载 split config（runtime + fixed），失败时回退旧 config/config.json
  *   2. 初始化日志
  *   3. 构造 HAL / Driver / Device 对象
  *   4. 构造 Middleware / Service / App 对象
@@ -12,8 +12,11 @@
  *   7. 捕获 SIGINT/SIGTERM，优雅关闭
  */
 #include <sys/mman.h>
+#include <sys/syscall.h>
+#include <unistd.h>
 
 #include <cmath>
+#include <linux/reboot.h>
 
 #include "pv_cleaning_robot/middleware/logger.h"
 #include "pv_cleaning_robot/service/config_service.h"
@@ -78,13 +81,23 @@ static void signal_handler(int /*sig*/) {
 
 int main() {
     // ── 1. 配置服务 ────────────────────────────────────────────────────
-    // 优先尝试部署路径，失败则回退到当前目录（开发环境）
-    auto cfg_ptr = std::make_unique<robot::service::ConfigService>("/opt/robot/config/config.json");
+    // 优先尝试 split 配置文件；ConfigService::get() 会先读 runtime，再回退到 fixed。
+    auto cfg_ptr = std::make_unique<robot::service::ConfigService>(
+        "/opt/robot/config/config.runtime.json",
+        "/opt/robot/config/config.fixed.json");
     if (!cfg_ptr->load()) {
-        cfg_ptr = std::make_unique<robot::service::ConfigService>("config/config.json");
+        cfg_ptr = std::make_unique<robot::service::ConfigService>(
+            "config/config.runtime.json",
+            "config/config.fixed.json");
         if (!cfg_ptr->load()) {
-            fprintf(stderr, "[FATAL] 无法加载 config.json\n");
-            return 1;
+            cfg_ptr = std::make_unique<robot::service::ConfigService>("/opt/robot/config/config.json");
+            if (!cfg_ptr->load()) {
+                cfg_ptr = std::make_unique<robot::service::ConfigService>("config/config.json");
+                if (!cfg_ptr->load()) {
+                    fprintf(stderr, "[FATAL] 无法加载 config.runtime.json/config.fixed.json 或旧 config.json\n");
+                    return 1;
+                }
+            }
         }
     }
     auto& cfg = *cfg_ptr;
@@ -147,9 +160,12 @@ int main() {
         cfg.get<bool>("serial.brush.watchdog_enabled", true),
         cfg.get<float>("serial.brush.watchdog_timeout_s", 0.5f));
 
-    auto bms = std::make_shared<robot::device::BMS>(bms_serial,
-                                                    cfg.get<float>("robot.battery_full_soc", 95.0f),
-                                                    cfg.get<float>("robot.battery_low_soc", 15.0f));
+    auto bms = std::make_shared<robot::device::BMS>(
+        bms_serial,
+        cfg.get<float>("robot.charge_stop_soc",
+                       cfg.get<float>("robot.battery_full_soc", 95.0f)),
+        cfg.get<float>("robot.charge_start_soc",
+                       cfg.get<float>("robot.battery_low_soc", 15.0f)));
 
     // ── 7. UART 驱动 ──────────────────────────────────────────────────
     auto imu_serial = std::make_shared<robot::driver::LibSerialPort>(
@@ -342,6 +358,9 @@ int main() {
     auto cloud = std::make_shared<robot::service::CloudService>(net_mgr, data_cache);
     auto tb_cfg =
         std::make_shared<robot::service::ThingsBoardConfigManager>(cfg, scheduler);
+    motion->set_parking_side_provider(
+        [tb_cfg]() { return tb_cfg->active_config().parking_side; });
+    motion->set_runtime_config_provider([tb_cfg]() { return tb_cfg->active_config(); });
     auto command_tracker = std::make_shared<robot::service::CommandTracker>();
 
     auto fault = std::make_shared<robot::service::FaultService>(event_bus);
@@ -373,17 +392,33 @@ int main() {
             pending ? pending->parking_side : tb_cfg->active_config().parking_side;
         return physical_limit_facts_for(parking_side);
     };
+    const auto current_battery_soc = [&bms]() {
+        return bms->get_data().soc_pct;
+    };
     tb_control->subscribe_shared_attributes();
     // 在 connect() 前完成 shared attributes / RPC 注册，避免首个云端下行消息丢失。
     tb_control->register_rpc_handlers(
         [current_start_parking_facts]() {
-            return current_start_parking_facts().at_parking_side;
+            return current_start_parking_facts().is_valid_start_position();
         },
         [current_start_parking_facts]() {
-            return current_start_parking_facts().at_far_end;
+            return current_start_parking_facts().at_parking_side;
         },
         [current_active_parking_facts]() {
             return current_active_parking_facts().at_parking_side;
+        },
+        current_battery_soc,
+        [&log]() {
+            log->warn("[Main] 收到 reset RPC，准备重启设备");
+            sync();
+            const auto rc = syscall(SYS_reboot,
+                                    LINUX_REBOOT_MAGIC1,
+                                    LINUX_REBOOT_MAGIC2,
+                                    LINUX_REBOOT_CMD_RESTART,
+                                    nullptr);
+            if (rc != 0) {
+                log->error("[Main] reset RPC 重启失败: {}", strerror(errno));
+            }
         });
 
     net_mgr->connect();
@@ -397,11 +432,31 @@ int main() {
         log->info("[Main] 设备静态属性已发布至云端");
     }
 
+    const auto startup_position_facts = current_active_parking_facts();
+    if (startup_position_facts.dual_endpoint_active) {
+        tb_control->publish_status_event("startup_position_invalid", false, "dual_endpoint_active");
+        log->warn("[Main] 启动位置异常：左右端点同时触发，禁止启动清扫");
+    } else if (startup_position_facts.no_endpoint_active) {
+        tb_control->publish_status_event("startup_position_invalid",
+                                         false,
+                                         "robot_not_at_any_endpoint");
+        log->warn("[Main] 启动位置异常：当前不在任一端点，尝试返回停机位");
+        if (fsm->current_state() == "Idle") {
+            fsm->dispatch(robot::app::EvManualReturn{});
+        }
+    } else if (!startup_position_facts.at_parking_side) {
+        tb_control->publish_status_event("startup_position_invalid",
+                                         false,
+                                         "robot_not_at_parking_side");
+        log->warn("[Main] 启动位置异常：当前不在停机位，禁止自动启动清扫");
+    }
+
     // ── 限位开关防抖事件订阅：LimitSettledEvent → FSM ──────────────────
     // SafetyMonitor::monitor_loop (SCHED_FIFO 94) 在急停后延迟 180ms 发布此事件。
     // 回调在 monitor_loop 线程上执行，必须极短（不阻塞，不持锁调 I/O）。
     event_bus.subscribe<robot::middleware::SafetyMonitor::LimitSettledEvent>(
-        [&fsm, &log, &tb_cfg](const robot::middleware::SafetyMonitor::LimitSettledEvent& evt) {
+        [&fsm, &log, &tb_cfg, current_battery_soc](
+            const robot::middleware::SafetyMonitor::LimitSettledEvent& evt) {
             const bool parking_left =
                 tb_cfg->active_config().parking_side == robot::service::ParkingSide::Left;
             const bool parking_side_hit =
@@ -410,18 +465,22 @@ int main() {
 
             if (parking_side_hit) {
                 log->info("[Limit] 停机侧防抖完成，调度 EvParkingSideLimitSettled");
-                fsm->dispatch(robot::app::EvParkingSideLimitSettled{});
+                const bool should_charge =
+                    current_battery_soc() <
+                    static_cast<float>(tb_cfg->active_config().charge_start_soc);
+                fsm->dispatch(robot::app::EvParkingSideLimitSettled{should_charge});
             } else {
                 log->info("[Limit] 对侧防抖完成，调度 EvFarEndLimitSettled");
                 fsm->dispatch(robot::app::EvFarEndLimitSettled{});
             }
         });
 
-    // ── 调度服务：定时触发清扫任务（读取 config.json 的 scheduler.windows） ─────
+    // ── 调度服务：定时触发清扫任务（读取 active runtime 的 scheduler.windows） ─────
     scheduler.set_on_window_hit(
-        [current_start_parking_facts, &log, &supervisor]() {
+        [current_start_parking_facts, current_battery_soc, &log, &supervisor]() {
             const auto facts = current_start_parking_facts();
-            if (!supervisor->start_task(facts.at_parking_side)) {
+            if (!supervisor->start_task(
+                    facts.at_parking_side, facts.is_valid_start_position(), current_battery_soc())) {
                 log->warn("[Main] 调度启动被拒绝");
             }
         });
@@ -546,14 +605,17 @@ int main() {
         const std::string current_state = supervisor->current_state();
         const bool active_task_state = current_state == "CleanFwd" ||
                                        current_state == "CleanReturn" ||
-                                       current_state == "Returning" ||
-                                       current_state == "Paused";
+                                       current_state == "Returning";
         const int desired_report_period =
             active_task_state ? active_report_period : idle_report_period;
         if (cloud_exec.period_ms() != desired_report_period) {
             cloud_exec.set_period_ms(desired_report_period);
         }
-        supervisor->tick_safety(bms->is_low_battery());
+        supervisor->tick_safety();
+        if (current_state == "Charging" &&
+            current_battery_soc() >= static_cast<float>(tb_cfg->active_config().charge_stop_soc)) {
+            fsm->dispatch(robot::app::EvChargeDone{});
+        }
 
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }

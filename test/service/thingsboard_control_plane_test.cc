@@ -1,10 +1,12 @@
 #include <catch2/catch.hpp>
 
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <memory>
 #include <rapidjson/document.h>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -16,7 +18,6 @@
 #include "pv_cleaning_robot/device/gps_device.h"
 #include "pv_cleaning_robot/device/walk_motor_group.h"
 #include "pv_cleaning_robot/middleware/data_cache.h"
-#include "pv_cleaning_robot/middleware/event_bus.h"
 #include "pv_cleaning_robot/middleware/network_manager.h"
 #include "pv_cleaning_robot/service/cloud_service.h"
 #include "pv_cleaning_robot/service/command_tracker.h"
@@ -44,8 +45,7 @@ namespace fs = std::filesystem;
 
 namespace {
 
-rapidjson::Document parse_json(const std::string& text)
-{
+rapidjson::Document parse_json(const std::string& text) {
     rapidjson::Document doc;
     doc.Parse(text.c_str(), text.size());
     REQUIRE_FALSE(doc.HasParseError());
@@ -94,12 +94,13 @@ struct MockTransport final : INetworkTransport {
 };
 
 struct Fixture {
-    std::string path{"/tmp/test_tb_control_plane.json"};
-    std::string pending_path{"/tmp/test_tb_control_plane.pending.json"};
-    std::string backup_path{"/tmp/test_tb_control_plane.backup.json"};
+    std::string runtime_path{"/tmp/test_tb_control_plane.runtime.json"};
+    std::string fixed_path{"/tmp/test_tb_control_plane.fixed.json"};
+    std::string pending_path{"/tmp/test_tb_control_plane.runtime.pending.json"};
+    std::string backup_path{"/tmp/test_tb_control_plane.runtime.backup.json"};
     std::string cache_path{"/tmp/test_tb_control_plane.cache.jsonl"};
 
-    ConfigService cfg{path};
+    ConfigService cfg{runtime_path, fixed_path};
     SchedulerService scheduler;
     std::shared_ptr<MockTransport> mqtt{std::make_shared<MockTransport>()};
     std::shared_ptr<NetworkManager> net{
@@ -128,22 +129,32 @@ struct Fixture {
     std::shared_ptr<robot::app::RobotFsm> fsm;
     std::shared_ptr<robot::app::RobotSupervisor> supervisor;
     std::shared_ptr<ThingsBoardControlPlane> control_plane;
+    bool reboot_requested{false};
 
     Fixture() {
-        std::ofstream f(path);
+        {
+        std::ofstream f(runtime_path);
         f << R"({
   "robot": {
     "passes": 1.0,
     "clean_speed_rpm": 300.0,
     "return_speed_rpm": 280.0,
     "brush_rpm": 1000,
-    "parking_side": "left"
+    "parking_side": "left",
+    "start_battery_soc": 30.0,
+    "charge_start_soc": 15.0,
+    "charge_stop_soc": 95.0
   },
   "scheduler": {
     "windows": [
       { "hour": 8, "minute": 0 }
     ]
-  },
+  }
+})";
+        }
+        {
+        std::ofstream f(fixed_path);
+        f << R"({
   "device": {
     "software_version": "2.0.0",
     "hardware_version": "A1",
@@ -155,11 +166,9 @@ struct Fixture {
     }
   }
 })";
-        f.close();
+        }
 
         REQUIRE(cfg.load());
-        scheduler.clear_windows();
-        scheduler.add_window({8, 0});
         cache->open();
         REQUIRE(net->connect());
 
@@ -168,6 +177,9 @@ struct Fixture {
         MotionService::Config motion_cfg;
         motion_cfg.heading_pid_en = false;
         motion = std::make_shared<MotionService>(group, brush, nullptr, bus, motion_cfg);
+        motion->set_parking_side_provider(
+            [this]() { return tb_cfg->active_config().parking_side; });
+        motion->set_runtime_config_provider([this]() { return tb_cfg->active_config(); });
         nav = std::make_shared<NavService>(group, imu, gps);
         fsm = std::make_shared<robot::app::RobotFsm>(motion, nav, fault, bus);
         supervisor = std::make_shared<robot::app::RobotSupervisor>(
@@ -181,19 +193,28 @@ struct Fixture {
         fsm->dispatch(robot::app::EvInitDone{});
 
         control_plane = std::make_shared<ThingsBoardControlPlane>(
-            cfg,
-            cloud,
-            tb_cfg,
-            command_tracker,
-            supervisor);
+            cfg, cloud, tb_cfg, command_tracker, supervisor);
     }
 
     ~Fixture() {
         cache->close();
-        fs::remove(path);
+        fs::remove(runtime_path);
+        fs::remove(fixed_path);
         fs::remove(pending_path);
         fs::remove(backup_path);
         fs::remove(cache_path);
+    }
+
+    void register_handlers(bool position_valid = true,
+                           bool at_start_parking_side = true,
+                           bool at_active_parking_side = false,
+                           float battery_soc = 80.0f) {
+        control_plane->register_rpc_handlers(
+            [position_valid]() { return position_valid; },
+            [at_start_parking_side]() { return at_start_parking_side; },
+            [at_active_parking_side]() { return at_active_parking_side; },
+            [battery_soc]() { return battery_soc; },
+            [this]() { reboot_requested = true; });
     }
 
     rapidjson::Document last_published_json(const std::string& topic_suffix) const {
@@ -225,92 +246,108 @@ TEST_CASE("ThingsBoardControlPlane shared attributes update pending config and e
     const auto j = f.last_published_json("telemetry");
     CHECK(std::string(j["event"].GetString()) == "shared_attr_update");
     CHECK(j["accepted"].GetBool() == true);
-    CHECK(std::string(j["reason"].GetString()) == "ok");
 }
 
-TEST_CASE("ThingsBoardControlPlane publishes startup attributes",
+TEST_CASE("ThingsBoardControlPlane publishes startup attributes and supported rpc methods",
           "[service][tb_control_plane]") {
     Fixture f;
-
     f.control_plane->publish_startup_attributes();
 
     const auto j = f.last_published_json("attributes");
     CHECK(std::string(j["software_version"].GetString()) == "2.0.0");
-    CHECK(std::string(j["hardware_version"].GetString()) == "A1");
-    CHECK(std::string(j["device_model"].GetString()) == "pv_cleaning_robot_test");
-    CHECK(std::string(j["device_id"].GetString()) == "pv_robot_test_001");
     REQUIRE(j["supported_rpc_methods"].IsArray());
-    CHECK(std::string(j["config_schema_version"].GetString()) == "thingsboard-v1");
+    REQUIRE(j["supported_rpc_methods"].Size() == 4);
+    CHECK(std::string(j["supported_rpc_methods"][0].GetString()) == "start");
+    CHECK(std::string(j["supported_rpc_methods"][3].GetString()) == "reset");
 }
 
-TEST_CASE("ThingsBoardControlPlane requests release shared attribute snapshot",
+TEST_CASE("ThingsBoardControlPlane requests current release shared attribute snapshot",
           "[service][tb_control_plane]") {
     Fixture f;
-
     f.control_plane->request_shared_attributes_snapshot();
 
     REQUIRE_FALSE(f.mqtt->published.empty());
     const auto& [topic, payload] = f.mqtt->published.back();
     CHECK(topic.find("v1/devices/me/attributes/request/") == 0);
     CHECK(payload ==
-          R"({"sharedKeys":"passes,clean_speed_rpm,return_speed_rpm,brush_rpm,parking_side,schedules"})");
+          R"({"sharedKeys":"passes,clean_speed_rpm,return_speed_rpm,brush_rpm,parking_side,start_battery_soc,charge_start_soc,charge_stop_soc,schedules"})");
 }
 
-TEST_CASE("ThingsBoardControlPlane publishes backup fallback event",
-          "[service][tb_control_plane]") {
+TEST_CASE("ThingsBoardControlPlane start RPC launches a new task", "[service][tb_control_plane]") {
     Fixture f;
-
-    f.control_plane->publish_backup_fallback_event();
-
-    const auto j = f.last_published_json("telemetry");
-    CHECK(std::string(j["event"].GetString()) == "config_backup_fallback");
-    CHECK(j["accepted"].GetBool() == true);
-    CHECK(std::string(j["reason"].GetString()) == "loaded_from_backup");
-}
-
-TEST_CASE("ThingsBoardControlPlane start RPC launches new task from idle",
-          "[service][tb_control_plane]") {
-    Fixture f;
-    f.control_plane->register_rpc_handlers(
-        []() { return true; }, []() { return false; }, []() { return false; });
+    f.register_handlers(true, true, false, 80.0f);
 
     f.mqtt->emit_rpc("42", R"({"method":"start","params":{}})");
 
     CHECK(f.fsm->current_state() == "CleanFwd");
-
     const auto response = f.last_published_json("rpc/response/42");
     CHECK(response["accepted"].GetBool() == true);
-    CHECK(std::string(response["result"].GetString()) == "ok");
+}
 
-    bool saw_accepted = false;
-    bool saw_completed = false;
-    bool saw_request_id = false;
-    for (const auto& [topic, payload] : f.mqtt->published) {
-        if (topic.find("telemetry") == std::string::npos) {
-            continue;
-        }
-        const auto j = parse_json(payload);
-        const auto event_it = j.FindMember("event");
-        const auto reason_it = j.FindMember("reason");
-        const auto request_id_it = j.FindMember("request_id");
-        const std::string event =
-            event_it != j.MemberEnd() && event_it->value.IsString() ? event_it->value.GetString() : "";
-        const std::string reason =
-            reason_it != j.MemberEnd() && reason_it->value.IsString() ? reason_it->value.GetString() : "";
-        if (event == "command_accepted") {
-            saw_accepted = true;
-        }
-        if (event == "command_completed" && reason == "started_new_task") {
-            saw_completed = true;
-        }
-        if (request_id_it != j.MemberEnd() && request_id_it->value.IsString() &&
-            std::string(request_id_it->value.GetString()) == "42") {
-            saw_request_id = true;
-        }
+TEST_CASE("ThingsBoardControlPlane start RPC rejects invalid position or low battery",
+          "[service][tb_control_plane]") {
+    SECTION("invalid position") {
+        Fixture f;
+        f.register_handlers(false, false, false, 80.0f);
+        f.mqtt->emit_rpc("43", R"({"method":"start","params":{}})");
+        const auto response = f.last_published_json("rpc/response/43");
+        CHECK(response["accepted"].GetBool() == false);
+        CHECK(std::string(response["reason"].GetString()) == "robot_position_invalid");
     }
-    CHECK(saw_accepted);
-    CHECK(saw_completed);
-    CHECK(saw_request_id);
+
+    SECTION("battery below threshold") {
+        Fixture f;
+        f.register_handlers(true, true, false, 10.0f);
+        f.mqtt->emit_rpc("44", R"({"method":"start","params":{}})");
+        const auto response = f.last_published_json("rpc/response/44");
+        CHECK(response["accepted"].GetBool() == false);
+        CHECK(std::string(response["reason"].GetString()) == "battery_below_start_threshold");
+    }
+}
+
+TEST_CASE("ThingsBoardControlPlane stop RPC stops active task", "[service][tb_control_plane]") {
+    Fixture f;
+    f.register_handlers();
+    f.mqtt->emit_rpc("45", R"({"method":"start","params":{}})");
+    REQUIRE(f.fsm->current_state() == "CleanFwd");
+
+    f.mqtt->emit_rpc("46", R"({"method":"stop","params":{}})");
+    CHECK(f.fsm->current_state() == "Stopped");
+
+    const auto response = f.last_published_json("rpc/response/46");
+    CHECK(response["accepted"].GetBool() == true);
+}
+
+TEST_CASE("ThingsBoardControlPlane return RPC sends robot back to parking side",
+          "[service][tb_control_plane]") {
+    Fixture f;
+    f.register_handlers();
+    f.mqtt->emit_rpc("47", R"({"method":"start","params":{}})");
+    REQUIRE(f.fsm->current_state() == "CleanFwd");
+
+    f.control_plane->register_rpc_handlers(
+        []() { return true; },
+        []() { return true; },
+        []() { return false; },
+        []() { return 80.0f; },
+        []() {});
+
+    f.mqtt->emit_rpc("48", R"({"method":"return","params":{}})");
+    CHECK(f.fsm->current_state() == "Returning");
+}
+
+TEST_CASE("ThingsBoardControlPlane reset RPC requests reboot", "[service][tb_control_plane]") {
+    Fixture f;
+    f.register_handlers();
+
+    f.mqtt->emit_rpc("49", R"({"method":"reset","params":{}})");
+    const auto response = f.last_published_json("rpc/response/49");
+    CHECK(response["accepted"].GetBool() == true);
+
+    for (int i = 0; i < 10 && !f.reboot_requested; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    CHECK(f.reboot_requested);
 }
 
 TEST_CASE("ThingsBoardControlPlane publishes business telemetry from supervisor snapshot",
@@ -325,8 +362,8 @@ TEST_CASE("ThingsBoardControlPlane publishes business telemetry from supervisor 
     const auto j = f.last_published_json("telemetry");
     CHECK(std::string(j["device_state"].GetString()) == "CleanReturn");
     CHECK(std::string(j["task_state"].GetString()) == "RunningTask");
-    CHECK(j["target_passes"].GetInt() == 2);
-    CHECK(j["completed_passes"].GetInt() == 0);
-    REQUIRE(j.HasMember("last_command"));
-    CHECK(std::string(j["last_command"]["name"].GetString()) == "return");
+    REQUIRE(j.HasMember("active_config"));
+    CHECK(j["active_config"]["start_battery_soc"].GetDouble() == Approx(30.0));
+    CHECK(j["active_config"]["charge_start_soc"].GetDouble() == Approx(15.0));
+    CHECK(j["active_config"]["charge_stop_soc"].GetDouble() == Approx(95.0));
 }

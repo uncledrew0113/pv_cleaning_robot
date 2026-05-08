@@ -158,6 +158,7 @@ add_executable(hw_tests
   integration/hardware/distance_sensor_hw_test.cc
 
   ${COMMON_SRCS}
+  integration/hardware/brush_hw_test.cc
 )
 
 target_include_directories(hw_tests PRIVATE

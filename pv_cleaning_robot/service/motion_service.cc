@@ -25,9 +25,35 @@ MotionService::MotionService(std::shared_ptr<device::WalkMotorGroup> group,
     , bus_(bus)
     , cfg_(cfg) {}
 
+void MotionService::set_parking_side_provider(std::function<ParkingSide()> provider) {
+    parking_side_provider_ = std::move(provider);
+}
+
+void MotionService::set_runtime_config_provider(std::function<TbRuntimeConfig()> provider) {
+    runtime_config_provider_ = std::move(provider);
+}
+
+int MotionService::task_direction_sign() const {
+    if (!parking_side_provider_)
+        return 1;
+    return parking_side_provider_() == ParkingSide::Left ? -1 : 1;
+}
+
+void MotionService::sync_runtime_config() {
+    if (!runtime_config_provider_) {
+        return;
+    }
+    const auto runtime_cfg = runtime_config_provider_();
+    cfg_.clean_speed_rpm = static_cast<float>(runtime_cfg.clean_speed_rpm);
+    cfg_.return_speed_rpm = static_cast<float>(runtime_cfg.return_speed_rpm);
+    cfg_.brush_rpm = runtime_cfg.brush_rpm;
+    cfg_.return_brush_rpm = runtime_cfg.return_brush_rpm;
+}
+
 // ── 运动控制 ──────────────────────────────────────────────────────────────
 
 bool MotionService::start_cleaning() {
+    sync_runtime_config();
     // 解除可能由 SafetyMonitor::on_limit_trigger() 触发的 emergency_override 锁
     group_->clear_override();
 
@@ -46,12 +72,13 @@ bool MotionService::start_cleaning() {
 
     // 物理安装：LT/RT 正转=前进，LB/RB 因安装方向相反，负转=前进
     // 车辆前进：LT=+spd, RT=+spd, LB=-spd, RB=-spd
-    const float spd = cfg_.clean_speed_rpm;
+    const int dir = task_direction_sign();
+    const float spd = cfg_.clean_speed_rpm * static_cast<float>(dir);
     if (group_->set_speeds(spd, spd, -spd, -spd) != device::DeviceError::OK)
         return false;
 
     brush_->set_mode_speed();
-    brush_->set_rpm(cfg_.brush_rpm);
+    brush_->set_rpm(cfg_.brush_rpm * dir);
     return true;
 }
 
@@ -69,12 +96,14 @@ void MotionService::pause_task() {
 }
 
 bool MotionService::start_returning() {
+    sync_runtime_config();
     // 解除可能由 SafetyMonitor 触发的 emergency_override 锁，确保心跳正常恢复
     group_->clear_override();
 
     // 返程滚刷反向运行（清洁板面残留，绝对值同 brush_rpm，方向取反）
+    const int dir = task_direction_sign();
     brush_->set_mode_speed();
-    brush_->set_rpm(-cfg_.return_brush_rpm);
+    brush_->set_rpm(-cfg_.return_brush_rpm * dir);
 
     // 返程保持航向速率 PID：目标角速度始终为 0，正返程完全对称，无需锁定航向目标。
     //   轨道几何慢速 yaw 变化（omega_z < deadband）：死区过滤，不纠偏 → 不脱轨
@@ -91,7 +120,7 @@ bool MotionService::start_returning() {
 
     // 物理安装：LT/RT 负转=后退，LB/RB 安装相反正转=后退
     // 车辆后退：LT=-spd, RT=-spd, LB=+spd, RB=+spd
-    const float spd = cfg_.return_speed_rpm;
+    const float spd = cfg_.return_speed_rpm * static_cast<float>(dir);
     if (group_->set_speeds(-spd, -spd, +spd, +spd) != device::DeviceError::OK)
         return false;
 
@@ -99,6 +128,7 @@ bool MotionService::start_returning() {
 }
 
 bool MotionService::start_returning_no_brush() {
+    sync_runtime_config();
     // P1 故障路径：停刷再反向返回（保持航向 PID 防止返程漂移）
     brush_->stop();
     group_->clear_override();
@@ -115,7 +145,7 @@ bool MotionService::start_returning_no_brush() {
     if (group_->set_mode_all(protocol::WalkMotorMode::SPEED) != device::DeviceError::OK)
         return false;
 
-    const float spd = cfg_.return_speed_rpm;
+    const float spd = cfg_.return_speed_rpm * static_cast<float>(task_direction_sign());
     if (group_->set_speeds(-spd, -spd, +spd, +spd) != device::DeviceError::OK)
         return false;
 
@@ -129,8 +159,10 @@ void MotionService::emergency_stop() {
 }
 
 bool MotionService::set_walk_speed(float rpm) {
-    // 物理安装：LB/RB 安装方向与 LT/RT 相反，需取反才能同向运动
-    return group_->set_speeds(rpm, rpm, -rpm, -rpm) == device::DeviceError::OK;
+    // 正值语义统一为“从停机位驶向对侧端点”。
+    const float directed_rpm = rpm * static_cast<float>(task_direction_sign());
+    return group_->set_speeds(directed_rpm, directed_rpm, -directed_rpm, -directed_rpm) ==
+           device::DeviceError::OK;
 }
 
 // ── 边缘触发接口 ──────────────────────────────────────────────────────────

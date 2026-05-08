@@ -669,34 +669,6 @@ TEST_CASE("System（真实硬件）P1 故障链：FSM Returning → EvParkingSid
     spdlog::info("[hw_system][p1_fault_chain] PASS: CleanFwd→Returning→Charging");
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// [hw_system][low_battery] — EvLowBattery → Returning → Charging
-// ────────────────────────────────────────────────────────────────────────────
-TEST_CASE("System（真实硬件）EvLowBattery → Returning → Charging", "[hw_system][low_battery]") {
-    spdlog::warn("[hw_system][low_battery] ⚠ 此测试将短暂启动电机，确保安全！");
-
-    hw::FullSystemFixture f;
-    REQUIRE(f.init());
-
-    f.fsm->dispatch(start_from_parking_side(2.0f));
-    REQUIRE(f.fsm->current_state() == "CleanFwd");
-
-    std::this_thread::sleep_for(200ms);
-
-    // 真实 BMS SOC 值（仅记录，不用于控制流）
-    f.bms->update();
-    auto bd = f.bms->get_data();
-    spdlog::info(
-        "[hw_system][low_battery] 真实 BMS SOC={:.1f}% voltage={:.2f}V", bd.soc_pct, bd.voltage_v);
-
-    f.fsm->dispatch(robot::app::EvLowBattery{});
-    REQUIRE(f.fsm->current_state() == "Returning");
-
-    f.fsm->dispatch(robot::app::EvParkingSideLimitSettled{});
-    REQUIRE(f.fsm->current_state() == "Charging");
-
-    spdlog::info("[hw_system][low_battery] PASS: CleanFwd→Returning→Charging");
-}
 
 // ────────────────────────────────────────────────────────────────────────────
 // [hw_system][n1_clean_cycle] — N=1 完整任务链（手动触发真实前右限位）

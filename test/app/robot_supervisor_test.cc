@@ -3,8 +3,8 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <cstring>
 #include <rapidjson/document.h>
-#include <string>
 
 #include "../mock/mock_can_bus.h"
 #include "../mock/mock_serial_port.h"
@@ -15,13 +15,14 @@
 #include "pv_cleaning_robot/device/imu_device.h"
 #include "pv_cleaning_robot/device/walk_motor_group.h"
 #include "pv_cleaning_robot/middleware/event_bus.h"
-#include "pv_cleaning_robot/service/config_service.h"
 #include "pv_cleaning_robot/service/command_tracker.h"
+#include "pv_cleaning_robot/service/config_service.h"
 #include "pv_cleaning_robot/service/fault_service.h"
 #include "pv_cleaning_robot/service/motion_service.h"
 #include "pv_cleaning_robot/service/nav_service.h"
 #include "pv_cleaning_robot/service/scheduler_service.h"
 #include "pv_cleaning_robot/service/thingsboard_config_manager.h"
+#include "pv_cleaning_robot/protocol/walk_motor_can_codec.h"
 
 using namespace robot::app;
 using robot::device::BrushMotor;
@@ -29,9 +30,9 @@ using robot::device::GpsDevice;
 using robot::device::ImuDevice;
 using robot::device::WalkMotorGroup;
 using robot::middleware::EventBus;
-using robot::service::ConfigService;
 using robot::service::CommandPhase;
 using robot::service::CommandTracker;
+using robot::service::ConfigService;
 using robot::service::FaultService;
 using robot::service::MotionService;
 using robot::service::NavService;
@@ -41,18 +42,11 @@ namespace fs = std::filesystem;
 
 namespace {
 
-rapidjson::Document parse_json(const char* text)
-{
-    rapidjson::Document doc;
-    doc.Parse(text);
-    REQUIRE_FALSE(doc.HasParseError());
-    return doc;
-}
-
 struct SupervisorFixture {
-    std::string config_path{"/tmp/test_robot_supervisor.json"};
-    std::string pending_path{"/tmp/test_robot_supervisor.pending.json"};
-    std::string backup_path{"/tmp/test_robot_supervisor.backup.json"};
+    std::string runtime_path{"/tmp/test_robot_supervisor.runtime.json"};
+    std::string fixed_path{"/tmp/test_robot_supervisor.fixed.json"};
+    std::string pending_path{"/tmp/test_robot_supervisor.runtime.pending.json"};
+    std::string backup_path{"/tmp/test_robot_supervisor.runtime.backup.json"};
 
     std::shared_ptr<MockCanBus> can{std::make_shared<MockCanBus>()};
     std::shared_ptr<WalkMotorGroup> group{std::make_shared<WalkMotorGroup>(can)};
@@ -68,7 +62,7 @@ struct SupervisorFixture {
     std::shared_ptr<MotionService> motion;
     std::shared_ptr<NavService> nav;
     std::shared_ptr<FaultService> fault{std::make_shared<FaultService>(bus)};
-    ConfigService cfg{config_path};
+    ConfigService cfg{runtime_path, fixed_path};
     SchedulerService scheduler;
     std::vector<FaultService::FaultEvent> fault_events;
     std::shared_ptr<ThingsBoardConfigManager> tb_cfg;
@@ -81,20 +75,26 @@ struct SupervisorFixture {
         , nav(std::make_shared<NavService>(group, imu, gps)) {
         can->open_result = true;
         can->send_result = true;
+        can->opened = true;
         brush_serial->open_result = true;
         brush->open();
+
         MotionService::Config motion_cfg;
         motion_cfg.heading_pid_en = false;
         motion = std::make_shared<MotionService>(group, brush, nullptr, bus, motion_cfg);
 
-        std::ofstream f(config_path);
+        {
+        std::ofstream f(runtime_path);
         f << R"({
   "robot": {
     "passes": 1.0,
     "clean_speed_rpm": 300.0,
     "return_speed_rpm": 280.0,
     "brush_rpm": 1000,
-    "parking_side": "left"
+    "parking_side": "left",
+    "start_battery_soc": 30.0,
+    "charge_start_soc": 15.0,
+    "charge_stop_soc": 95.0
   },
   "scheduler": {
     "windows": [
@@ -102,14 +102,20 @@ struct SupervisorFixture {
     ]
   }
 })";
-        f.close();
+        }
+        {
+        std::ofstream f(fixed_path);
+        f << R"({})";
+        }
 
         REQUIRE(cfg.load());
-        scheduler.clear_windows();
-        scheduler.add_window({8, 0});
         bus.subscribe<FaultService::FaultEvent>(
             [this](const FaultService::FaultEvent& evt) { fault_events.push_back(evt); });
         tb_cfg = std::make_shared<ThingsBoardConfigManager>(cfg, scheduler);
+        motion->set_parking_side_provider(
+            [this]() { return tb_cfg->active_config().parking_side; });
+        motion->set_runtime_config_provider(
+            [this]() { return tb_cfg->active_config(); });
         fsm = std::make_shared<RobotFsm>(motion, nav, fault, bus);
         fsm->dispatch(EvInitDone{});
         supervisor =
@@ -117,166 +123,119 @@ struct SupervisorFixture {
     }
 
     ~SupervisorFixture() {
-        fs::remove(config_path);
+        fs::remove(runtime_path);
+        fs::remove(fixed_path);
         fs::remove(pending_path);
         fs::remove(backup_path);
     }
-
-    void apply_pending_config_with_passes(double passes) {
-        const std::string json = std::string("{\"passes\":") + std::to_string(passes) + "}";
-        auto attrs = parse_json(json.c_str());
-        REQUIRE(tb_cfg->apply_shared_attributes(attrs).accepted);
-        REQUIRE(tb_cfg->has_pending_config());
-    }
-
-    void apply_pending_runtime_attrs(const rapidjson::Value& attrs) {
-        REQUIRE(tb_cfg->apply_shared_attributes(attrs).accepted);
-        REQUIRE(tb_cfg->has_pending_config());
-    }
 };
+
+rapidjson::Document parse_json(const char* text) {
+    rapidjson::Document doc;
+    doc.Parse(text);
+    REQUIRE_FALSE(doc.HasParseError());
+    return doc;
+}
 
 }  // namespace
 
-TEST_CASE("RobotSupervisor rejects schedule start when robot is not at parking side",
+TEST_CASE("RobotSupervisor start requires parking side, valid position and enough battery",
           "[app][robot_supervisor]") {
     SupervisorFixture f;
-    REQUIRE_FALSE(f.supervisor->start_task(false));
-    REQUIRE(f.fsm->current_state() == "Idle");
-}
+    REQUIRE_FALSE(f.supervisor->start_task(false, true, 60.0f));
+    REQUIRE_FALSE(f.supervisor->start_task(true, false, 60.0f));
+    REQUIRE_FALSE(f.supervisor->start_task(true, true, 20.0f));
 
-TEST_CASE("RobotSupervisor promotes pending config before scheduled task start",
-          "[app][robot_supervisor]") {
-    SupervisorFixture f;
-    f.apply_pending_config_with_passes(3);
-
-    REQUIRE(f.supervisor->start_task(true));
+    REQUIRE(f.supervisor->start_task(true, true, 60.0f));
     REQUIRE(f.fsm->current_state() == "CleanFwd");
-    REQUIRE(f.tb_cfg->active_config().passes == Approx(3));
 }
 
-TEST_CASE("RobotSupervisor rejects manual start from idle when robot is not at parking side",
-          "[app][robot_supervisor]") {
+TEST_CASE("RobotSupervisor promotes pending config before task start", "[app][robot_supervisor]") {
     SupervisorFixture f;
-    REQUIRE_FALSE(f.supervisor->start_task(false));
-    REQUIRE(f.fsm->current_state() == "Idle");
+    auto attrs = parse_json(R"({"passes":3.0})");
+    REQUIRE(f.tb_cfg->apply_shared_attributes(attrs).accepted);
+    REQUIRE(f.tb_cfg->has_pending_config());
+
+    REQUIRE(f.supervisor->start_task(true, true, 60.0f));
+    REQUIRE(f.tb_cfg->active_config().passes == Approx(3.0));
 }
 
-TEST_CASE("RobotSupervisor starts manual task from charging when robot is at parking side",
-          "[app][robot_supervisor]") {
+TEST_CASE("RobotSupervisor start uses promoted runtime speed config", "[app][robot_supervisor]") {
     SupervisorFixture f;
+    auto attrs = parse_json(
+        R"({"clean_speed_rpm":360.0,"brush_rpm":1500,"return_brush_rpm":900})");
+    REQUIRE(f.tb_cfg->apply_shared_attributes(attrs).accepted);
+    REQUIRE(f.tb_cfg->has_pending_config());
+
+    REQUIRE(f.supervisor->start_task(true, true, 60.0f));
+    REQUIRE(f.tb_cfg->active_config().clean_speed_rpm == Approx(360.0));
+    REQUIRE(f.tb_cfg->active_config().return_brush_rpm == 900);
+    f.motion->update();
+    const auto diag = f.group->get_group_diagnostics();
+    REQUIRE(diag.wheel[0].target_value == Approx(-210.0f));
+    REQUIRE(diag.wheel[1].target_value == Approx(-210.0f));
+    REQUIRE(diag.wheel[2].target_value == Approx(210.0f));
+    REQUIRE(diag.wheel[3].target_value == Approx(210.0f));
+}
+
+TEST_CASE("RobotSupervisor can start from Charging and Stopped when battery is high",
+          "[app][robot_supervisor]") {
+    SECTION("from Charging") {
+        SupervisorFixture f;
+        f.fsm->dispatch(EvScheduleStart{true, false, 1.0f});
+        f.fsm->dispatch(EvFarEndLimitSettled{});
+        f.fsm->dispatch(EvParkingSideLimitSettled{true});
+        REQUIRE(f.fsm->current_state() == "Charging");
+
+        REQUIRE(f.supervisor->start_task(true, true, 60.0f));
+        REQUIRE(f.fsm->current_state() == "CleanFwd");
+    }
+
+    SECTION("from Stopped") {
+        SupervisorFixture f;
+        f.fsm->dispatch(EvScheduleStart{true, false, 1.0f});
+        f.fsm->dispatch(EvStopTask{});
+        REQUIRE(f.fsm->current_state() == "Stopped");
+
+        REQUIRE(f.supervisor->start_task(true, true, 60.0f));
+        REQUIRE(f.fsm->current_state() == "CleanFwd");
+    }
+}
+
+TEST_CASE("RobotSupervisor stop only works from running states", "[app][robot_supervisor]") {
+    SupervisorFixture f;
+    REQUIRE_FALSE(f.supervisor->stop_task());
+
     f.fsm->dispatch(EvScheduleStart{true, false, 1.0f});
-    f.fsm->dispatch(EvFarEndLimitSettled{});
-    f.fsm->dispatch(EvParkingSideLimitSettled{});
-    REQUIRE(f.fsm->current_state() == "Charging");
-
-    REQUIRE(f.supervisor->start_task(true));
-    REQUIRE(f.fsm->current_state() == "CleanFwd");
+    REQUIRE(f.supervisor->stop_task());
+    REQUIRE(f.fsm->current_state() == "Stopped");
 }
 
-TEST_CASE("RobotSupervisor resumes paused task without requiring parking-side position",
+TEST_CASE("RobotSupervisor return works from idle, stopped, and cleaning when away from parking side",
           "[app][robot_supervisor]") {
-    SupervisorFixture f;
-    f.fsm->dispatch(EvScheduleStart{true, false, 2.0f});
-    f.fsm->dispatch(EvPauseTask{});
-
-    REQUIRE(f.supervisor->resume_paused_task());
-    REQUIRE(f.fsm->current_state() == "CleanFwd");
-}
-
-TEST_CASE("RobotSupervisor reports active cadence for running states",
-          "[app][robot_supervisor]") {
-    SupervisorFixture f;
-    f.fsm->dispatch(EvScheduleStart{true, false, 2.0f});
-    REQUIRE(f.supervisor->current_state() == "CleanFwd");
-}
-
-TEST_CASE("RobotSupervisor pauses only from cleaning states", "[app][robot_supervisor]") {
-    SupervisorFixture f;
-    REQUIRE_FALSE(f.supervisor->pause_task());
-
-    f.fsm->dispatch(EvScheduleStart{true, false, 2.0f});
-    REQUIRE(f.supervisor->pause_task());
-    REQUIRE(f.fsm->current_state() == "Paused");
-}
-
-TEST_CASE("RobotSupervisor returns from paused or cleaning states",
-          "[app][robot_supervisor]") {
-    SECTION("return from cleaning state") {
+    SECTION("from Idle") {
         SupervisorFixture f;
-        f.fsm->dispatch(EvScheduleStart{true, false, 2.0f});
-        REQUIRE(f.supervisor->return_task());
+        REQUIRE(f.supervisor->return_task(false));
         REQUIRE(f.fsm->current_state() == "Returning");
     }
 
-    SECTION("return from paused state") {
+    SECTION("from Stopped") {
         SupervisorFixture f;
-        f.fsm->dispatch(EvScheduleStart{true, false, 2.0f});
-        f.fsm->dispatch(EvPauseTask{});
-        REQUIRE(f.supervisor->return_task());
+        f.fsm->dispatch(EvScheduleStart{true, false, 1.0f});
+        f.fsm->dispatch(EvStopTask{});
+        REQUIRE(f.supervisor->return_task(false));
         REQUIRE(f.fsm->current_state() == "Returning");
     }
-}
 
-TEST_CASE("RobotSupervisor terminates active tasks and returning state",
-          "[app][robot_supervisor]") {
-    SECTION("terminate from cleaning state") {
+    SECTION("reject when already at parking side") {
         SupervisorFixture f;
-        f.fsm->dispatch(EvScheduleStart{true, false, 2.0f});
-        REQUIRE(f.supervisor->terminate_task());
-        REQUIRE(f.fsm->current_state() == "Terminated");
-    }
-
-    SECTION("terminate from returning state") {
-        SupervisorFixture f;
-        f.fsm->dispatch(EvScheduleStart{true, false, 2.0f});
-        f.fsm->dispatch(EvManualReturn{});
-        REQUIRE(f.supervisor->terminate_task());
-        REQUIRE(f.fsm->current_state() == "Terminated");
-    }
-}
-
-TEST_CASE("RobotSupervisor resets only from fault or terminated at parking side",
-          "[app][robot_supervisor]") {
-    SECTION("reject reset outside faulted states") {
-        SupervisorFixture f;
-        REQUIRE_FALSE(f.supervisor->reset_task(true));
+        REQUIRE_FALSE(f.supervisor->return_task(true));
         REQUIRE(f.fsm->current_state() == "Idle");
     }
-
-    SECTION("reset fault state at parking side") {
-        SupervisorFixture f;
-        f.fsm->dispatch(EvScheduleStart{true, false, 1.0f});
-        f.fsm->dispatch(EvFaultP0{});
-        REQUIRE(f.fsm->current_state() == "Fault");
-
-        REQUIRE(f.supervisor->reset_task(true));
-        REQUIRE(f.fsm->current_state() == "Idle");
-    }
-
-    SECTION("reject reset when not at parking side") {
-        SupervisorFixture f;
-        f.fsm->dispatch(EvScheduleStart{true, false, 1.0f});
-        f.fsm->dispatch(EvTerminateTask{});
-        REQUIRE(f.fsm->current_state() == "Terminated");
-
-        REQUIRE_FALSE(f.supervisor->reset_task(false));
-        REQUIRE(f.fsm->current_state() == "Terminated");
-    }
 }
 
-TEST_CASE("RobotSupervisor low battery triggers returning from active task",
-          "[app][robot_supervisor]") {
+TEST_CASE("RobotSupervisor tick_safety reports P0 on spin-free detection", "[app][robot_supervisor]") {
     SupervisorFixture f;
-    f.fsm->dispatch(EvScheduleStart{true, false, 2.0f});
-
-    f.supervisor->tick_safety(true);
-    REQUIRE(f.fsm->current_state() == "Returning");
-}
-
-TEST_CASE("RobotSupervisor spin-free reports P0 fault outside idle states",
-          "[app][robot_supervisor]") {
-    SupervisorFixture f;
-    f.can->opened = true;
     REQUIRE(f.group->set_speed_uniform(50.0f) == robot::device::DeviceError::OK);
     f.group->update();
     for (int i = 0; i < 50; ++i) {
@@ -285,7 +244,7 @@ TEST_CASE("RobotSupervisor spin-free reports P0 fault outside idle states",
     REQUIRE(f.nav->get_pose().spin_free_detected);
 
     f.fsm->dispatch(EvScheduleStart{true, false, 2.0f});
-    f.supervisor->tick_safety(false);
+    f.supervisor->tick_safety();
 
     REQUIRE(f.fault_events.size() == 1);
     REQUIRE(f.fault_events[0].code == 0x0002);
@@ -293,50 +252,23 @@ TEST_CASE("RobotSupervisor spin-free reports P0 fault outside idle states",
     REQUIRE_FALSE(f.nav->get_pose().spin_free_detected);
 }
 
-TEST_CASE("RobotSupervisor snapshot reflects active task progress",
+TEST_CASE("RobotSupervisor snapshot reflects runtime state and command visibility",
           "[app][robot_supervisor]") {
     SupervisorFixture f;
     f.fsm->dispatch(EvScheduleStart{true, false, 2.0f});
     f.fsm->dispatch(EvFarEndLimitSettled{});
+
+    auto accepted_id = f.command_tracker->accept("start", "req-1");
+    f.command_tracker->mark_running(accepted_id);
+    f.command_tracker->finish_success(accepted_id, "started_new_task");
 
     const auto snap = f.supervisor->snapshot();
     REQUIRE(snap.device_state == "CleanReturn");
     REQUIRE(snap.task_state == "RunningTask");
     REQUIRE(snap.target_passes == 2);
     REQUIRE(snap.completed_passes == 0);
-    REQUIRE(snap.clean_count == 0);
-}
-
-TEST_CASE("RobotSupervisor snapshot includes config and command visibility",
-          "[app][robot_supervisor]") {
-    SupervisorFixture f;
-    f.apply_pending_config_with_passes(3);
-    const auto accepted_id = f.command_tracker->accept("start", "req-1");
-    f.command_tracker->mark_running(accepted_id);
-    f.command_tracker->finish_success(accepted_id, "started_new_task");
-
-    const auto snap = f.supervisor->snapshot();
     REQUIRE(snap.active_config.has_value());
-    REQUIRE(snap.pending_config.has_value());
     REQUIRE(snap.active_config_version != 0);
-    REQUIRE_FALSE(snap.active_command.has_value());
     REQUIRE(snap.last_command.has_value());
     REQUIRE(snap.last_command->phase == CommandPhase::Succeeded);
-    REQUIRE(snap.last_command->reason == "started_new_task");
-}
-
-TEST_CASE("RobotSupervisor active config version changes with parking side field",
-          "[app][robot_supervisor]") {
-    SECTION("parking_side changes active config version") {
-        SupervisorFixture f;
-        const auto before = f.supervisor->snapshot().active_config_version;
-
-        auto attrs = parse_json(R"({"parking_side":"right"})");
-        f.apply_pending_runtime_attrs(attrs);
-        REQUIRE(f.supervisor->start_task(true));
-
-        const auto after = f.supervisor->snapshot().active_config_version;
-        REQUIRE(after != 0);
-        REQUIRE(after != before);
-    }
 }

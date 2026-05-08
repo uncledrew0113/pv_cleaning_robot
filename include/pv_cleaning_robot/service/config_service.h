@@ -9,60 +9,50 @@
 
 namespace robot::service {
 
-/// @brief 全局配置服务（RapidJSON，config.json 驱动）
+/// @brief 全局配置服务（RapidJSON，多文件配置驱动）
 ///
 /// 提供类型安全的嵌套路径访问：
 ///   cfg.get<std::string>("network.mqtt.broker_uri")
+///
+/// 约定：
+/// - `config_path` 指向当前生效的 runtime 配置文件
+/// - `fixed_path` 指向固定硬件/系统配置文件；缺省时按 runtime 路径自动推导
+/// - `pending_path` 由 runtime 路径自动推导，仅用于下次任务生效配置
+///
+/// 读取规则：
+/// - `get()` 先读 runtime，再回退到 fixed
+/// - `get_fixed()` 只读 fixed
 class ConfigService {
 public:
-    explicit ConfigService(std::string config_path);
+    explicit ConfigService(std::string config_path, std::string fixed_path = {});
 
     /// 加载/重新加载配置文件
     bool load();
+
+    /// 加载固定配置文件
+    bool load_fixed();
 
     /// 获取配置项（path 以 '.' 分隔，例如 "network.mqtt.port"）
     template <typename T>
     T get(const std::string& path, const T& default_val = T{}) const
     {
         std::lock_guard<std::mutex> lk(mtx_);
-        try {
-            auto parts = split_path(path);
-            const rapidjson::Value* node = &root_;
-            for (auto& p : parts) {
-                if (!node->IsObject()) {
-                    return default_val;
-                }
-                auto it = node->FindMember(p.c_str());
-                if (it == node->MemberEnd()) {
-                    return default_val;
-                }
-                node = &it->value;
-            }
+        if (const auto value = get_optional_from_document<T>(root_, path)) {
+            return *value;
+        }
+        if (const auto value = get_optional_from_document<T>(fixed_root_, path)) {
+            return *value;
+        }
+        return default_val;
+    }
 
-            if constexpr (std::is_same_v<T, std::string>) {
-                if (node->IsString()) {
-                    return node->GetString();
-                }
-            } else if constexpr (std::is_same_v<T, bool>) {
-                if (node->IsBool()) {
-                    return node->GetBool();
-                }
-            } else if constexpr (std::is_integral_v<T>) {
-                if (node->IsInt64()) {
-                    return static_cast<T>(node->GetInt64());
-                }
-                if (node->IsUint64()) {
-                    return static_cast<T>(node->GetUint64());
-                }
-                if (node->IsNumber()) {
-                    return static_cast<T>(node->GetDouble());
-                }
-            } else if constexpr (std::is_floating_point_v<T>) {
-                if (node->IsNumber()) {
-                    return static_cast<T>(node->GetDouble());
-                }
-            }
-        } catch (...) {
+    /// 获取固定配置项（path 以 '.' 分隔）
+    template <typename T>
+    T get_fixed(const std::string& path, const T& default_val = T{}) const
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        if (const auto value = get_optional_from_document<T>(fixed_root_, path)) {
+            return *value;
         }
         return default_val;
     }
@@ -145,17 +135,72 @@ public:
 
     bool is_loaded() const;
 
+    const std::string& runtime_path() const noexcept { return config_path_; }
+    const std::string& fixed_path() const noexcept { return fixed_path_; }
+    const std::string& pending_path() const noexcept { return pending_path_; }
+
 private:
+    template <typename T>
+    static std::optional<T> get_optional_from_document(const rapidjson::Value& root,
+                                                       const std::string& path)
+    {
+        try {
+            auto parts = split_path(path);
+            const rapidjson::Value* node = &root;
+            for (auto& p : parts) {
+                if (!node->IsObject()) {
+                    return std::nullopt;
+                }
+                auto it = node->FindMember(p.c_str());
+                if (it == node->MemberEnd()) {
+                    return std::nullopt;
+                }
+                node = &it->value;
+            }
+
+            if constexpr (std::is_same_v<T, std::string>) {
+                if (node->IsString()) {
+                    return std::string(node->GetString());
+                }
+            } else if constexpr (std::is_same_v<T, bool>) {
+                if (node->IsBool()) {
+                    return node->GetBool();
+                }
+            } else if constexpr (std::is_integral_v<T>) {
+                if (node->IsInt64()) {
+                    return static_cast<T>(node->GetInt64());
+                }
+                if (node->IsUint64()) {
+                    return static_cast<T>(node->GetUint64());
+                }
+                if (node->IsNumber()) {
+                    return static_cast<T>(node->GetDouble());
+                }
+            } else if constexpr (std::is_floating_point_v<T>) {
+                if (node->IsNumber()) {
+                    return static_cast<T>(node->GetDouble());
+                }
+            }
+        } catch (...) {
+        }
+        return std::nullopt;
+    }
+
     static std::vector<std::string> split_path(const std::string& path);
     static std::string derive_companion_path(const std::string& active_path, const char* suffix);
+    static std::string derive_fixed_path(const std::string& runtime_path);
     static bool write_json_file(const std::string& path, const rapidjson::Value& root);
     static std::optional<rapidjson::Document> read_json_file(const std::string& path);
     static rapidjson::Document clone_document(const rapidjson::Value& root);
     bool save_locked() const;
 
     std::string       config_path_;
+    std::string       fixed_path_;
+    std::string       pending_path_;
     rapidjson::Document root_;
+    rapidjson::Document fixed_root_;
     bool              loaded_{false};
+    bool              fixed_loaded_{false};
     bool              last_load_used_backup_{false};
     mutable std::mutex mtx_;
 };

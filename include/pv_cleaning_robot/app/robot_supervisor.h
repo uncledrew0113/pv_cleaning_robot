@@ -24,13 +24,10 @@ public:
                     std::shared_ptr<service::FaultService> fault,
                     std::shared_ptr<service::NavService> nav);
 
-    bool start_task(bool at_parking_side);
-    bool resume_paused_task();
-    bool pause_task();
-    bool return_task();
-    bool terminate_task();
-    bool reset_task(bool at_parking_side);
-    void tick_safety(bool low_battery);
+    bool start_task(bool at_parking_side, bool position_valid, float battery_soc);
+    bool stop_task();
+    bool return_task(bool at_parking_side);
+    void tick_safety();
     std::string current_state() const;
     RobotRuntimeSnapshot snapshot() const;
 

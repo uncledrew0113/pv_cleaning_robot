@@ -7,7 +7,7 @@ namespace robot::middleware {
 
 /// @brief 网络管理器——根据配置选择传输模式
 ///
-/// 传输模式（由 config.json `network.transport_mode` 决定）：
+/// 传输模式（由 fixed config 的 `network.transport_mode` 决定）：
 ///   mqtt_only     — 仅使用 MQTT
 ///   lorawan_only  — 仅使用 LoRaWAN
 ///   dual_parallel — MQTT + LoRaWAN 同时上报（publish → 同时投递两路）

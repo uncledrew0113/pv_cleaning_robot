@@ -20,6 +20,7 @@
 #include "pv_cleaning_robot/service/scheduler_service.h"
 #include "pv_cleaning_robot/service/thingsboard_config_manager.h"
 #include "pv_cleaning_robot/service/thingsboard_event_payload_builder.h"
+#include "integration/thingsboard_test_support.h"
 
 namespace fs = std::filesystem;
 
@@ -43,27 +44,6 @@ bool real_tb_test_enabled()
              env_value == "FALSE");
 }
 
-struct RepoPaths {
-    fs::path repo_root;
-    fs::path config_path;
-};
-
-std::optional<RepoPaths> find_repo_paths()
-{
-    fs::path current = fs::current_path();
-    for (int i = 0; i < 6; ++i) {
-        const auto candidate = current / "config" / "config.json";
-        if (fs::exists(candidate)) {
-            return RepoPaths{current, candidate};
-        }
-        if (!current.has_parent_path()) {
-            break;
-        }
-        current = current.parent_path();
-    }
-    return std::nullopt;
-}
-
 template <typename Pred>
 bool wait_until(Pred pred, std::chrono::seconds timeout)
 {
@@ -84,18 +64,6 @@ fs::path pending_config_path(const fs::path& config_path)
     return pending;
 }
 
-fs::path resolve_repo_relative(const fs::path& repo_root, const std::string& path)
-{
-    if (path.empty()) {
-        return {};
-    }
-    fs::path p(path);
-    if (p.is_absolute()) {
-        return p;
-    }
-    return repo_root / p;
-}
-
 SharedAttrTarget choose_legal_target(const std::optional<robot::service::TbRuntimeConfig>& current)
 {
     const SharedAttrTarget target_a{
@@ -113,36 +81,10 @@ SharedAttrTarget choose_legal_target(const std::optional<robot::service::TbRunti
     return target_a;
 }
 
-robot::middleware::MqttTransport::Config build_mqtt_config(
-    robot::service::ConfigService& cfg, const fs::path& repo_root)
-{
-    robot::middleware::MqttTransport::Config mqtt_cfg;
-    mqtt_cfg.broker_uri = cfg.get<std::string>("network.mqtt.broker_uri", "");
-    mqtt_cfg.client_id = cfg.get<std::string>("network.mqtt.client_id", "pv_robot_001");
-    mqtt_cfg.username = cfg.get<std::string>("network.mqtt.username", "");
-    mqtt_cfg.password = cfg.get<std::string>("network.mqtt.password", "");
-    mqtt_cfg.tls_enabled = cfg.get<bool>("network.mqtt.tls_enabled", false);
-    mqtt_cfg.ca_cert_path =
-        resolve_repo_relative(repo_root, cfg.get<std::string>("network.mqtt.ca_cert_path", ""))
-            .string();
-    mqtt_cfg.client_cert_path = resolve_repo_relative(
-                                    repo_root,
-                                    cfg.get<std::string>("network.mqtt.client_cert_path", ""))
-                                    .string();
-    mqtt_cfg.client_key_path = resolve_repo_relative(
-                                   repo_root,
-                                   cfg.get<std::string>("network.mqtt.client_key_path", ""))
-                                   .string();
-    mqtt_cfg.insecure_skip_server_name_check =
-        cfg.get<bool>("network.mqtt.insecure_skip_server_name_check", false);
-    mqtt_cfg.keep_alive_sec = cfg.get<int>("network.mqtt.keep_alive_s", 60);
-    mqtt_cfg.qos = cfg.get<int>("network.mqtt.qos", 1);
-    return mqtt_cfg;
-}
-
 struct RealThingsBoardFixture {
     fs::path repo_root;
-    fs::path config_path;
+    fs::path runtime_config_path;
+    fs::path fixed_config_path;
     fs::path cache_path{"/tmp/tb_real_integration_cache.jsonl"};
 
     robot::service::ConfigService cfg;
@@ -156,18 +98,18 @@ struct RealThingsBoardFixture {
     mutable std::mutex shared_attr_result_mtx;
     std::optional<robot::service::SharedAttrApplyResult> last_shared_attr_result;
 
-    RealThingsBoardFixture(const RepoPaths& paths)
+    RealThingsBoardFixture(const tb_test_support::RepoPaths& paths)
         : repo_root(paths.repo_root)
-        , config_path(paths.config_path)
-        , cfg(config_path.string())
+        , runtime_config_path(paths.runtime_config_path)
+        , fixed_config_path(paths.fixed_config_path)
+        , cfg(runtime_config_path.string(), fixed_config_path.string())
         , scheduler()
     {
         REQUIRE(cfg.load());
         tb_cfg = std::make_unique<robot::service::ThingsBoardConfigManager>(cfg, scheduler);
         fs::remove(cache_path);
-        auto mqtt_cfg = build_mqtt_config(cfg, repo_root);
+        auto mqtt_cfg = tb_test_support::build_mqtt_config(cfg, repo_root, "_real_attr_itest");
         REQUIRE_FALSE(mqtt_cfg.broker_uri.empty());
-        mqtt_cfg.client_id += "_real_attr_itest";
         spdlog::info(
             "[TB real test] broker='{}' tls_enabled={} ca='{}' cert='{}' key='{}' skip_server_name_check={}",
             mqtt_cfg.broker_uri,
@@ -257,7 +199,8 @@ struct RealThingsBoardFixture {
 
 struct RawRpcSmokeFixture {
     fs::path repo_root;
-    fs::path config_path;
+    fs::path runtime_config_path;
+    fs::path fixed_config_path;
     robot::service::ConfigService cfg;
     std::shared_ptr<robot::middleware::MqttTransport> mqtt;
     std::shared_ptr<robot::middleware::NetworkManager> net;
@@ -266,15 +209,15 @@ struct RawRpcSmokeFixture {
     std::string last_topic;
     std::string last_payload;
 
-    explicit RawRpcSmokeFixture(const RepoPaths& paths)
+    explicit RawRpcSmokeFixture(const tb_test_support::RepoPaths& paths)
         : repo_root(paths.repo_root)
-        , config_path(paths.config_path)
-        , cfg(config_path.string())
+        , runtime_config_path(paths.runtime_config_path)
+        , fixed_config_path(paths.fixed_config_path)
+        , cfg(runtime_config_path.string(), fixed_config_path.string())
     {
         REQUIRE(cfg.load());
-        auto mqtt_cfg = build_mqtt_config(cfg, repo_root);
+        auto mqtt_cfg = tb_test_support::build_mqtt_config(cfg, repo_root, "_raw_rpc_itest");
         REQUIRE_FALSE(mqtt_cfg.broker_uri.empty());
-        mqtt_cfg.client_id += "_raw_rpc_itest";
         spdlog::info(
             "[TB rpc smoke] broker='{}' tls_enabled={} ca='{}' cert='{}' key='{}' skip_server_name_check={}",
             mqtt_cfg.broker_uri,
@@ -315,7 +258,8 @@ struct RawRpcSmokeFixture {
 
 struct CloudRpcSmokeFixture {
     fs::path repo_root;
-    fs::path config_path;
+    fs::path runtime_config_path;
+    fs::path fixed_config_path;
     fs::path cache_path{"/tmp/tb_cloud_rpc_smoke_cache.jsonl"};
     robot::service::ConfigService cfg;
     std::shared_ptr<robot::middleware::MqttTransport> mqtt;
@@ -326,16 +270,16 @@ struct CloudRpcSmokeFixture {
     mutable std::mutex rpc_mtx;
     std::string last_params;
 
-    explicit CloudRpcSmokeFixture(const RepoPaths& paths)
+    explicit CloudRpcSmokeFixture(const tb_test_support::RepoPaths& paths)
         : repo_root(paths.repo_root)
-        , config_path(paths.config_path)
-        , cfg(config_path.string())
+        , runtime_config_path(paths.runtime_config_path)
+        , fixed_config_path(paths.fixed_config_path)
+        , cfg(runtime_config_path.string(), fixed_config_path.string())
     {
         REQUIRE(cfg.load());
         fs::remove(cache_path);
-        auto mqtt_cfg = build_mqtt_config(cfg, repo_root);
+        auto mqtt_cfg = tb_test_support::build_mqtt_config(cfg, repo_root, "_cloud_rpc_itest");
         REQUIRE_FALSE(mqtt_cfg.broker_uri.empty());
-        mqtt_cfg.client_id += "_cloud_rpc_itest";
         spdlog::info(
             "[TB cloud rpc smoke] broker='{}' tls_enabled={} ca='{}' cert='{}' key='{}' skip_server_name_check={}",
             mqtt_cfg.broker_uri,
@@ -387,9 +331,9 @@ TEST_CASE("Real ThingsBoard mutual TLS connection", "[integration][thingsboard][
         return;
     }
 
-    const auto paths = find_repo_paths();
+    const auto paths = tb_test_support::find_repo_paths();
     REQUIRE(paths.has_value());
-    spdlog::info("[TB real test] using config: {}", paths->config_path.string());
+    spdlog::info("[TB real test] using runtime config: {}", paths->runtime_config_path.string());
     RealThingsBoardFixture f(*paths);
 
     REQUIRE(f.connect_and_request_shared_snapshot());
@@ -402,9 +346,9 @@ TEST_CASE("Real ThingsBoard raw RPC smoke", "[integration][thingsboard][real][rp
         return;
     }
 
-    const auto paths = find_repo_paths();
+    const auto paths = tb_test_support::find_repo_paths();
     REQUIRE(paths.has_value());
-    spdlog::info("[TB rpc smoke] using config: {}", paths->config_path.string());
+    spdlog::info("[TB rpc smoke] using runtime config: {}", paths->runtime_config_path.string());
 
     RawRpcSmokeFixture f(*paths);
     REQUIRE(f.connect());
@@ -421,9 +365,9 @@ TEST_CASE("Real ThingsBoard CloudService RPC smoke",
         return;
     }
 
-    const auto paths = find_repo_paths();
+    const auto paths = tb_test_support::find_repo_paths();
     REQUIRE(paths.has_value());
-    spdlog::info("[TB cloud rpc smoke] using config: {}", paths->config_path.string());
+    spdlog::info("[TB cloud rpc smoke] using runtime config: {}", paths->runtime_config_path.string());
 
     CloudRpcSmokeFixture f(*paths);
     REQUIRE(f.connect());
@@ -440,9 +384,9 @@ TEST_CASE("Real ThingsBoard publish startup attributes and telemetry",
         return;
     }
 
-    const auto paths = find_repo_paths();
+    const auto paths = tb_test_support::find_repo_paths();
     REQUIRE(paths.has_value());
-    spdlog::info("[TB real test] using config: {}", paths->config_path.string());
+    spdlog::info("[TB real test] using runtime config: {}", paths->runtime_config_path.string());
     RealThingsBoardFixture f(*paths);
     REQUIRE(f.connect_and_request_shared_snapshot());
 
@@ -484,14 +428,14 @@ TEST_CASE("Real ThingsBoard shared attributes update local pending config",
         return;
     }
 
-    const auto paths = find_repo_paths();
+    const auto paths = tb_test_support::find_repo_paths();
     REQUIRE(paths.has_value());
-    spdlog::info("[TB real test] using config: {}", paths->config_path.string());
+    spdlog::info("[TB real test] using runtime config: {}", paths->runtime_config_path.string());
     RealThingsBoardFixture f(*paths);
     REQUIRE(f.connect_and_request_shared_snapshot());
     REQUIRE(f.wait_for_initial_snapshot());
 
-    const auto pending_cfg_path = pending_config_path(paths->config_path);
+    const auto pending_cfg_path = pending_config_path(paths->runtime_config_path);
     const auto before_pending = f.tb_cfg->pending_config();
     const int before_attr_count = f.shared_attr_updates();
     const auto target = choose_legal_target(before_pending);
@@ -530,9 +474,9 @@ TEST_CASE("Real ThingsBoard rejects unsupported shared attributes",
         return;
     }
 
-    const auto paths = find_repo_paths();
+    const auto paths = tb_test_support::find_repo_paths();
     REQUIRE(paths.has_value());
-    spdlog::info("[TB real test] using config: {}", paths->config_path.string());
+    spdlog::info("[TB real test] using runtime config: {}", paths->runtime_config_path.string());
     RealThingsBoardFixture f(*paths);
     REQUIRE(f.connect_and_request_shared_snapshot());
     REQUIRE(f.wait_for_initial_snapshot());
@@ -569,9 +513,9 @@ TEST_CASE("Real ThingsBoard shared attributes modified while device offline are 
         return;
     }
 
-    const auto paths = find_repo_paths();
+    const auto paths = tb_test_support::find_repo_paths();
     REQUIRE(paths.has_value());
-    spdlog::info("[TB real test] using config: {}", paths->config_path.string());
+    spdlog::info("[TB real test] using runtime config: {}", paths->runtime_config_path.string());
     RealThingsBoardFixture f(*paths);
 
     const auto before_pending = f.tb_cfg->pending_config();

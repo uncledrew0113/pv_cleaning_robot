@@ -26,21 +26,24 @@ rapidjson::Document parse_json(const char* text)
 }
 
 struct Fixture {
-    std::string path{"/tmp/test_tb_config_manager.json"};
-    std::string pending_path{"/tmp/test_tb_config_manager.pending.json"};
-    std::string backup_path{"/tmp/test_tb_config_manager.backup.json"};
-    ConfigService cfg{path};
+    std::string runtime_path{"/tmp/test_tb_config_manager.runtime.json"};
+    std::string fixed_path{"/tmp/test_tb_config_manager.fixed.json"};
+    std::string pending_path{"/tmp/test_tb_config_manager.runtime.pending.json"};
+    std::string backup_path{"/tmp/test_tb_config_manager.runtime.backup.json"};
+    ConfigService cfg{runtime_path, fixed_path};
     SchedulerService scheduler;
     std::unique_ptr<ThingsBoardConfigManager> manager;
 
     Fixture() {
-        std::ofstream f(path);
+        {
+        std::ofstream f(runtime_path);
         f << R"({
   "robot": {
     "passes": 1.0,
     "clean_speed_rpm": 300.0,
     "return_speed_rpm": 280.0,
     "brush_rpm": 1000,
+    "return_brush_rpm": 1000,
     "parking_side": "left"
   },
   "scheduler": {
@@ -49,7 +52,11 @@ struct Fixture {
     ]
   }
 })";
-        f.close();
+        }
+        {
+        std::ofstream f(fixed_path);
+        f << R"({})";
+        }
         REQUIRE(cfg.load());
         scheduler.clear_windows();
         scheduler.add_window({8, 0});
@@ -57,7 +64,8 @@ struct Fixture {
     }
 
     ~Fixture() {
-        fs::remove(path);
+        fs::remove(runtime_path);
+        fs::remove(fixed_path);
         fs::remove(pending_path);
         fs::remove(backup_path);
     }
@@ -100,6 +108,45 @@ TEST_CASE("ThingsBoardConfigManager: schedule applies immediately, passes stay p
     REQUIRE(windows.size() == 1);
     CHECK(windows[0].hour == 7);
     CHECK(windows[0].minute == 30);
+}
+
+TEST_CASE("ThingsBoardConfigManager: battery thresholds stay pending until next task",
+          "[service][tb_config]") {
+    Fixture f;
+    const auto before = f.manager->active_config();
+    auto attrs =
+        parse_json(R"({"start_battery_soc":40.0,"charge_start_soc":20.0,"charge_stop_soc":90.0})");
+
+    const auto result = f.manager->apply_shared_attributes(attrs);
+    REQUIRE(result.accepted);
+
+    const auto active = f.manager->active_config();
+    CHECK(active.start_battery_soc == Approx(before.start_battery_soc));
+    CHECK(active.charge_start_soc == Approx(before.charge_start_soc));
+    CHECK(active.charge_stop_soc == Approx(before.charge_stop_soc));
+
+    const auto pending = f.manager->pending_config();
+    REQUIRE(pending.has_value());
+    CHECK(pending->start_battery_soc == Approx(40.0));
+    CHECK(pending->charge_start_soc == Approx(20.0));
+    CHECK(pending->charge_stop_soc == Approx(90.0));
+}
+
+TEST_CASE("ThingsBoardConfigManager: return_brush_rpm stays pending until next task",
+          "[service][tb_config]") {
+    Fixture f;
+    const auto before = f.manager->active_config();
+    auto attrs = parse_json(R"({"return_brush_rpm":900})");
+
+    const auto result = f.manager->apply_shared_attributes(attrs);
+    REQUIRE(result.accepted);
+
+    const auto active = f.manager->active_config();
+    CHECK(active.return_brush_rpm == before.return_brush_rpm);
+
+    const auto pending = f.manager->pending_config();
+    REQUIRE(pending.has_value());
+    CHECK(pending->return_brush_rpm == 900);
 }
 
 TEST_CASE("ThingsBoardConfigManager: promote_pending_to_active applies next-task config",

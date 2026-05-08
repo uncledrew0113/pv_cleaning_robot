@@ -59,12 +59,12 @@ void set_int(rapidjson::Document& doc,
     }
 }
 
-struct ConfigFixture {
-    std::string path{"/tmp/test_config_service.json"};
-    std::string pending_path{"/tmp/test_config_service.pending.json"};
-    std::string backup_path{"/tmp/test_config_service.backup.json"};
+struct LegacyConfigFixture {
+    std::string path{"/tmp/test_config_service_legacy.json"};
+    std::string pending_path{"/tmp/test_config_service_legacy.pending.json"};
+    std::string backup_path{"/tmp/test_config_service_legacy.backup.json"};
 
-    ConfigFixture()
+    LegacyConfigFixture()
     {
         std::ofstream f(path);
         f << R"({
@@ -75,9 +75,61 @@ struct ConfigFixture {
 })";
     }
 
-    ~ConfigFixture()
+    ~LegacyConfigFixture()
     {
         fs::remove(path);
+        fs::remove(pending_path);
+        fs::remove(backup_path);
+    }
+};
+
+struct SplitConfigFixture {
+    std::string runtime_path{"/tmp/test_runtime_config_service.runtime.json"};
+    std::string fixed_path{"/tmp/test_runtime_config_service.fixed.json"};
+    std::string pending_path{"/tmp/test_runtime_config_service.runtime.pending.json"};
+    std::string backup_path{"/tmp/test_runtime_config_service.runtime.backup.json"};
+
+    SplitConfigFixture()
+    {
+        {
+            std::ofstream fixed(fixed_path);
+            fixed << R"({
+  "gpio": {
+    "left_limit": { "line": 12 },
+    "right_limit": { "line": 13 }
+  },
+  "network": {
+    "mqtt": { "client_id": "fixed_client" }
+  }
+})";
+        }
+
+        {
+            std::ofstream runtime(runtime_path);
+            runtime << R"({
+  "robot": {
+    "clean_speed_rpm": 320.0,
+    "passes": 1.0,
+    "parking_side": "left"
+  }
+})";
+        }
+
+        {
+            std::ofstream pending(pending_path);
+            pending << R"({
+  "robot": {
+    "passes": 3.0,
+    "parking_side": "right"
+  }
+})";
+        }
+    }
+
+    ~SplitConfigFixture()
+    {
+        fs::remove(runtime_path);
+        fs::remove(fixed_path);
         fs::remove(pending_path);
         fs::remove(backup_path);
     }
@@ -87,7 +139,7 @@ struct ConfigFixture {
 
 TEST_CASE("ConfigService: load() 成功读取合法 JSON 文件", "[service][config]")
 {
-    ConfigFixture f;
+    LegacyConfigFixture f;
     ConfigService cfg(f.path);
     REQUIRE(cfg.load());
     REQUIRE(cfg.is_loaded());
@@ -100,9 +152,43 @@ TEST_CASE("ConfigService: load() 文件不存在时返回 false", "[service][con
     REQUIRE_FALSE(cfg.is_loaded());
 }
 
+TEST_CASE("ConfigService: fixed/runtime/pending 三份配置独立加载", "[service][config]")
+{
+    SplitConfigFixture f;
+    ConfigService cfg(f.runtime_path, f.fixed_path);
+
+    REQUIRE(cfg.load());
+    REQUIRE(cfg.load_fixed());
+
+    CHECK(cfg.runtime_path() == f.runtime_path);
+    CHECK(cfg.fixed_path() == f.fixed_path);
+    CHECK(cfg.pending_path() == f.pending_path);
+
+    CHECK(cfg.get<float>("robot.clean_speed_rpm", 0.0f) == Approx(320.0f).epsilon(0.01f));
+    CHECK(cfg.get_fixed<int>("gpio.left_limit.line", -1) == 12);
+    CHECK(cfg.get_fixed<std::string>("network.mqtt.client_id", "") == "fixed_client");
+
+    const auto pending = cfg.load_pending();
+    REQUIRE(pending.has_value());
+    const auto robot_it = pending->FindMember("robot");
+    REQUIRE(robot_it != pending->MemberEnd());
+    CHECK(robot_it->value["passes"].GetDouble() == Approx(3.0).epsilon(0.01));
+    CHECK(std::string(robot_it->value["parking_side"].GetString()) == "right");
+}
+
+TEST_CASE("ConfigService: clear_pending() 清除 runtime pending 文件", "[service][config]")
+{
+    SplitConfigFixture f;
+    ConfigService cfg(f.runtime_path, f.fixed_path);
+    REQUIRE(cfg.load());
+    REQUIRE(cfg.clear_pending());
+    CHECK_FALSE(fs::exists(f.pending_path));
+    CHECK_FALSE(cfg.load_pending().has_value());
+}
+
 TEST_CASE("ConfigService: get<float>() 读取嵌套路径", "[service][config]")
 {
-    ConfigFixture f;
+    LegacyConfigFixture f;
     ConfigService cfg(f.path);
     cfg.load();
 
@@ -112,7 +198,7 @@ TEST_CASE("ConfigService: get<float>() 读取嵌套路径", "[service][config]")
 
 TEST_CASE("ConfigService: get<std::string>() 读取字符串值", "[service][config]")
 {
-    ConfigFixture f;
+    LegacyConfigFixture f;
     ConfigService cfg(f.path);
     cfg.load();
 
@@ -122,7 +208,7 @@ TEST_CASE("ConfigService: get<std::string>() 读取字符串值", "[service][con
 
 TEST_CASE("ConfigService: get<int>() 读取整数值", "[service][config]")
 {
-    ConfigFixture f;
+    LegacyConfigFixture f;
     ConfigService cfg(f.path);
     cfg.load();
 
@@ -132,7 +218,7 @@ TEST_CASE("ConfigService: get<int>() 读取整数值", "[service][config]")
 
 TEST_CASE("ConfigService: get<bool>() 读取布尔值", "[service][config]")
 {
-    ConfigFixture f;
+    LegacyConfigFixture f;
     ConfigService cfg(f.path);
     cfg.load();
 
@@ -142,7 +228,7 @@ TEST_CASE("ConfigService: get<bool>() 读取布尔值", "[service][config]")
 
 TEST_CASE("ConfigService: get() 路径不存在时返回默认值", "[service][config]")
 {
-    ConfigFixture f;
+    LegacyConfigFixture f;
     ConfigService cfg(f.path);
     cfg.load();
 
@@ -155,7 +241,7 @@ TEST_CASE("ConfigService: get() 路径不存在时返回默认值", "[service][c
 
 TEST_CASE("ConfigService: 未 load() 时 get() 返回默认值", "[service][config]")
 {
-    ConfigFixture f;
+    LegacyConfigFixture f;
     ConfigService cfg(f.path);
     const auto val = cfg.get<float>("robot.clean_speed_rpm", 1.0f);
     REQUIRE(val == Approx(1.0f).epsilon(0.001f));
@@ -163,7 +249,7 @@ TEST_CASE("ConfigService: 未 load() 时 get() 返回默认值", "[service][conf
 
 TEST_CASE("ConfigService: set() 修改内存值，get() 立即生效", "[service][config]")
 {
-    ConfigFixture f;
+    LegacyConfigFixture f;
     ConfigService cfg(f.path);
     cfg.load();
 
@@ -173,7 +259,7 @@ TEST_CASE("ConfigService: set() 修改内存值，get() 立即生效", "[service
 
 TEST_CASE("ConfigService: save() 后重新 load() 持久化 set() 的值", "[service][config]")
 {
-    ConfigFixture f;
+    LegacyConfigFixture f;
     {
         ConfigService cfg(f.path);
         cfg.load();
@@ -189,7 +275,7 @@ TEST_CASE("ConfigService: save() 后重新 load() 持久化 set() 的值", "[ser
 
 TEST_CASE("ConfigService: replace_and_save() 原子替换整份配置并持久化", "[service][config]")
 {
-    ConfigFixture f;
+    LegacyConfigFixture f;
     {
         ConfigService cfg(f.path);
         REQUIRE(cfg.load());
@@ -215,7 +301,7 @@ TEST_CASE("ConfigService: replace_and_save() 原子替换整份配置并持久�
 
 TEST_CASE("ConfigService: replace_and_save() 会先写 backup 快照", "[service][config]")
 {
-    ConfigFixture f;
+    LegacyConfigFixture f;
     ConfigService cfg(f.path);
     REQUIRE(cfg.load());
 
@@ -232,7 +318,7 @@ TEST_CASE("ConfigService: replace_and_save() 会先写 backup 快照", "[service
 
 TEST_CASE("ConfigService: load() 在主配置损坏时自动回退到 backup", "[service][config]")
 {
-    ConfigFixture f;
+    LegacyConfigFixture f;
     {
         std::ofstream bad_main(f.path, std::ios::trunc);
         bad_main << "{ invalid json";
@@ -257,7 +343,7 @@ TEST_CASE("ConfigService: load() 在主配置损坏时自动回退到 backup", "
 TEST_CASE("ConfigService: save_pending/load_pending/clear_pending 管理待生效配置",
           "[service][config]")
 {
-    ConfigFixture f;
+    LegacyConfigFixture f;
     ConfigService cfg(f.path);
     REQUIRE(cfg.load());
 
@@ -282,7 +368,7 @@ TEST_CASE("ConfigService: save_pending/load_pending/clear_pending 管理待生�
 
 TEST_CASE("ConfigService: get_subtree() 返回子树", "[service][config]")
 {
-    ConfigFixture f;
+    LegacyConfigFixture f;
     ConfigService cfg(f.path);
     cfg.load();
 

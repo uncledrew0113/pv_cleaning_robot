@@ -84,7 +84,8 @@ using FaultLevel = FaultEvent::Level;
 // ─────────────────────────────────────────────────────────────────────────────
 // 辅助常量
 // ─────────────────────────────────────────────────────────────────────────────
-static const char* kCfgPath      = "/tmp/pv_sys_test_config.json";
+static const char* kRuntimePath  = "/tmp/pv_sys_test_config.runtime.json";
+static const char* kFixedPath    = "/tmp/pv_sys_test_config.fixed.json";
 static const char* kHealthPath   = "/tmp/pv_sys_test_health.jsonl";
 static const char* kCachePath    = "/tmp/pv_sys_test_cache.jsonl";
 
@@ -145,21 +146,11 @@ robot::middleware::Logger::Config make_logger_config()
     return cfg;
 }
 
-std::string build_test_config_json()
+std::string build_test_runtime_config_json()
 {
     rapidjson::StringBuffer buffer;
     rapidjson::PrettyWriter<rapidjson::StringBuffer> writer(buffer);
     writer.StartObject();
-
-    writer.Key("logging");
-    writer.StartObject();
-    writer.Key("log_dir");
-    writer.String("/tmp/pv_sys_test_logs");
-    writer.Key("level");
-    writer.String("debug");
-    writer.Key("console");
-    writer.Bool(false);
-    writer.EndObject();
 
     writer.Key("robot");
     writer.StartObject();
@@ -175,10 +166,12 @@ std::string build_test_config_json()
     writer.Bool(false);
     writer.Key("edge_reverse_rpm");
     writer.Double(0.0);
-    writer.Key("battery_full_soc");
-    writer.Double(95.0);
-    writer.Key("battery_low_soc");
+    writer.Key("start_battery_soc");
+    writer.Double(30.0);
+    writer.Key("charge_start_soc");
     writer.Double(15.0);
+    writer.Key("charge_stop_soc");
+    writer.Double(95.0);
     writer.Key("wheel_circ_m");
     writer.Double(0.3);
     writer.Key("track_length_m");
@@ -187,6 +180,39 @@ std::string build_test_config_json()
     writer.Double(1.0);
     writer.Key("parking_side");
     writer.String("left");
+    writer.EndObject();
+
+    writer.Key("scheduler");
+    writer.StartObject();
+    writer.Key("windows");
+    writer.StartArray();
+    writer.StartObject();
+    writer.Key("hour");
+    writer.Int(8);
+    writer.Key("minute");
+    writer.Int(0);
+    writer.EndObject();
+    writer.EndArray();
+    writer.EndObject();
+
+    writer.EndObject();
+    return {buffer.GetString(), buffer.GetSize()};
+}
+
+std::string build_test_fixed_config_json()
+{
+    rapidjson::StringBuffer buffer;
+    rapidjson::PrettyWriter<rapidjson::StringBuffer> writer(buffer);
+    writer.StartObject();
+
+    writer.Key("logging");
+    writer.StartObject();
+    writer.Key("log_dir");
+    writer.String("/tmp/pv_sys_test_logs");
+    writer.Key("level");
+    writer.String("debug");
+    writer.Key("console");
+    writer.Bool(false);
     writer.EndObject();
 
     writer.Key("diagnostics");
@@ -278,12 +304,18 @@ struct NullTransport : robot::middleware::INetworkTransport {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 测试专用 config.json（写入临时文件，ConfigService 从此文件加载）
+// 测试专用 split config（写入临时文件，ConfigService 从 runtime+fixed 加载）
 // ─────────────────────────────────────────────────────────────────────────────
 static void write_test_config() {
     std::filesystem::create_directories("/tmp");
-    std::ofstream f(kCfgPath);
-    f << build_test_config_json();
+    {
+        std::ofstream f(kRuntimePath);
+        f << build_test_runtime_config_json();
+    }
+    {
+        std::ofstream f(kFixedPath);
+        f << build_test_fixed_config_json();
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -311,7 +343,7 @@ struct SystemFixture {
         {std::make_shared<LimitSwitch>(right_pin, LimitSide::RIGHT)};
 
     // ── 配置层 ────────────────────────────────────────────────────
-    ConfigService cfg{kCfgPath};
+    ConfigService cfg{kRuntimePath, kFixedPath};
 
     // ── 中间件层 ──────────────────────────────────────────────────
     EventBus bus;
@@ -394,13 +426,14 @@ struct SystemFixture {
 TEST_CASE("System: ConfigService 加载测试配置并正确返回字段值",
           "[integration][system][config]") {
     write_test_config();
-    ConfigService cfg{kCfgPath};
+    ConfigService cfg{kRuntimePath, kFixedPath};
     REQUIRE(cfg.load());
     REQUIRE(cfg.is_loaded());
 
     REQUIRE(cfg.get<float>("robot.clean_speed_rpm", 0.0f) == Approx(30.0f));
-    REQUIRE(cfg.get<float>("robot.battery_full_soc", 0.0f) == Approx(95.0f));
-    REQUIRE(cfg.get<float>("robot.battery_low_soc", 0.0f)  == Approx(15.0f));
+    REQUIRE(cfg.get<float>("robot.start_battery_soc", 0.0f) == Approx(30.0f));
+    REQUIRE(cfg.get<float>("robot.charge_start_soc", 0.0f)  == Approx(15.0f));
+    REQUIRE(cfg.get<float>("robot.charge_stop_soc", 0.0f)  == Approx(95.0f));
     REQUIRE(cfg.get<bool>("robot.heading_pid_en", true) == false);
     REQUIRE(cfg.get<std::string>("diagnostics.mode", "") == "development");
     REQUIRE(cfg.get<std::string>("diagnostics.local_path", "") == kHealthPath);
@@ -603,9 +636,9 @@ TEST_CASE("System: P0 故障链 FaultService→FaultHandler→FSM Fault，复位
 }
 
 // =============================================================================
-// TC9-A：P1 故障链——CleanReturn → Returning → Charging
+// TC9-A：P1 故障链——CleanReturn → Fault
 // =============================================================================
-TEST_CASE("System: P1 故障发生在清扫中 → Returning → Charging",
+TEST_CASE("System: P1 故障发生在清扫中 → Fault",
           "[integration][system][fault]") {
     write_test_config();
     SystemFixture f;
@@ -615,28 +648,7 @@ TEST_CASE("System: P1 故障发生在清扫中 → Returning → Charging",
     REQUIRE(f.fsm.current_state() == "CleanReturn");
 
     f.fault_svc->report(FaultLevel::P1, 0x2001, "slope_too_steep");
-    REQUIRE(f.fsm.current_state() == "Returning");
-
-    f.fsm.dispatch(EvParkingSideLimitSettled{});
-    REQUIRE(f.fsm.current_state() == "Charging");
-}
-
-// =============================================================================
-// TC9-B：低电量触发 Returning 路径
-// =============================================================================
-TEST_CASE("System: EvLowBattery 在 CleanFwd 触发 → Returning → Charging",
-          "[integration][system][fault]") {
-    write_test_config();
-    SystemFixture f;
-
-    f.fsm.dispatch(start_from_parking_side(2.0f));
-    REQUIRE(f.fsm.current_state() == "CleanFwd");
-
-    f.fsm.dispatch(EvLowBattery{});
-    REQUIRE(f.fsm.current_state() == "Returning");
-
-    f.fsm.dispatch(EvParkingSideLimitSettled{});
-    REQUIRE(f.fsm.current_state() == "Charging");
+    REQUIRE(f.fsm.current_state() == "Fault");
 }
 
 // =============================================================================

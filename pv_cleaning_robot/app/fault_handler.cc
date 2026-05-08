@@ -28,9 +28,8 @@ void FaultHandler::on_fault(const service::FaultService::FaultEvent& evt) {
             dispatch_fn_(evt);
             break;
         case Level::P1:
-            // P1 故障：先进入可恢复的零速停刷状态，再交由 FSM 决定返程。
-            // 避免在 FSM 接手前短暂发出反向滚刷命令，破坏“停刷安全返回”语义。
-            motion_->pause_task();
+            // P1 语义已简化：与 P0 一样进入故障态，由上层统一决定后续处理。
+            motion_->emergency_stop();
             dispatch_fn_(evt);
             break;
         case Level::P2:

@@ -18,21 +18,16 @@ namespace robot::app {
 namespace {
 
 bool is_new_task_start_state(const std::string& state) {
-    return state == "Idle" || state == "Charging";
+    return state == "Idle" || state == "Charging" || state == "Stopped";
 }
 
 bool is_cleaning_state(const std::string& state) {
     return state == "CleanFwd" || state == "CleanReturn";
 }
 
-bool can_trigger_low_battery_return(const std::string& state) {
-    return state != "Idle" && state != "Paused" && state != "Returning" &&
-           state != "Charging" && state != "Fault" && state != "Terminated";
-}
-
 bool can_trigger_spin_free_fault(const std::string& state) {
     return state != "Idle" && state != "Charging" && state != "Fault" &&
-           state != "Paused" && state != "Terminated";
+           state != "Stopped";
 }
 
 }  // namespace
@@ -48,8 +43,13 @@ RobotSupervisor::RobotSupervisor(std::shared_ptr<RobotFsm> fsm,
     , fault_(std::move(fault))
     , nav_(std::move(nav)) {}
 
-bool RobotSupervisor::start_task(bool at_parking_side) {
-    if (!is_new_task_start_state(fsm_->current_state()) || !at_parking_side) {
+bool RobotSupervisor::start_task(bool at_parking_side, bool position_valid, float battery_soc) {
+    if (!is_new_task_start_state(fsm_->current_state()) || !position_valid || !at_parking_side) {
+        return false;
+    }
+    const auto runtime_cfg = tb_cfg_->has_pending_config() ? *tb_cfg_->pending_config()
+                                                           : tb_cfg_->active_config();
+    if (battery_soc < static_cast<float>(runtime_cfg.start_battery_soc)) {
         return false;
     }
     if (tb_cfg_->has_pending_config() && !tb_cfg_->promote_pending_to_active()) {
@@ -62,61 +62,32 @@ bool RobotSupervisor::start_task(bool at_parking_side) {
     return fsm_->current_state() == "CleanFwd" || fsm_->current_state() == "CleanReturn";
 }
 
-bool RobotSupervisor::resume_paused_task() {
-    if (fsm_->current_state() != "Paused") {
-        return false;
-    }
-    fsm_->dispatch(EvResumeTask{});
-    return fsm_->current_state() == "CleanFwd" || fsm_->current_state() == "CleanReturn";
-}
-
-bool RobotSupervisor::pause_task() {
-    if (!is_cleaning_state(fsm_->current_state())) {
-        return false;
-    }
-    fsm_->dispatch(EvPauseTask{});
-    return fsm_->current_state() == "Paused";
-}
-
-bool RobotSupervisor::return_task() {
+bool RobotSupervisor::stop_task() {
     const auto state = fsm_->current_state();
-    if (!is_cleaning_state(state) && state != "Paused") {
+    if (!is_cleaning_state(state) && state != "Returning") {
+        return false;
+    }
+    fsm_->dispatch(EvStopTask{});
+    return fsm_->current_state() == "Stopped";
+}
+
+bool RobotSupervisor::return_task(bool at_parking_side) {
+    const auto state = fsm_->current_state();
+    if (at_parking_side) {
+        return false;
+    }
+    if (!is_cleaning_state(state) && state != "Stopped" && state != "Idle") {
         return false;
     }
     fsm_->dispatch(EvManualReturn{});
     return fsm_->current_state() == "Returning";
 }
 
-bool RobotSupervisor::terminate_task() {
+void RobotSupervisor::tick_safety() {
     const auto state = fsm_->current_state();
-    if (!is_cleaning_state(state) && state != "Paused" && state != "Returning") {
-        return false;
-    }
-    fsm_->dispatch(EvTerminateTask{});
-    return fsm_->current_state() == "Terminated";
-}
-
-bool RobotSupervisor::reset_task(bool at_parking_side) {
-    const auto state = fsm_->current_state();
-    if (!at_parking_side || (state != "Fault" && state != "Terminated")) {
-        return false;
-    }
-    fsm_->dispatch(EvFaultReset{});
-    return fsm_->current_state() == "Idle";
-}
-
-void RobotSupervisor::tick_safety(bool low_battery) {
-    const auto state = fsm_->current_state();
-    if (low_battery && can_trigger_low_battery_return(state)) {
-        spdlog::warn("[RobotSupervisor] 电量不足，触发返回");
-        fsm_->dispatch(EvLowBattery{});
-        return;
-    }
-
     if (!can_trigger_spin_free_fault(state)) {
         return;
     }
-
     if (nav_->get_pose().spin_free_detected) {
         spdlog::error("[RobotSupervisor] 悬空检测触发——立即停机");
         fault_->report(service::FaultService::FaultEvent::Level::P0,
@@ -150,16 +121,14 @@ RobotRuntimeSnapshot RobotSupervisor::snapshot() const {
 std::string RobotSupervisor::task_state_from_device_state(const std::string& device_state) {
     if (device_state == "CleanFwd" || device_state == "CleanReturn")
         return "RunningTask";
-    if (device_state == "Paused")
-        return "PausedTask";
     if (device_state == "Returning")
         return "ReturningTask";
     if (device_state == "Charging")
         return "ChargingTask";
     if (device_state == "Fault")
         return "FaultedTask";
-    if (device_state == "Terminated")
-        return "TerminatedTask";
+    if (device_state == "Stopped")
+        return "StoppedTask";
     return "IdleTask";
 }
 
@@ -177,6 +146,12 @@ uint64_t RobotSupervisor::runtime_config_version(const service::TbRuntimeConfig&
     writer.Int(config.brush_rpm);
     writer.Key("parking_side");
     writer.String(service::parking_side_config_string(config.parking_side));
+    writer.Key("start_battery_soc");
+    writer.Double(config.start_battery_soc);
+    writer.Key("charge_start_soc");
+    writer.Double(config.charge_start_soc);
+    writer.Key("charge_stop_soc");
+    writer.Double(config.charge_stop_soc);
     writer.Key("schedules");
     writer.StartArray();
     for (const auto& schedule : config.schedules) {

@@ -136,12 +136,14 @@ void RobotFsm::dispatch<EvParkingSideLimitSettled>(EvParkingSideLimitSettled e) 
                          completed_passes_, target_passes_);
 
             if (completed_passes_ >= target_passes_) {
-                if (!sm_->process_event(EvTaskComplete{})) {
-                    spdlog::warn("[FSM] 忽略 EvTaskComplete after parking-side limit (state={})", state_name_);
+                const bool ok = e.should_charge ? sm_->process_event(EvTaskCompleteCharge{})
+                                                : sm_->process_event(EvTaskCompleteIdle{});
+                if (!ok) {
+                    spdlog::warn("[FSM] 忽略 task complete after parking-side limit (state={})", state_name_);
                     return;
                 }
-                state_name_ = "Charging";
-                spdlog::info("[FSM] → Charging（全部趟数完成，回到停机位）");
+                state_name_ = e.should_charge ? "Charging" : "Idle";
+                spdlog::info("[FSM] → {}（全部趟数完成，回到停机位）", state_name_);
                 action = [this]() { motion_->stop_cleaning(); };
             } else {
                 if (!sm_->process_event(e)) {
@@ -154,12 +156,14 @@ void RobotFsm::dispatch<EvParkingSideLimitSettled>(EvParkingSideLimitSettled e) 
                 action = [this]() { motion_->start_cleaning(); };
             }
         } else if (sm_->is(sml::state<StateReturning>)) {
-            if (!sm_->process_event(e)) {
-                spdlog::warn("[FSM] 忽略 Returning->EvParkingSideLimitSettled (state={})", state_name_);
+            const bool ok = e.should_charge ? sm_->process_event(EvReturnCompleteCharge{})
+                                            : sm_->process_event(EvReturnCompleteIdle{});
+            if (!ok) {
+                spdlog::warn("[FSM] 忽略 Returning completion (state={})", state_name_);
                 return;
             }
-            state_name_ = "Charging";
-            spdlog::info("[FSM] → Charging（故障/低电返回停机位完成）");
+            state_name_ = e.should_charge ? "Charging" : "Idle";
+            spdlog::info("[FSM] → {}（返回停机位完成）", state_name_);
             action = [this]() { motion_->stop_cleaning(); };
         }
         // 其他状态收到尾端信号：忽略
@@ -192,9 +196,9 @@ void RobotFsm::dispatch<EvFaultP1>(EvFaultP1 e) {
             spdlog::warn("[FSM] 忽略 EvFaultP1 (state={})", state_name_);
             return;
         }
-        state_name_ = "Returning";
-        spdlog::warn("[FSM] → Returning (P1 故障，停刷安全返回)");
-        action = [this]() { motion_->start_returning_no_brush(); };
+        state_name_ = "Fault";
+        spdlog::warn("[FSM] → Fault (P1 故障)");
+        action = [this]() { motion_->emergency_stop(); };
     }
     if (action) action();
 }
@@ -218,24 +222,6 @@ void RobotFsm::dispatch<EvFaultReset>(EvFaultReset e) {
 }
 
 template <>
-void RobotFsm::dispatch<EvLowBattery>(EvLowBattery e) {
-    std::function<void()> action;
-    {
-        std::lock_guard<hal::PiMutex> lk(mtx_);
-        if (!sm_->process_event(e)) {
-            spdlog::warn("[FSM] 忽略 EvLowBattery (state={})", state_name_);
-            return;
-        }
-        state_name_ = "Returning";
-        spdlog::warn("[FSM] → Returning (低电量，带刷返回)");
-        going_forward_ = false;
-        // 低电量属于计划内返回，刷保持运行
-        action = [this]() { motion_->start_returning(); };
-    }
-    if (action) action();
-}
-
-template <>
 void RobotFsm::dispatch<EvChargeDone>(EvChargeDone e) {
     std::lock_guard<hal::PiMutex> lk(mtx_);
     if (!sm_->process_event(e)) {
@@ -244,53 +230,6 @@ void RobotFsm::dispatch<EvChargeDone>(EvChargeDone e) {
     }
     state_name_ = "Idle";
     spdlog::info("[FSM] → Idle (充电完成)");
-}
-
-template <>
-void RobotFsm::dispatch<EvPauseTask>(EvPauseTask e) {
-    std::function<void()> action;
-    {
-        std::lock_guard<hal::PiMutex> lk(mtx_);
-        if (!sm_->process_event(e)) {
-            spdlog::warn("[FSM] 忽略 EvPauseTask (state={})", state_name_);
-            return;
-        }
-        state_name_ = "Paused";
-        spdlog::info("[FSM] → Paused (任务暂停)");
-        action = [this]() { motion_->pause_task(); };
-    }
-    if (action) action();
-}
-
-template <>
-void RobotFsm::dispatch<EvResumeTask>(EvResumeTask) {
-    std::function<void()> action;
-    {
-        std::lock_guard<hal::PiMutex> lk(mtx_);
-        if (!sm_->is(sml::state<StatePaused>)) {
-            spdlog::warn("[FSM] 忽略 EvResumeTask (state={})", state_name_);
-            return;
-        }
-
-        const bool resume_forward = going_forward_;
-        const bool ok = resume_forward ? sm_->process_event(EvResumeForward{})
-                                       : sm_->process_event(EvResumeReturn{});
-        if (!ok) {
-            spdlog::warn("[FSM] 忽略 EvResumeTask transition (state={})", state_name_);
-            return;
-        }
-
-        if (resume_forward) {
-            state_name_ = "CleanFwd";
-            spdlog::info("[FSM] → CleanFwd（恢复暂停任务）");
-            action = [this]() { motion_->start_cleaning(); };
-        } else {
-            state_name_ = "CleanReturn";
-            spdlog::info("[FSM] → CleanReturn（恢复暂停任务）");
-            action = [this]() { motion_->start_returning(); };
-        }
-    }
-    if (action) action();
 }
 
 template <>
@@ -304,26 +243,25 @@ void RobotFsm::dispatch<EvManualReturn>(EvManualReturn e) {
         }
         state_name_ = "Returning";
         going_forward_ = false;
-        completed_passes_ = target_passes_;
         spdlog::info("[FSM] → Returning（任务级返回停机位）");
-        action = [this]() { motion_->start_returning(); };
+        action = [this]() { motion_->start_returning_no_brush(); };
     }
     if (action) action();
 }
 
 template <>
-void RobotFsm::dispatch<EvTerminateTask>(EvTerminateTask e) {
+void RobotFsm::dispatch<EvStopTask>(EvStopTask e) {
     std::function<void()> action;
     {
         std::lock_guard<hal::PiMutex> lk(mtx_);
         if (!sm_->process_event(e)) {
-            spdlog::warn("[FSM] 忽略 EvTerminateTask (state={})", state_name_);
+            spdlog::warn("[FSM] 忽略 EvStopTask (state={})", state_name_);
             return;
         }
-        state_name_ = "Terminated";
+        state_name_ = "Stopped";
         completed_passes_ = 0;
         target_passes_ = 0;
-        spdlog::warn("[FSM] → Terminated（人工终止任务）");
+        spdlog::warn("[FSM] → Stopped（任务停止，机器停住）");
         action = [this]() { motion_->emergency_stop(); };
     }
     if (action) action();

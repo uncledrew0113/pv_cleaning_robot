@@ -7,7 +7,7 @@
  * DeviceFixture       — Driver + Device 层，用于限位和电机单元测试
  * FullSystemFixture   — 全层栈，用于集成测试（BrushMotor 用 MockSerialPort）
  *
- * 硬件接线（默认值与 config/config.json 对齐，可通过 hw_test_config.json 覆盖）：
+ * 硬件接线（默认值与仓库 split config 对齐，可通过 hw_test_config.json 覆盖）：
  *   CAN      : can0（默认），行走电机 M1502E_111，motor_id_base=1
  *   IMU      : /dev/ttyS1（默认），WIT Motion，9600 baud
  *   GPSD     : 127.0.0.1:2947（默认），由目标机 gpsd 服务提供 TCP JSON 数据
@@ -68,6 +68,7 @@
 #include "mock/mock_can_bus.h"
 #include "mock/mock_serial_port.h"
 #include "pv_cleaning_robot/service/config_service.h"
+#include "integration/thingsboard_test_support.h"
 
 namespace hw {
 
@@ -211,65 +212,10 @@ inline HwParams load_hw_test_config() {
     return p;
 }
 
-struct TbRuntimePaths {
-    std::filesystem::path repo_root;
-    std::filesystem::path config_path;
-};
-
-inline std::optional<TbRuntimePaths> find_tb_runtime_paths() {
-    auto current = std::filesystem::current_path();
-    for (int i = 0; i < 6; ++i) {
-        const auto candidate = current / "config" / "config.json";
-        if (std::filesystem::exists(candidate)) {
-            return TbRuntimePaths{current, candidate};
-        }
-        if (!current.has_parent_path()) {
-            break;
-        }
-        current = current.parent_path();
-    }
-    return std::nullopt;
-}
-
-inline std::filesystem::path resolve_tb_repo_relative(const std::filesystem::path& repo_root,
-                                                      const std::string& path) {
-    if (path.empty()) {
-        return {};
-    }
-    std::filesystem::path p(path);
-    if (p.is_absolute()) {
-        return p;
-    }
-    return repo_root / p;
-}
-
 inline robot::middleware::MqttTransport::Config build_tb_mqtt_config(
     robot::service::ConfigService& cfg, const std::filesystem::path& repo_root)
 {
-    robot::middleware::MqttTransport::Config mqtt_cfg;
-    mqtt_cfg.broker_uri = cfg.get<std::string>("network.mqtt.broker_uri", "");
-    mqtt_cfg.client_id = cfg.get<std::string>("network.mqtt.client_id", "pv_robot_001");
-    mqtt_cfg.username = cfg.get<std::string>("network.mqtt.username", "");
-    mqtt_cfg.password = cfg.get<std::string>("network.mqtt.password", "");
-    mqtt_cfg.tls_enabled = cfg.get<bool>("network.mqtt.tls_enabled", false);
-    mqtt_cfg.ca_cert_path =
-        resolve_tb_repo_relative(repo_root, cfg.get<std::string>("network.mqtt.ca_cert_path", ""))
-            .string();
-    mqtt_cfg.client_cert_path = resolve_tb_repo_relative(
-                                    repo_root,
-                                    cfg.get<std::string>("network.mqtt.client_cert_path", ""))
-                                    .string();
-    mqtt_cfg.client_key_path = resolve_tb_repo_relative(
-                                   repo_root,
-                                   cfg.get<std::string>("network.mqtt.client_key_path", ""))
-                                   .string();
-    mqtt_cfg.insecure_skip_server_name_check =
-        cfg.get<bool>("network.mqtt.insecure_skip_server_name_check", false);
-    mqtt_cfg.keep_alive_sec = cfg.get<int>("network.mqtt.keep_alive_s", 60);
-    mqtt_cfg.connect_timeout_sec = cfg.get<int>("network.mqtt.connect_timeout_s", 10);
-    mqtt_cfg.qos = cfg.get<int>("network.mqtt.qos", 1);
-    mqtt_cfg.client_id += "_hw_tb_itest";
-    return mqtt_cfg;
+    return tb_test_support::build_mqtt_config(cfg, repo_root, "_hw_tb_itest");
 }
 
 // ── DeviceFixture：Driver + Device 层（限位 / 电机单元测试使用）────────────
@@ -623,7 +569,7 @@ struct ImuGpsHealthFixture {
 
 // ── ThingsBoardRuntimeFixture：真实硬件 + 真实 ThingsBoard 运行时联调 ─────────
 struct ThingsBoardRuntimeFixture : FullSystemFixture {
-    std::optional<TbRuntimePaths> tb_paths;
+    std::optional<tb_test_support::RepoPaths> tb_paths;
     std::string tb_cache_path{"/tmp/hw_tb_runtime_cache.jsonl"};
     std::unique_ptr<robot::service::ConfigService> tb_cfg_file;
     robot::service::SchedulerService scheduler;
@@ -667,17 +613,19 @@ struct ThingsBoardRuntimeFixture : FullSystemFixture {
     }
 
     bool init_thingsboard_runtime(const std::string& health_jsonl_path = "") {
-        tb_paths = find_tb_runtime_paths();
+        tb_paths = tb_test_support::find_repo_paths();
         if (!tb_paths.has_value()) {
-            spdlog::error("[ThingsBoardRuntimeFixture] 未找到 config/config.json");
+            spdlog::error(
+                "[ThingsBoardRuntimeFixture] 未找到 config.runtime.json/config.fixed.json 或旧 config.json");
             return false;
         }
 
         tb_cfg_file =
-            std::make_unique<robot::service::ConfigService>(tb_paths->config_path.string());
+            std::make_unique<robot::service::ConfigService>(
+                tb_paths->runtime_config_path.string(), tb_paths->fixed_config_path.string());
         if (!tb_cfg_file->load()) {
             spdlog::error("[ThingsBoardRuntimeFixture] 配置加载失败: {}",
-                          tb_paths->config_path.string());
+                          tb_paths->runtime_config_path.string());
             return false;
         }
 
@@ -705,6 +653,11 @@ struct ThingsBoardRuntimeFixture : FullSystemFixture {
         tb_cfg =
             std::make_shared<robot::service::ThingsBoardConfigManager>(*tb_cfg_file, scheduler);
         command_tracker = std::make_shared<robot::service::CommandTracker>();
+        if (motion) {
+            motion->set_parking_side_provider(
+                [this]() { return tb_cfg->active_config().parking_side; });
+            motion->set_runtime_config_provider([this]() { return tb_cfg->active_config(); });
+        }
         supervisor = std::make_shared<robot::app::RobotSupervisor>(
             fsm, tb_cfg, command_tracker, fault, nav);
         tb_control = std::make_shared<robot::service::ThingsBoardControlPlane>(
@@ -712,9 +665,11 @@ struct ThingsBoardRuntimeFixture : FullSystemFixture {
 
         tb_control->subscribe_shared_attributes();
         tb_control->register_rpc_handlers(
+            [this] { return parking_facts().is_valid_start_position(); },
             [this] { return is_at_parking_side(); },
-            [this] { return is_at_far_end(); },
-            [this] { return is_at_parking_side(); });
+            [this] { return is_at_parking_side(); },
+            [this] { return 80.0f; },
+            []() {});
 
         if (!net_mgr->connect()) {
             return false;

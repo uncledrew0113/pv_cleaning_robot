@@ -232,19 +232,21 @@ TEST_CASE("低电量触发安全返回", "[hw_cycle][low_battery_return]") {
     fx.fsm->dispatch(app::EvScheduleStart{right_limit_active, left_limit_active, 1.0f});
     REQUIRE(fx.wait_state("CleanFwd", 5s));
 
-    // 注入低电量事件
+    // stop 后再手动 return
     std::this_thread::sleep_for(2s);
-    spdlog::warn("[hw_cycle][low_battery_return] 注入低电量事件...");
-    fx.fsm->dispatch(app::EvLowBattery{});
+    spdlog::warn("[hw_cycle][manual_return] 先 stop，再 return...");
+    fx.fsm->dispatch(app::EvStopTask{});
+    REQUIRE(fx.wait_state("Stopped", 3s));
+    fx.fsm->dispatch(app::EvManualReturn{});
 
     // FSM → Returning
     REQUIRE(fx.wait_state("Returning", 3s));
-    spdlog::info("[hw_cycle][low_battery_return] FSM → Returning ✓");
+    spdlog::info("[hw_cycle][manual_return] FSM → Returning ✓");
 
     // 等待右限位触发 → Charging（最多 kLimitTimeoutSec 秒）
     REQUIRE(fx.wait_state("Charging",
             std::chrono::seconds(fx.p.limit_timeout_sec)));
-    spdlog::info("[hw_cycle][low_battery_return] FSM → Charging ✓ (已归停机位)");
+    spdlog::info("[hw_cycle][manual_return] FSM → Charging ✓ (已归停机位)");
     CHECK(fx.fsm->current_state() == "Charging");
 }
 
