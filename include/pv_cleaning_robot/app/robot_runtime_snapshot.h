@@ -12,8 +12,8 @@ namespace robot::app {
 struct RobotRuntimeSnapshot {
     std::string device_state;
     std::string task_state;
-    int target_half_passes{0};
-    int completed_half_passes{0};
+    int target_passes{0};
+    int completed_passes{0};
     int clean_count{0};
     uint64_t active_config_version{0};
     std::optional<robot::service::TbRuntimeConfig> active_config;

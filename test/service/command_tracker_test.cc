@@ -56,7 +56,7 @@ TEST_CASE("CommandTracker: rejected command is recorded without active command",
           "[service][command_tracker]") {
     CommandTracker tracker;
 
-    tracker.reject("start", "rpc-003", "robot_not_at_home");
+    tracker.reject("start", "rpc-003", "robot_not_at_parking_side");
 
     CHECK_FALSE(tracker.active().has_value());
 
@@ -65,6 +65,6 @@ TEST_CASE("CommandTracker: rejected command is recorded without active command",
     CHECK(last->name == "start");
     CHECK(last->request_id == "rpc-003");
     CHECK(last->phase == CommandPhase::Rejected);
-    CHECK(last->reason == "robot_not_at_home");
+    CHECK(last->reason == "robot_not_at_parking_side");
     CHECK(last->finished_at_ms == last->accepted_at_ms);
 }

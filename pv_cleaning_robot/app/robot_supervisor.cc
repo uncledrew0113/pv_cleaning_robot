@@ -21,11 +21,6 @@ bool is_new_task_start_state(const std::string& state) {
     return state == "Idle" || state == "Charging";
 }
 
-bool is_active_task_state(const std::string& state) {
-    return state == "CleanFwd" || state == "CleanReturn" ||
-           state == "Returning" || state == "Paused";
-}
-
 bool is_cleaning_state(const std::string& state) {
     return state == "CleanFwd" || state == "CleanReturn";
 }
@@ -53,20 +48,18 @@ RobotSupervisor::RobotSupervisor(std::shared_ptr<RobotFsm> fsm,
     , fault_(std::move(fault))
     , nav_(std::move(nav)) {}
 
-bool RobotSupervisor::start_scheduled_task(bool at_home, bool at_front) {
-    if (!is_new_task_start_state(fsm_->current_state()) || !at_home) {
+bool RobotSupervisor::start_task(bool at_parking_side) {
+    if (!is_new_task_start_state(fsm_->current_state()) || !at_parking_side) {
         return false;
     }
     if (tb_cfg_->has_pending_config() && !tb_cfg_->promote_pending_to_active()) {
         return false;
     }
-    fsm_->dispatch(EvScheduleStart{
-        at_home, at_front, static_cast<float>(tb_cfg_->active_config().passes)});
+    EvScheduleStart start_evt;
+    start_evt.at_parking_side = at_parking_side;
+    start_evt.passes = static_cast<float>(tb_cfg_->active_config().passes);
+    fsm_->dispatch(start_evt);
     return fsm_->current_state() == "CleanFwd" || fsm_->current_state() == "CleanReturn";
-}
-
-bool RobotSupervisor::start_manual_task(bool at_home, bool at_front) {
-    return start_scheduled_task(at_home, at_front);
 }
 
 bool RobotSupervisor::resume_paused_task() {
@@ -103,9 +96,9 @@ bool RobotSupervisor::terminate_task() {
     return fsm_->current_state() == "Terminated";
 }
 
-bool RobotSupervisor::reset_task(bool at_home) {
+bool RobotSupervisor::reset_task(bool at_parking_side) {
     const auto state = fsm_->current_state();
-    if (!at_home || (state != "Fault" && state != "Terminated")) {
+    if (!at_parking_side || (state != "Fault" && state != "Terminated")) {
         return false;
     }
     fsm_->dispatch(EvFaultReset{});
@@ -133,10 +126,6 @@ void RobotSupervisor::tick_safety(bool low_battery) {
     }
 }
 
-int RobotSupervisor::desired_cloud_period_ms(int active_ms, int idle_ms) const {
-    return is_active_task_state(fsm_->current_state()) ? active_ms : idle_ms;
-}
-
 std::string RobotSupervisor::current_state() const {
     return fsm_->current_state();
 }
@@ -145,9 +134,9 @@ RobotRuntimeSnapshot RobotSupervisor::snapshot() const {
     RobotRuntimeSnapshot snap;
     snap.device_state = fsm_->current_state();
     snap.task_state = task_state_from_device_state(snap.device_state);
-    snap.target_half_passes = fsm_->target_half_passes();
-    snap.completed_half_passes = fsm_->completed_half_passes();
-    snap.clean_count = snap.completed_half_passes / 2;
+    snap.target_passes = fsm_->target_passes();
+    snap.completed_passes = fsm_->completed_passes();
+    snap.clean_count = snap.completed_passes;
     snap.active_config = tb_cfg_->active_config();
     snap.pending_config = tb_cfg_->pending_config();
     if (snap.active_config) {
@@ -186,10 +175,8 @@ uint64_t RobotSupervisor::runtime_config_version(const service::TbRuntimeConfig&
     writer.Double(config.return_speed_rpm);
     writer.Key("brush_rpm");
     writer.Int(config.brush_rpm);
-    writer.Key("parking_policy");
-    writer.String(service::parking_policy_config_string(config.parking_policy));
-    writer.Key("charging_side");
-    writer.String(service::charging_side_config_string(config.charging_side));
+    writer.Key("parking_side");
+    writer.String(service::parking_side_config_string(config.parking_side));
     writer.Key("schedules");
     writer.StartArray();
     for (const auto& schedule : config.schedules) {

@@ -24,15 +24,13 @@ public:
                     std::shared_ptr<service::FaultService> fault,
                     std::shared_ptr<service::NavService> nav);
 
-    bool start_scheduled_task(bool at_home, bool at_front);
-    bool start_manual_task(bool at_home, bool at_front);
+    bool start_task(bool at_parking_side);
     bool resume_paused_task();
     bool pause_task();
     bool return_task();
     bool terminate_task();
-    bool reset_task(bool at_home);
+    bool reset_task(bool at_parking_side);
     void tick_safety(bool low_battery);
-    int desired_cloud_period_ms(int active_ms, int idle_ms) const;
     std::string current_state() const;
     RobotRuntimeSnapshot snapshot() const;
 

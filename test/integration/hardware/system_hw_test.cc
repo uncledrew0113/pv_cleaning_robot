@@ -59,6 +59,20 @@ rapidjson::Document parse_json_line(const std::string& line)
     return doc;
 }
 
+robot::app::EvScheduleStart make_schedule_start(bool at_parking_side, bool at_far_end, float passes)
+{
+    robot::app::EvScheduleStart evt;
+    evt.at_parking_side = at_parking_side;
+    evt.at_far_end = at_far_end;
+    evt.passes = passes;
+    return evt;
+}
+
+robot::app::EvScheduleStart start_from_parking_side(float passes)
+{
+    return make_schedule_start(true, false, passes);
+}
+
 std::vector<std::filesystem::path> collect_rotated_health_logs(const std::string& base_path)
 {
     std::vector<std::filesystem::path> paths;
@@ -196,12 +210,12 @@ TEST_CASE("System（真实硬件）ThingsBoard RPC start/stop/return 驱动运�
     spdlog::warn("[hw_system][tb_rpc_runtime] 1. 确认设备在线");
     spdlog::warn("[hw_system][tb_rpc_runtime] 2. 打开最新 telemetry，关注 device_state/task_state");
     spdlog::warn("[hw_system][tb_rpc_runtime] 3. 准备依次发送 RPC: start -> stop -> return");
-    spdlog::warn("[hw_system][tb_rpc_runtime] 4. return 之后，请人工触发【尾端/回家限位】让状态进入 Charging");
-    spdlog::warn("[hw_system][tb_rpc_runtime] 当前 at_home={} at_front={}",
-                 f.is_at_home(),
-                 f.is_at_front());
+    spdlog::warn("[hw_system][tb_rpc_runtime] 4. return 之后，请人工触发【停机位一侧限位】让状态进入 Charging");
+    spdlog::warn("[hw_system][tb_rpc_runtime] 当前 at_parking_side={} at_far_end={}",
+                 f.is_at_parking_side(),
+                 f.is_at_far_end());
 
-    REQUIRE(f.is_at_home());
+    REQUIRE(f.is_at_parking_side());
     f.tb_control->publish_startup_attributes();
     f.tb_control->publish_business_telemetry();
 
@@ -230,7 +244,7 @@ TEST_CASE("System（真实硬件）ThingsBoard RPC start/stop/return 驱动运�
         CHECK(snap.task_state == "ReturningTask");
     }
 
-    spdlog::warn("[hw_system][tb_rpc_runtime] ACTION REQUIRED: 人工触发【尾端/回家限位】");
+    spdlog::warn("[hw_system][tb_rpc_runtime] ACTION REQUIRED: 人工触发【停机位一侧限位】");
     REQUIRE(f.wait_state_with_thingsboard({"Charging"}, std::chrono::seconds(180)));
     {
         const auto snap = f.supervisor->snapshot();
@@ -258,12 +272,12 @@ TEST_CASE("System（真实硬件）ThingsBoard RPC terminate/reset 驱动结束�
     spdlog::warn("[hw_system][tb_terminate_reset] ThingsBoard 平台准备：");
     spdlog::warn("[hw_system][tb_terminate_reset] 1. 确认设备在线");
     spdlog::warn("[hw_system][tb_terminate_reset] 2. 准备依次发送 RPC: start -> stop -> terminate -> reset");
-    spdlog::warn("[hw_system][tb_terminate_reset] 3. reset 之前，请确保机器人回到【尾端/回家位】或手动压住回家限位");
-    spdlog::warn("[hw_system][tb_terminate_reset] 当前 at_home={} at_front={}",
-                 f.is_at_home(),
-                 f.is_at_front());
+    spdlog::warn("[hw_system][tb_terminate_reset] 3. reset 之前，请确保机器人回到【停机位】或手动压住停机位一侧限位");
+    spdlog::warn("[hw_system][tb_terminate_reset] 当前 at_parking_side={} at_far_end={}",
+                 f.is_at_parking_side(),
+                 f.is_at_far_end());
 
-    REQUIRE(f.is_at_home());
+    REQUIRE(f.is_at_parking_side());
     f.tb_control->publish_startup_attributes();
     f.tb_control->publish_business_telemetry();
 
@@ -284,7 +298,7 @@ TEST_CASE("System（真实硬件）ThingsBoard RPC terminate/reset 驱动结束�
         CHECK(snap.task_state == "TerminatedTask");
     }
 
-    spdlog::warn("[hw_system][tb_terminate_reset] ACTION REQUIRED: 确保 at_home=true，然后在 ThingsBoard 平台发送 RPC `reset`");
+    spdlog::warn("[hw_system][tb_terminate_reset] ACTION REQUIRED: 确保 at_parking_side=true，然后在 ThingsBoard 平台发送 RPC `reset`");
     REQUIRE(f.wait_state_with_thingsboard({"Idle"}, std::chrono::seconds(180)));
     {
         const auto snap = f.supervisor->snapshot();
@@ -583,7 +597,7 @@ TEST_CASE("System（真实硬件）P0 故障链：电机急停 + FSM Fault → �
     REQUIRE(f.fsm->current_state() == "Idle");
 
     // 启动任务 → CleanFwd，电机开始运动
-    f.fsm->dispatch(robot::app::EvScheduleStart{.at_home = true, .passes = 1.0f});
+    f.fsm->dispatch(start_from_parking_side(1.0f));
     REQUIRE(f.fsm->current_state() == "CleanFwd");
 
     // 等待 300ms 让电机加速
@@ -621,14 +635,14 @@ TEST_CASE("System（真实硬件）P0 故障链：电机急停 + FSM Fault → �
 // ────────────────────────────────────────────────────────────────────────────
 // [hw_system][p1_fault_chain] — P1 故障链 → Returning → Charging
 // ────────────────────────────────────────────────────────────────────────────
-TEST_CASE("System（真实硬件）P1 故障链：FSM Returning → EvRearLimitSettled → Charging",
+TEST_CASE("System（真实硬件）P1 故障链：FSM Returning → EvParkingSideLimitSettled → Charging",
           "[hw_system][p1_fault_chain]") {
     spdlog::warn("[hw_system][p1_fault_chain] ⚠ 此测试将短暂启动电机，确保安全！");
 
     hw::FullSystemFixture f;
     REQUIRE(f.init());
 
-    f.fsm->dispatch(robot::app::EvScheduleStart{.at_home = true, .passes = 2.0f});
+    f.fsm->dispatch(start_from_parking_side(2.0f));
     REQUIRE(f.fsm->current_state() == "CleanFwd");
 
     // 等待 200ms 让电机建立速度
@@ -649,7 +663,7 @@ TEST_CASE("System（真实硬件）P1 故障链：FSM Returning → EvRearLimitS
     CHECK(f.dispatched_faults[0].level == robot::service::FaultService::FaultEvent::Level::P1);
 
     // P1 测试重点在故障链逻辑，直接 dispatch 尾端事件（不等真实物理运动）
-    f.fsm->dispatch(robot::app::EvRearLimitSettled{});
+    f.fsm->dispatch(robot::app::EvParkingSideLimitSettled{});
     REQUIRE(f.fsm->current_state() == "Charging");
 
     spdlog::info("[hw_system][p1_fault_chain] PASS: CleanFwd→Returning→Charging");
@@ -664,7 +678,7 @@ TEST_CASE("System（真实硬件）EvLowBattery → Returning → Charging", "[h
     hw::FullSystemFixture f;
     REQUIRE(f.init());
 
-    f.fsm->dispatch(robot::app::EvScheduleStart{.at_home = true, .passes = 2.0f});
+    f.fsm->dispatch(start_from_parking_side(2.0f));
     REQUIRE(f.fsm->current_state() == "CleanFwd");
 
     std::this_thread::sleep_for(200ms);
@@ -678,14 +692,14 @@ TEST_CASE("System（真实硬件）EvLowBattery → Returning → Charging", "[h
     f.fsm->dispatch(robot::app::EvLowBattery{});
     REQUIRE(f.fsm->current_state() == "Returning");
 
-    f.fsm->dispatch(robot::app::EvRearLimitSettled{});
+    f.fsm->dispatch(robot::app::EvParkingSideLimitSettled{});
     REQUIRE(f.fsm->current_state() == "Charging");
 
     spdlog::info("[hw_system][low_battery] PASS: CleanFwd→Returning→Charging");
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// [hw_system][n1_clean_cycle] — N=1 完整任务链（手动触发真实前后限位）
+// [hw_system][n1_clean_cycle] — N=1 完整任务链（手动触发真实前右限位）
 // ────────────────────────────────────────────────────────────────────────────
 TEST_CASE("System（真实硬件）N=1 完整任务链（真实限位触发）", "[hw_system][n1_clean_cycle]") {
     spdlog::warn("[hw_system][n1_clean_cycle] ====================================");
@@ -699,36 +713,36 @@ TEST_CASE("System（真实硬件）N=1 完整任务链（真实限位触发）",
     const uint32_t frames_before = f.walk_group->get_group_diagnostics().ctrl_frame_count;
 
     // 启动 N=1 任务 → CleanFwd，电机开始正向运动
-    f.fsm->dispatch(robot::app::EvScheduleStart{.at_home = true, .passes = 5.0f});
+    f.fsm->dispatch(start_from_parking_side(5.0f));
     REQUIRE(f.fsm->current_state() == "CleanFwd");
 
     spdlog::warn(
-        "[hw_system][n1_clean_cycle] ★ 机器人正在向前运动，等待【前端限位】触发（最多 {}s）...",
+        "[hw_system][n1_clean_cycle] ★ 机器人正在向前运动，等待【左侧限位】触发（最多 {}s）...",
         f.p.limit_timeout_sec);
 
     // 等待 SafetyMonitor → EventBus → FSM CleanReturn（真实限位触发）
-    const bool front_hit =
+    const bool left_hit =
         f.wait_state("CleanReturn", std::chrono::milliseconds(f.p.limit_timeout_sec * 1000));
 
     {
-        INFO("前端限位等待超时，请检查导轨/传感器接线");
-        REQUIRE(front_hit);
+        INFO("左侧限位等待超时，请检查导轨/传感器接线");
+        REQUIRE(left_hit);
     }
-    spdlog::info("[hw_system][n1_clean_cycle] ✓ 前端限位触发，机器人开始返回");
+    spdlog::info("[hw_system][n1_clean_cycle] ✓ 左侧限位触发，机器人开始返回");
 
     spdlog::warn(
-        "[hw_system][n1_clean_cycle] ★ 机器人正在返回，等待【尾端限位】触发（最多 {}s）...",
+        "[hw_system][n1_clean_cycle] ★ 机器人正在返回，等待【右侧限位】触发（最多 {}s）...",
         f.p.limit_timeout_sec);
 
-    // 等待尾端限位触发 → Charging（任务完成）
-    const bool rear_hit =
+    // 等待右侧限位触发 → Charging（任务完成）
+    const bool right_hit =
         f.wait_state("Charging", std::chrono::milliseconds(f.p.limit_timeout_sec * 1000));
 
     {
-        INFO("尾端限位等待超时，请检查导轨/传感器接线");
-        REQUIRE(rear_hit);
+        INFO("右侧限位等待超时，请检查导轨/传感器接线");
+        REQUIRE(right_hit);
     }
-    spdlog::info("[hw_system][n1_clean_cycle] ✓ 尾端限位触发，任务完成");
+    spdlog::info("[hw_system][n1_clean_cycle] ✓ 右侧限位触发，任务完成");
 
     // 验证任务期间产生了足够的 CAN 控制帧
     const uint32_t frames_after = f.walk_group->get_group_diagnostics().ctrl_frame_count;
@@ -813,7 +827,7 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + 全程持续采集健�
     };
 
     // ── 启动任务，进入 CleanFwd ─────────────────────────────────────────────
-    f.fsm->dispatch(robot::app::EvScheduleStart{.at_home = true, .passes = f.p.combined_passes});
+    f.fsm->dispatch(start_from_parking_side(f.p.combined_passes));
     REQUIRE(f.fsm->current_state() == "CleanFwd");
 
     // ── 逐段等待，每触发一次限位重置 60s 计时 ──────────────────────────────
@@ -961,14 +975,16 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + PID 控制 + yaw 指�
         f.watchdog->register_thread("hw_pid_combined", f.p.limit_timeout_sec * 2 * 1000);
     REQUIRE(wd_tid >= 0);
 
-    // ── 读取真实传感器状态（修复 combined 测试 at_home 硬编码 bug）──────────
-    const bool at_home = !f.rear_sw->read_current_level();
-    const bool at_front = !f.front_sw->read_current_level();
+    // ── 读取真实左右限位状态，避免把起点硬编码成右侧/停机位 ────────────────────
+    const bool right_limit_active = !f.right_sw->read_current_level();
+    const bool left_limit_active = !f.left_sw->read_current_level();
     {
-        INFO("设备不在已知端点（at_home=false, at_front=false），请将设备移至停机位或前端");
-        REQUIRE((at_home || at_front));
+        INFO("设备不在已知端点（right_limit_active=false, left_limit_active=false），请将设备移至某一端点");
+        REQUIRE((right_limit_active || left_limit_active));
     }
-    spdlog::info("[hw_system][pid_combined] 传感器: at_home={} at_front={}", at_home, at_front);
+    spdlog::info("[hw_system][pid_combined] 传感器: right_limit_active={} left_limit_active={}",
+                 right_limit_active,
+                 left_limit_active);
 
     // 记录出发时的 target_yaw（PID 将锁定此航向）
     const float target_yaw = f.imu->get_latest().yaw_deg;
@@ -1047,8 +1063,8 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + PID 控制 + yaw 指�
     };
 
     // ── 启动任务 ────────────────────────────────────────────────────────────
-    f.fsm->dispatch(robot::app::EvScheduleStart{
-        .at_home = at_home, .at_front = at_front, .passes = f.p.combined_passes});
+    f.fsm->dispatch(make_schedule_start(
+        right_limit_active, left_limit_active, f.p.combined_passes));
     {
         const std::string s = f.fsm->current_state();
         INFO("FSM 未能进入 CleanFwd/CleanReturn，请检查传感器与 FSM 逻辑");

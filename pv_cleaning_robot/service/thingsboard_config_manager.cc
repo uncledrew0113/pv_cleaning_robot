@@ -12,7 +12,7 @@ namespace {
 bool is_supported_field(const std::string& key)
 {
     return key == "passes" || key == "clean_speed_rpm" || key == "return_speed_rpm" ||
-           key == "brush_rpm" || key == "parking_policy" || key == "charging_side" ||
+           key == "brush_rpm" || key == "parking_side" ||
            key == "schedules";
 }
 
@@ -21,42 +21,21 @@ bool is_integer_passes(double value)
     return std::isfinite(value) && value > 0.0 && std::floor(value) == value;
 }
 
-ParkingPolicy parse_parking_policy_string(const std::string& value)
+ParkingSide parse_parking_side_string(const std::string& value)
 {
-    if (value == parking_policy_config_string(ParkingPolicy::TerminalAOnly)) {
-        return ParkingPolicy::TerminalAOnly;
+    if (value == parking_side_config_string(ParkingSide::Left)) {
+        return ParkingSide::Left;
     }
-    if (value == parking_policy_config_string(ParkingPolicy::TerminalBOnly)) {
-        return ParkingPolicy::TerminalBOnly;
+    if (value == parking_side_config_string(ParkingSide::Right)) {
+        return ParkingSide::Right;
     }
-    if (value == parking_policy_config_string(ParkingPolicy::Both)) {
-        return ParkingPolicy::Both;
-    }
-    throw std::runtime_error("parking_policy must be terminal_a_only, terminal_b_only, or both");
+    throw std::runtime_error("parking_side must be left or right");
 }
 
-ChargingSide parse_charging_side_string(const std::string& value)
+void validate_runtime_config(const TbRuntimeConfig& cfg)
 {
-    if (value == charging_side_config_string(ChargingSide::TerminalA)) {
-        return ChargingSide::TerminalA;
-    }
-    if (value == charging_side_config_string(ChargingSide::TerminalB)) {
-        return ChargingSide::TerminalB;
-    }
-    if (value == charging_side_config_string(ChargingSide::Both)) {
-        return ChargingSide::Both;
-    }
-    throw std::runtime_error("charging_side must be terminal_a, terminal_b, or both");
-}
-
-void validate_release_runtime_config(const TbRuntimeConfig& cfg)
-{
-    // 当前 release 明确只支持整数趟和单侧停车。
     if (!is_integer_passes(cfg.passes)) {
-        throw std::runtime_error("passes must be a positive integer in this release");
-    }
-    if (cfg.parking_policy == ParkingPolicy::Both) {
-        throw std::runtime_error("parking_policy=both is not supported in this release");
+        throw std::runtime_error("passes must be a positive integer");
     }
 }
 
@@ -137,6 +116,7 @@ ThingsBoardConfigManager::ThingsBoardConfigManager(ConfigService& config,
     , scheduler_(scheduler)
     , active_(parse_runtime_config(config.snapshot()))
 {
+    apply_scheduler_windows(active_.schedules);
     if (const auto pending_root = config_.load_pending()) {
         pending_ = parse_runtime_config(*pending_root);
     }
@@ -190,11 +170,11 @@ SharedAttrApplyResult ThingsBoardConfigManager::apply_shared_attributes(
 
         if (const auto it = attrs.FindMember("passes"); it != attrs.MemberEnd()) {
             if (!it->value.IsNumber()) {
-                throw std::runtime_error("passes must be a positive integer in this release");
+                throw std::runtime_error("passes must be a positive integer");
             }
             const double value = it->value.GetDouble();
             if (!is_integer_passes(value)) {
-                throw std::runtime_error("passes must be a positive integer in this release");
+                throw std::runtime_error("passes must be a positive integer");
             }
             set_double_member(*robot, "passes", value, pending_root_after.GetAllocator());
             touches_pending = true;
@@ -238,38 +218,21 @@ SharedAttrApplyResult ThingsBoardConfigManager::apply_shared_attributes(
             touches_pending = true;
         }
 
-        if (const auto it = attrs.FindMember("parking_policy"); it != attrs.MemberEnd()) {
+        if (const auto it = attrs.FindMember("parking_side"); it != attrs.MemberEnd()) {
             if (!it->value.IsString()) {
-                throw std::runtime_error(
-                    "parking_policy must be terminal_a_only, terminal_b_only, or both");
+                throw std::runtime_error("parking_side must be left or right");
             }
-            const auto policy = parse_parking_policy_string(it->value.GetString());
-            if (policy == ParkingPolicy::Both) {
-                throw std::runtime_error("parking_policy=both is not supported in this release");
-            }
+            const auto side = parse_parking_side_string(it->value.GetString());
             set_string_member(
                 *robot,
-                "parking_policy",
-                parking_policy_config_string(policy),
-                pending_root_after.GetAllocator());
-            touches_pending = true;
-        }
-
-        if (const auto it = attrs.FindMember("charging_side"); it != attrs.MemberEnd()) {
-            if (!it->value.IsString()) {
-                throw std::runtime_error("charging_side must be terminal_a, terminal_b, or both");
-            }
-            const auto charging_side = parse_charging_side_string(it->value.GetString());
-            set_string_member(
-                *robot,
-                "charging_side",
-                charging_side_config_string(charging_side),
+                "parking_side",
+                parking_side_config_string(side),
                 pending_root_after.GetAllocator());
             touches_pending = true;
         }
 
         if (touches_pending) {
-            validate_release_runtime_config(parse_runtime_config(pending_root_after));
+            validate_runtime_config(parse_runtime_config(pending_root_after));
         }
     } catch (const std::exception& ex) {
         spdlog::warn("[TBConfig] 拒绝共享属性更新: {}", ex.what());
@@ -379,13 +342,9 @@ TbRuntimeConfig ThingsBoardConfigManager::parse_runtime_config(const rapidjson::
                 it != robot.MemberEnd() && it->value.IsInt()) {
                 cfg.brush_rpm = it->value.GetInt();
             }
-            if (const auto it = robot.FindMember("parking_policy");
+            if (const auto it = robot.FindMember("parking_side");
                 it != robot.MemberEnd() && it->value.IsString()) {
-                cfg.parking_policy = parse_parking_policy_string(it->value.GetString());
-            }
-            if (const auto it = robot.FindMember("charging_side");
-                it != robot.MemberEnd() && it->value.IsString()) {
-                cfg.charging_side = parse_charging_side_string(it->value.GetString());
+                cfg.parking_side = parse_parking_side_string(it->value.GetString());
             }
         }
 
@@ -398,7 +357,7 @@ TbRuntimeConfig ThingsBoardConfigManager::parse_runtime_config(const rapidjson::
         }
     }
 
-    validate_release_runtime_config(cfg);
+    validate_runtime_config(cfg);
     return cfg;
 }
 

@@ -23,8 +23,8 @@
     "dist_slave_id":       1,
     "dist_channel_count":  2,
     "gpio_chip":           "gpiochip5",
-    "front_limit_line":    0,
-    "rear_limit_line":     1
+    "left_limit_line":    0,
+    "right_limit_line":     1
   },
   "timing": {
     "limit_timeout_sec":   60,

@@ -52,8 +52,8 @@
   },
 
   "gpio": {
-    "front_limit": { "chip": "gpiochip5", "line": 0 },
-    "rear_limit":  { "chip": "gpiochip5", "line": 1 },
+    "left_limit": { "chip": "gpiochip5", "line": 0 },
+    "right_limit":  { "chip": "gpiochip5", "line": 1 },
     "use_irq": false
   },
 
@@ -99,8 +99,7 @@
   "robot": {
     "track_length_m":   1000.0,
     "passes":           1.0,
-    "parking_policy":   "terminal_a_only",
-    "charging_side":    "terminal_a",
+    "parking_side":     "left",
     "clean_speed_rpm":  300.0,
     "return_speed_rpm": 300.0,
     "return_brush_rpm": 1000,

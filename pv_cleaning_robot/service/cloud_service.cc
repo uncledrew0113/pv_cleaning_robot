@@ -30,6 +30,23 @@ std::string stringify_json_value(const rapidjson::Value& value)
     return {buffer.GetString(), buffer.GetSize()};
 }
 
+std::string build_rpc_response(bool accepted, const char* reason)
+{
+    rapidjson::StringBuffer buffer;
+    rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+    writer.StartObject();
+    writer.Key("accepted");
+    writer.Bool(accepted);
+    writer.Key("result");
+    writer.String(accepted ? "ok" : "rejected");
+    if (reason && reason[0] != '\0') {
+        writer.Key("reason");
+        writer.String(reason);
+    }
+    writer.EndObject();
+    return {buffer.GetString(), buffer.GetSize()};
+}
+
 }  // namespace
 
 CloudService::CloudService(std::shared_ptr<middleware::NetworkManager> network,
@@ -216,11 +233,26 @@ void CloudService::on_rpc_message(const std::string& topic,
     auto pos = topic.rfind('/');
     if (pos != std::string::npos)
         request_id = topic.substr(pos + 1);
+    const auto publish_reject = [this, &request_id](const char* reason) {
+        if (request_id.empty()) {
+            return;
+        }
+        const auto response_topic = topics_.rpc_response_prefix + request_id;
+        const auto response = build_rpc_response(false, reason);
+        spdlog::warn("[CloudService] rejecting RPC request: request_id='{}' reason='{}'",
+                     request_id,
+                     reason);
+        const bool ok = network_->publish(response_topic, response);
+        spdlog::info("[CloudService] published rejected RPC response: topic='{}' ok={}",
+                     response_topic,
+                     ok);
+    };
 
     // params 大小防御：超大 payload 拒绝，防止栈耗尽
     if (payload.size() > kMaxRpcParamsBytes) {
         spdlog::warn("[CloudService] RPC payload too large: {} bytes (max {})",
                      payload.size(), kMaxRpcParamsBytes);
+        publish_reject("payload_too_large");
         return;
     }
 
@@ -233,14 +265,19 @@ void CloudService::on_rpc_message(const std::string& topic,
     rapidjson::Document document(&allocator);
     document.Parse(payload.c_str(), payload.size());
     if (document.HasParseError() || !document.IsObject()) {
+        publish_reject("invalid_request");
         return;
     }
     const auto method_it = document.FindMember("method");
     if (method_it != document.MemberEnd()) {
         if (!method_it->value.IsString()) {
+            publish_reject("invalid_request");
             return;
         }
         method.assign(method_it->value.GetString(), method_it->value.GetStringLength());
+    } else {
+        publish_reject("invalid_request");
+        return;
     }
     const auto params_it = document.FindMember("params");
     params = params_it != document.MemberEnd() ? stringify_json_value(params_it->value) : "{}";
@@ -252,11 +289,12 @@ void CloudService::on_rpc_message(const std::string& topic,
         auto it = rpc_handlers_.find(method);
         if (it == rpc_handlers_.end()) {
             spdlog::warn("[CloudService] Rejected unknown RPC method: {}", method);
+            publish_reject("method_not_supported");
             return;
         }
         spdlog::info("[CloudService] invoking RPC handler: method='{}' params={}", method, params);
         try {
-            response = it->second(params);
+            response = it->second(request_id, params);
             spdlog::info("[CloudService] RPC handler returned: method='{}' response={}",
                          method,
                          response);

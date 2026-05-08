@@ -101,10 +101,8 @@ void write_runtime_config(const char* key, const TbRuntimeConfig& config, Writer
     writer.Double(config.return_speed_rpm);
     writer.Key("brush_rpm");
     writer.Int(config.brush_rpm);
-    writer.Key("parking_policy");
-    writer.String(parking_policy_config_string(config.parking_policy));
-    writer.Key("charging_side");
-    writer.String(charging_side_config_string(config.charging_side));
+    writer.Key("parking_side");
+    writer.String(parking_side_config_string(config.parking_side));
     writer.Key("schedules");
     write_schedule_entries(config.schedules, writer);
     writer.EndObject();
@@ -204,10 +202,10 @@ size_t ThingsBoardJsonCodec::build_business_telemetry(const app::RobotRuntimeSna
     writer.String(view.device_state.c_str());
     writer.Key("task_state");
     writer.String(view.task_state.c_str());
-    writer.Key("target_half_passes");
-    writer.Int(view.target_half_passes);
-    writer.Key("completed_half_passes");
-    writer.Int(view.completed_half_passes);
+    writer.Key("target_passes");
+    writer.Int(view.target_passes);
+    writer.Key("completed_passes");
+    writer.Int(view.completed_passes);
     writer.Key("clean_count");
     writer.Int(view.clean_count);
     writer.Key("active_config_version");

@@ -26,7 +26,8 @@ namespace robot::service {
 /// - shared attributes 是否接受，由 ThingsBoardConfigManager 决定
 class CloudService : public middleware::IRunnable {
    public:
-    using RpcHandler = std::function<std::string(const std::string& params)>;
+    using RpcHandler =
+        std::function<std::string(const std::string& request_id, const std::string& params)>;
     /// 共享属性下行回调（ThingsBoard 服务端推送，参数为解析后的 JSON 对象）
     using AttrCallback = std::function<void(const rapidjson::Document& attrs)>;
 

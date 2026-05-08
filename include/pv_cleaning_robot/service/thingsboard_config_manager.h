@@ -11,75 +11,19 @@
 
 namespace robot::service {
 
-enum class TerminalSide {
-    Unknown,
-    A,
-    B,
+enum class ParkingSide {
+    Left,
+    Right,
 };
 
-enum class ParkingPolicy {
-    TerminalAOnly,
-    TerminalBOnly,
-    Both,
-};
-
-enum class ChargingSide {
-    TerminalA,
-    TerminalB,
-    Both,
-};
-
-inline bool allows_half_pass(ParkingPolicy policy) noexcept {
-    return policy == ParkingPolicy::Both;
-}
-
-inline bool can_start_from_terminal(ParkingPolicy policy, TerminalSide side) noexcept {
-    switch (policy) {
-    case ParkingPolicy::TerminalAOnly:
-        return side == TerminalSide::A;
-    case ParkingPolicy::TerminalBOnly:
-        return side == TerminalSide::B;
-    case ParkingPolicy::Both:
-        return side == TerminalSide::A || side == TerminalSide::B;
-    }
-    return false;
-}
-
-inline bool supports_charging_at(ChargingSide charging_side,
-                                 TerminalSide terminal_side) noexcept {
-    switch (charging_side) {
-    case ChargingSide::TerminalA:
-        return terminal_side == TerminalSide::A;
-    case ChargingSide::TerminalB:
-        return terminal_side == TerminalSide::B;
-    case ChargingSide::Both:
-        return terminal_side == TerminalSide::A || terminal_side == TerminalSide::B;
-    }
-    return false;
-}
-
-inline const char* parking_policy_config_string(ParkingPolicy value) noexcept {
+inline const char* parking_side_config_string(ParkingSide value) noexcept {
     switch (value) {
-    case ParkingPolicy::TerminalAOnly:
-        return "terminal_a_only";
-    case ParkingPolicy::TerminalBOnly:
-        return "terminal_b_only";
-    case ParkingPolicy::Both:
-        return "both";
+    case ParkingSide::Left:
+        return "left";
+    case ParkingSide::Right:
+        return "right";
     }
-    return "unknown";
-}
-
-inline const char* charging_side_config_string(ChargingSide value) noexcept {
-    switch (value) {
-    case ChargingSide::TerminalA:
-        return "terminal_a";
-    case ChargingSide::TerminalB:
-        return "terminal_b";
-    case ChargingSide::Both:
-        return "both";
-    }
-    return "unknown";
+    return "left";
 }
 
 struct TbScheduleEntry {
@@ -96,8 +40,7 @@ struct TbRuntimeConfig {
     double clean_speed_rpm{300.0};
     double return_speed_rpm{300.0};
     int brush_rpm{1000};
-    ParkingPolicy parking_policy{ParkingPolicy::TerminalAOnly};
-    ChargingSide charging_side{ChargingSide::TerminalA};
+    ParkingSide parking_side{ParkingSide::Left};
     std::vector<TbScheduleEntry> schedules;
 
     bool operator==(const TbRuntimeConfig& other) const {
@@ -105,8 +48,7 @@ struct TbRuntimeConfig {
                clean_speed_rpm == other.clean_speed_rpm &&
                return_speed_rpm == other.return_speed_rpm &&
                brush_rpm == other.brush_rpm &&
-               parking_policy == other.parking_policy &&
-               charging_side == other.charging_side &&
+               parking_side == other.parking_side &&
                schedules == other.schedules;
     }
 };
@@ -126,7 +68,7 @@ struct SharedAttrApplyResult {
 ///
 /// 当前首版限制：
 /// - `passes` 只允许正整数
-/// - `parking_policy=both` 明确拒绝
+/// - `parking_side` 只允许 `left` / `right`
 /// - 任务相关参数先进 `pending`，下一次任务启动前再提升到 `active`
 /// - 当前没有 shared attributes 版本合并机制；谁最后到达并通过校验，谁覆盖当前视图
 ///   - 设备上线后会主动请求一次 shared attributes 快照

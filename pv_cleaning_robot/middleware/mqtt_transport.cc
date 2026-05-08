@@ -69,8 +69,9 @@ public:
         }
         spdlog::info("[MqttTransport] connected callback after reconnect: cause='{}'",
                      cause.empty() ? "unknown" : cause);
-        // 仅在自动重连后的 connected 回调里重订阅；首次连接由 connect() 成功路径处理。
-        owner_->subscribe_all_registered_topics();
+        // 自动重连回调运行在 Paho 的内部回调线程。这里不能再同步 wait_for() 订阅确认，
+        // 否则会把回调线程卡住，表现为“已重连但后续 subscribe 连续超时并再次断线”。
+        owner_->subscribe_all_registered_topics(false);
     }
 
     void message_arrived(mqtt::const_message_ptr msg) override
@@ -80,22 +81,37 @@ public:
         const std::string& payload = msg->to_string();
         spdlog::info("[MqttTransport] message arrived: topic='{}' payload={}", topic, payload);
 
-        std::lock_guard<std::mutex> lk(owner_->sub_mtx_);
-        // 精确匹配优先，未命中时回退到 MQTT wildcard 过滤匹配。
-        auto it = owner_->subscriptions_.find(topic);
-        if (it != owner_->subscriptions_.end()) {
-            spdlog::info("[MqttTransport] dispatch exact subscription: topic='{}'", topic);
-            it->second(topic, payload);
-            return;
-        }
-        for (auto& [filter, cb] : owner_->subscriptions_) {
-            if (detail::mqtt_topic_matches(filter, topic)) {
-                spdlog::info("[MqttTransport] dispatch wildcard subscription: filter='{}' topic='{}'",
-                             filter,
-                             topic);
-                cb(topic, payload);
-                return;
+        MqttTransport::MessageCallback matched_cb;
+        std::string matched_filter;
+        bool exact_match = false;
+        {
+            std::lock_guard<std::mutex> lk(owner_->sub_mtx_);
+            // 精确匹配优先，未命中时回退到 MQTT wildcard 过滤匹配。
+            auto it = owner_->subscriptions_.find(topic);
+            if (it != owner_->subscriptions_.end()) {
+                matched_cb = it->second;
+                exact_match = true;
+            } else {
+                for (const auto& [filter, cb] : owner_->subscriptions_) {
+                    if (detail::mqtt_topic_matches(filter, topic)) {
+                        matched_cb = cb;
+                        matched_filter = filter;
+                        break;
+                    }
+                }
             }
+        }
+        if (matched_cb) {
+            if (exact_match) {
+                spdlog::info("[MqttTransport] dispatch exact subscription: topic='{}'", topic);
+            } else {
+                spdlog::info(
+                    "[MqttTransport] dispatch wildcard subscription: filter='{}' topic='{}'",
+                    matched_filter,
+                    topic);
+            }
+            owner_->enqueue_delivery(std::move(matched_cb), topic, payload);
+            return;
         }
         spdlog::warn("[MqttTransport] message had no matching subscription: topic='{}'", topic);
     }
@@ -114,11 +130,20 @@ MqttTransport::MqttTransport(Config cfg)
         mqtt::create_options(MQTTVERSION_3_1_1));
     callback_ = std::make_unique<MqttCallback>(this);
     client_->set_callback(*callback_);
+    delivery_thread_ = std::thread([this] { delivery_loop(); });
 }
 
 MqttTransport::~MqttTransport()
 {
     disconnect();
+    {
+        std::lock_guard<std::mutex> lk(delivery_mtx_);
+        stop_delivery_ = true;
+    }
+    delivery_cv_.notify_all();
+    if (delivery_thread_.joinable()) {
+        delivery_thread_.join();
+    }
 }
 
 bool MqttTransport::connect()
@@ -191,12 +216,25 @@ bool MqttTransport::connect()
     }
 }
 
-void MqttTransport::subscribe_all_registered_topics()
+void MqttTransport::subscribe_all_registered_topics(bool wait_for_ack)
 {
-    std::lock_guard<std::mutex> lk(sub_mtx_);
-    for (auto& [topic, _] : subscriptions_) {
+    std::vector<std::string> topics;
+    {
+        std::lock_guard<std::mutex> lk(sub_mtx_);
+        topics.reserve(subscriptions_.size());
+        for (const auto& [topic, _] : subscriptions_) {
+            topics.push_back(topic);
+        }
+    }
+    for (const auto& topic : topics) {
         try {
             auto token = client_->subscribe(topic, cfg_.qos);
+            if (!wait_for_ack) {
+                spdlog::info("[MqttTransport] resubscribe requested: topic='{}' qos={}",
+                             topic,
+                             cfg_.qos);
+                continue;
+            }
             if (!token->wait_for(std::chrono::seconds(5))) {
                 spdlog::warn("[MqttTransport] subscribe timeout: topic='{}'", topic);
                 continue;
@@ -221,6 +259,44 @@ void MqttTransport::subscribe_all_registered_topics()
                          ex.what());
         } catch (...) {
             spdlog::warn("[MqttTransport] subscribe unknown exception: topic='{}'", topic);
+        }
+    }
+}
+
+void MqttTransport::enqueue_delivery(MessageCallback cb,
+                                     std::string topic,
+                                     std::string payload)
+{
+    {
+        std::lock_guard<std::mutex> lk(delivery_mtx_);
+        pending_deliveries_.push_back(
+            PendingDelivery{std::move(cb), std::move(topic), std::move(payload)});
+    }
+    delivery_cv_.notify_one();
+}
+
+void MqttTransport::delivery_loop()
+{
+    while (true) {
+        PendingDelivery delivery;
+        {
+            std::unique_lock<std::mutex> lk(delivery_mtx_);
+            delivery_cv_.wait(lk, [this] {
+                return stop_delivery_ || !pending_deliveries_.empty();
+            });
+            if (stop_delivery_ && pending_deliveries_.empty()) {
+                return;
+            }
+            delivery = std::move(pending_deliveries_.front());
+            pending_deliveries_.pop_front();
+        }
+
+        try {
+            delivery.callback(delivery.topic, delivery.payload);
+        } catch (const std::exception& ex) {
+            spdlog::warn("[MqttTransport] delivery callback threw std::exception: {}", ex.what());
+        } catch (...) {
+            spdlog::warn("[MqttTransport] delivery callback threw unknown exception");
         }
     }
 }

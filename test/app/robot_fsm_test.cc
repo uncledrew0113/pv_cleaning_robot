@@ -32,6 +32,28 @@ using robot::service::FaultService;
 using robot::service::MotionService;
 using robot::service::NavService;
 
+namespace {
+
+MotionService::Config make_motion_config() {
+    MotionService::Config cfg;
+    cfg.heading_pid_en = false;
+    return cfg;
+}
+
+EvScheduleStart make_schedule_start(bool at_parking_side, bool at_far_end, float passes) {
+    EvScheduleStart evt;
+    evt.at_parking_side = at_parking_side;
+    evt.at_far_end = at_far_end;
+    evt.passes = passes;
+    return evt;
+}
+
+EvScheduleStart start_from_parking_side(float passes) {
+    return make_schedule_start(true, false, passes);
+}
+
+}  // namespace
+
 // ────────────────────────────────────────────────────────────────
 // 构建辅助
 // ────────────────────────────────────────────────────────────────
@@ -56,7 +78,7 @@ struct FsmFixture {
                                                  brush,
                                                  nullptr,
                                                  bus,
-                                                 MotionService::Config{.heading_pid_en = false}))
+                                                 make_motion_config()))
         , nav(std::make_shared<NavService>(group, imu, gps))
         , fsm(motion, nav, fault, bus) {
         can->open_result = true;
@@ -77,49 +99,49 @@ TEST_CASE("FSM: EvInitDone 后状态 == Idle", "[app][fsm]") {
 }
 
 // ────────────────────────────────────────────────────────────────
-// 调度触发 → SelfCheck → CleanFwd（at_home=true）
+// 调度触发 → SelfCheck → CleanFwd（从停机位启动）
 // ────────────────────────────────────────────────────────────────
-TEST_CASE("FSM: EvScheduleStart(at_home=true) → CleanFwd", "[app][fsm]") {
+TEST_CASE("FSM: EvScheduleStart(from parking side) → CleanFwd", "[app][fsm]") {
     FsmFixture f;
-    f.fsm.dispatch(EvScheduleStart{.at_home = true, .at_front = false, .passes = 1.0f});
+    f.fsm.dispatch(start_from_parking_side(1.0f));
     REQUIRE(f.fsm.current_state() == "CleanFwd");
 }
 
-TEST_CASE("FSM: EvScheduleStart(at_front=true only) → Idle（首版拒绝前端启动）", "[app][fsm]") {
+TEST_CASE("FSM: EvScheduleStart(from far end only) → Idle（首版拒绝对侧端点启动）", "[app][fsm]") {
     FsmFixture f;
-    f.fsm.dispatch(EvScheduleStart{.at_home = false, .at_front = true, .passes = 1.0f});
+    f.fsm.dispatch(make_schedule_start(false, true, 1.0f));
     REQUIRE(f.fsm.current_state() == "Idle");
 }
 
 TEST_CASE("FSM: EvScheduleStart(passes=0.5) → Idle（首版拒绝非整数趟）", "[app][fsm]") {
     FsmFixture f;
-    f.fsm.dispatch(EvScheduleStart{.at_home = true, .at_front = false, .passes = 0.5f});
+    f.fsm.dispatch(start_from_parking_side(0.5f));
     REQUIRE(f.fsm.current_state() == "Idle");
 }
 
-TEST_CASE("FSM: EvScheduleStart(at_home=false, at_front=false) → Idle（自检失败）", "[app][fsm]") {
+TEST_CASE("FSM: EvScheduleStart(unknown position) → Idle（自检失败）", "[app][fsm]") {
     FsmFixture f;
-    f.fsm.dispatch(EvScheduleStart{.at_home = false, .at_front = false, .passes = 1.0f});
+    f.fsm.dispatch(make_schedule_start(false, false, 1.0f));
     REQUIRE(f.fsm.current_state() == "Idle");
 }
 
 // ────────────────────────────────────────────────────────────────
 // CleanFwd → CleanReturn → CleanFwd … （往复清扫）
 // ────────────────────────────────────────────────────────────────
-TEST_CASE("FSM: CleanFwd -EvFrontLimitSettled-> CleanReturn（1趟中）", "[app][fsm]") {
+TEST_CASE("FSM: CleanFwd -EvFarEndLimitSettled-> CleanReturn（1趟中）", "[app][fsm]") {
     FsmFixture f;
-    f.fsm.dispatch(EvScheduleStart{.at_home = true, .passes = 2.0f});
+    f.fsm.dispatch(start_from_parking_side(2.0f));
     REQUIRE(f.fsm.current_state() == "CleanFwd");
-    f.fsm.dispatch(EvFrontLimitSettled{});
+    f.fsm.dispatch(EvFarEndLimitSettled{});
     REQUIRE(f.fsm.current_state() == "CleanReturn");
 }
 
-TEST_CASE("FSM: CleanReturn -EvRearLimitSettled-> CleanFwd（还有趟数）", "[app][fsm]") {
+TEST_CASE("FSM: CleanReturn -EvParkingSideLimitSettled-> CleanFwd（还有趟数）", "[app][fsm]") {
     FsmFixture f;
-    f.fsm.dispatch(EvScheduleStart{.at_home = true, .passes = 2.0f});
-    f.fsm.dispatch(EvFrontLimitSettled{});
+    f.fsm.dispatch(start_from_parking_side(2.0f));
+    f.fsm.dispatch(EvFarEndLimitSettled{});
     REQUIRE(f.fsm.current_state() == "CleanReturn");
-    f.fsm.dispatch(EvRearLimitSettled{});
+    f.fsm.dispatch(EvParkingSideLimitSettled{});
     REQUIRE(f.fsm.current_state() == "CleanFwd");
 }
 
@@ -128,11 +150,10 @@ TEST_CASE("FSM: CleanReturn -EvRearLimitSettled-> CleanFwd（还有趟数）", "
 // ────────────────────────────────────────────────────────────────
 TEST_CASE("FSM: N=1 往返完成后 → Charging", "[app][fsm]") {
     FsmFixture f;
-    // N=1 → 2个半趟
-    f.fsm.dispatch(EvScheduleStart{.at_home = true, .passes = 1.0f});
-    f.fsm.dispatch(EvFrontLimitSettled{});  // 完成半趟1
+    f.fsm.dispatch(start_from_parking_side(1.0f));
+    f.fsm.dispatch(EvFarEndLimitSettled{});  // 到达对侧端点，开始返程
     REQUIRE(f.fsm.current_state() == "CleanReturn");
-    f.fsm.dispatch(EvRearLimitSettled{});  // 完成半趟2
+    f.fsm.dispatch(EvParkingSideLimitSettled{});  // 回到停机位，完成 1 个整数趟
     REQUIRE(f.fsm.current_state() == "Charging");
 }
 
@@ -141,28 +162,28 @@ TEST_CASE("FSM: N=1 往返完成后 → Charging", "[app][fsm]") {
 // ────────────────────────────────────────────────────────────────
 TEST_CASE("FSM: CleanFwd -EvFaultP0-> Fault", "[app][fsm]") {
     FsmFixture f;
-    f.fsm.dispatch(EvScheduleStart{.at_home = true, .passes = 1.0f});
+    f.fsm.dispatch(start_from_parking_side(1.0f));
     f.fsm.dispatch(EvFaultP0{});
     REQUIRE(f.fsm.current_state() == "Fault");
 }
 
 TEST_CASE("FSM: CleanFwd -EvFaultP1-> Returning", "[app][fsm]") {
     FsmFixture f;
-    f.fsm.dispatch(EvScheduleStart{.at_home = true, .passes = 1.0f});
+    f.fsm.dispatch(start_from_parking_side(1.0f));
     f.fsm.dispatch(EvFaultP1{});
     REQUIRE(f.fsm.current_state() == "Returning");
 }
 
 TEST_CASE("FSM: CleanFwd -EvFaultP2-> CleanFwd（不转状态）", "[app][fsm]") {
     FsmFixture f;
-    f.fsm.dispatch(EvScheduleStart{.at_home = true, .passes = 1.0f});
+    f.fsm.dispatch(start_from_parking_side(1.0f));
     f.fsm.dispatch(EvFaultP2{});
     REQUIRE(f.fsm.current_state() == "CleanFwd");
 }
 
 TEST_CASE("FSM: Fault -EvFaultReset-> Idle", "[app][fsm]") {
     FsmFixture f;
-    f.fsm.dispatch(EvScheduleStart{.at_home = true, .passes = 1.0f});
+    f.fsm.dispatch(start_from_parking_side(1.0f));
     f.fsm.dispatch(EvFaultP0{});
     REQUIRE(f.fsm.current_state() == "Fault");
     f.fsm.dispatch(EvFaultReset{});
@@ -171,7 +192,7 @@ TEST_CASE("FSM: Fault -EvFaultReset-> Idle", "[app][fsm]") {
 
 TEST_CASE("FSM: EvFaultReset outside Fault does not overwrite outward state", "[app][fsm]") {
     FsmFixture f;
-    f.fsm.dispatch(EvScheduleStart{.at_home = true, .passes = 1.0f});
+    f.fsm.dispatch(start_from_parking_side(1.0f));
     REQUIRE(f.fsm.current_state() == "CleanFwd");
 
     f.fsm.dispatch(EvFaultReset{});
@@ -183,14 +204,14 @@ TEST_CASE("FSM: EvFaultReset outside Fault does not overwrite outward state", "[
 // ────────────────────────────────────────────────────────────────
 TEST_CASE("FSM: CleanFwd -EvLowBattery-> Returning", "[app][fsm]") {
     FsmFixture f;
-    f.fsm.dispatch(EvScheduleStart{.at_home = true, .passes = 1.0f});
+    f.fsm.dispatch(start_from_parking_side(1.0f));
     f.fsm.dispatch(EvLowBattery{});
     REQUIRE(f.fsm.current_state() == "Returning");
 }
 
 TEST_CASE("FSM: CleanFwd -EvPauseTask-> Paused", "[app][fsm]") {
     FsmFixture f;
-    f.fsm.dispatch(EvScheduleStart{.at_home = true, .passes = 1.0f});
+    f.fsm.dispatch(start_from_parking_side(1.0f));
     REQUIRE(f.fsm.current_state() == "CleanFwd");
 
     f.fsm.dispatch(EvPauseTask{});
@@ -200,7 +221,7 @@ TEST_CASE("FSM: CleanFwd -EvPauseTask-> Paused", "[app][fsm]") {
 TEST_CASE("FSM: Paused task resumes to previous direction", "[app][fsm]") {
     SECTION("resume forward task") {
         FsmFixture f;
-        f.fsm.dispatch(EvScheduleStart{.at_home = true, .passes = 1.0f});
+        f.fsm.dispatch(start_from_parking_side(1.0f));
         f.fsm.dispatch(EvPauseTask{});
         REQUIRE(f.fsm.current_state() == "Paused");
 
@@ -210,8 +231,8 @@ TEST_CASE("FSM: Paused task resumes to previous direction", "[app][fsm]") {
 
     SECTION("resume return task") {
         FsmFixture f;
-        f.fsm.dispatch(EvScheduleStart{.at_home = true, .passes = 2.0f});
-        f.fsm.dispatch(EvFrontLimitSettled{});
+        f.fsm.dispatch(start_from_parking_side(2.0f));
+        f.fsm.dispatch(EvFarEndLimitSettled{});
         REQUIRE(f.fsm.current_state() == "CleanReturn");
 
         f.fsm.dispatch(EvPauseTask{});
@@ -222,23 +243,23 @@ TEST_CASE("FSM: Paused task resumes to previous direction", "[app][fsm]") {
     }
 }
 
-TEST_CASE("FSM: manual return ends task at home", "[app][fsm]") {
+TEST_CASE("FSM: manual return ends task at parking side", "[app][fsm]") {
     FsmFixture f;
-    f.fsm.dispatch(EvScheduleStart{.at_home = true, .passes = 2.0f});
-    f.fsm.dispatch(EvFrontLimitSettled{});
+    f.fsm.dispatch(start_from_parking_side(2.0f));
+    f.fsm.dispatch(EvFarEndLimitSettled{});
     REQUIRE(f.fsm.current_state() == "CleanReturn");
 
     f.fsm.dispatch(EvManualReturn{});
     REQUIRE(f.fsm.current_state() == "Returning");
 
-    f.fsm.dispatch(EvRearLimitSettled{});
+    f.fsm.dispatch(EvParkingSideLimitSettled{});
     REQUIRE(f.fsm.current_state() == "Charging");
 }
 
 TEST_CASE("FSM: terminate transitions active task to Terminated", "[app][fsm]") {
     FsmFixture f;
-    f.fsm.dispatch(EvScheduleStart{.at_home = true, .passes = 1.0f});
-    f.fsm.dispatch(EvFrontLimitSettled{});
+    f.fsm.dispatch(start_from_parking_side(1.0f));
+    f.fsm.dispatch(EvFarEndLimitSettled{});
     REQUIRE(f.fsm.current_state() == "CleanReturn");
 
     f.fsm.dispatch(EvTerminateTask{});
@@ -247,7 +268,7 @@ TEST_CASE("FSM: terminate transitions active task to Terminated", "[app][fsm]") 
 
 TEST_CASE("FSM: Terminated -EvFaultReset-> Idle", "[app][fsm]") {
     FsmFixture f;
-    f.fsm.dispatch(EvScheduleStart{.at_home = true, .passes = 1.0f});
+    f.fsm.dispatch(start_from_parking_side(1.0f));
     f.fsm.dispatch(EvTerminateTask{});
     REQUIRE(f.fsm.current_state() == "Terminated");
 
@@ -263,11 +284,11 @@ TEST_CASE("FSM: EvLowBattery in Idle does not overwrite outward state", "[app][f
     REQUIRE(f.fsm.current_state() == "Idle");
 }
 
-TEST_CASE("FSM: Returning -EvRearLimitSettled-> Charging", "[app][fsm]") {
+TEST_CASE("FSM: Returning -EvParkingSideLimitSettled-> Charging", "[app][fsm]") {
     FsmFixture f;
-    f.fsm.dispatch(EvScheduleStart{.at_home = true, .passes = 1.0f});
+    f.fsm.dispatch(start_from_parking_side(1.0f));
     f.fsm.dispatch(EvLowBattery{});
-    f.fsm.dispatch(EvRearLimitSettled{});
+    f.fsm.dispatch(EvParkingSideLimitSettled{});
     REQUIRE(f.fsm.current_state() == "Charging");
 }
 
@@ -276,9 +297,9 @@ TEST_CASE("FSM: Returning -EvRearLimitSettled-> Charging", "[app][fsm]") {
 // ────────────────────────────────────────────────────────────────
 TEST_CASE("FSM: Charging -EvChargeDone-> Idle", "[app][fsm]") {
     FsmFixture f;
-    f.fsm.dispatch(EvScheduleStart{.at_home = true, .passes = 1.0f});
-    f.fsm.dispatch(EvFrontLimitSettled{});
-    f.fsm.dispatch(EvRearLimitSettled{});
+    f.fsm.dispatch(start_from_parking_side(1.0f));
+    f.fsm.dispatch(EvFarEndLimitSettled{});
+    f.fsm.dispatch(EvParkingSideLimitSettled{});
     REQUIRE(f.fsm.current_state() == "Charging");
     f.fsm.dispatch(EvChargeDone{});
     REQUIRE(f.fsm.current_state() == "Idle");
@@ -289,12 +310,12 @@ TEST_CASE("FSM: Charging -EvChargeDone-> Idle", "[app][fsm]") {
 // ────────────────────────────────────────────────────────────────
 TEST_CASE("FSM: Charging 状态可再次 EvScheduleStart", "[app][fsm]") {
     FsmFixture f;
-    f.fsm.dispatch(EvScheduleStart{.at_home = true, .passes = 1.0f});
-    f.fsm.dispatch(EvFrontLimitSettled{});
-    f.fsm.dispatch(EvRearLimitSettled{});
+    f.fsm.dispatch(start_from_parking_side(1.0f));
+    f.fsm.dispatch(EvFarEndLimitSettled{});
+    f.fsm.dispatch(EvParkingSideLimitSettled{});
     REQUIRE(f.fsm.current_state() == "Charging");
 
     // 第二次调度
-    f.fsm.dispatch(EvScheduleStart{.at_home = true, .passes = 1.0f});
+    f.fsm.dispatch(start_from_parking_side(1.0f));
     REQUIRE(f.fsm.current_state() == "CleanFwd");
 }

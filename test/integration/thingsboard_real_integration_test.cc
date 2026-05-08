@@ -28,8 +28,8 @@ namespace {
 struct SharedAttrTarget {
     double passes;
     double clean_speed_rpm;
-    robot::service::ChargingSide charging_side;
-    const char* charging_side_name;
+    robot::service::ParkingSide parking_side;
+    const char* parking_side_name;
 };
 
 bool real_tb_test_enabled()
@@ -99,15 +99,15 @@ fs::path resolve_repo_relative(const fs::path& repo_root, const std::string& pat
 SharedAttrTarget choose_legal_target(const std::optional<robot::service::TbRuntimeConfig>& current)
 {
     const SharedAttrTarget target_a{
-        2.0, 320.0, robot::service::ChargingSide::TerminalA, "terminal_a"};
+        2.0, 320.0, robot::service::ParkingSide::Left, "left"};
     const SharedAttrTarget target_b{
-        3.0, 330.0, robot::service::ChargingSide::TerminalB, "terminal_b"};
+        3.0, 330.0, robot::service::ParkingSide::Right, "right"};
     if (!current.has_value()) {
         return target_a;
     }
     if (current->passes == target_a.passes &&
         current->clean_speed_rpm == target_a.clean_speed_rpm &&
-        current->charging_side == target_a.charging_side) {
+        current->parking_side == target_a.parking_side) {
         return target_b;
     }
     return target_a;
@@ -167,6 +167,7 @@ struct RealThingsBoardFixture {
         fs::remove(cache_path);
         auto mqtt_cfg = build_mqtt_config(cfg, repo_root);
         REQUIRE_FALSE(mqtt_cfg.broker_uri.empty());
+        mqtt_cfg.client_id += "_real_attr_itest";
         spdlog::info(
             "[TB real test] broker='{}' tls_enabled={} ca='{}' cert='{}' key='{}' skip_server_name_check={}",
             mqtt_cfg.broker_uri,
@@ -206,8 +207,7 @@ struct RealThingsBoardFixture {
              "clean_speed_rpm",
              "return_speed_rpm",
              "brush_rpm",
-             "parking_policy",
-             "charging_side",
+             "parking_side",
              "schedules"});
     }
 
@@ -274,6 +274,7 @@ struct RawRpcSmokeFixture {
         REQUIRE(cfg.load());
         auto mqtt_cfg = build_mqtt_config(cfg, repo_root);
         REQUIRE_FALSE(mqtt_cfg.broker_uri.empty());
+        mqtt_cfg.client_id += "_raw_rpc_itest";
         spdlog::info(
             "[TB rpc smoke] broker='{}' tls_enabled={} ca='{}' cert='{}' key='{}' skip_server_name_check={}",
             mqtt_cfg.broker_uri,
@@ -334,6 +335,7 @@ struct CloudRpcSmokeFixture {
         fs::remove(cache_path);
         auto mqtt_cfg = build_mqtt_config(cfg, repo_root);
         REQUIRE_FALSE(mqtt_cfg.broker_uri.empty());
+        mqtt_cfg.client_id += "_cloud_rpc_itest";
         spdlog::info(
             "[TB cloud rpc smoke] broker='{}' tls_enabled={} ca='{}' cert='{}' key='{}' skip_server_name_check={}",
             mqtt_cfg.broker_uri,
@@ -348,7 +350,8 @@ struct CloudRpcSmokeFixture {
         cache = std::make_shared<robot::middleware::DataCache>(cache_path.string());
         REQUIRE(cache->open());
         cloud = std::make_shared<robot::service::CloudService>(net, cache);
-        cloud->register_rpc("start", [this](const std::string& params) {
+        cloud->register_rpc("start", [this](const std::string& /*request_id*/,
+                                            const std::string& params) {
             std::lock_guard<std::mutex> lk(rpc_mtx);
             last_params = params;
             rpc_count.fetch_add(1, std::memory_order_relaxed);
@@ -407,7 +410,7 @@ TEST_CASE("Real ThingsBoard raw RPC smoke", "[integration][thingsboard][real][rp
     REQUIRE(f.connect());
 
     spdlog::warn(
-        "[TB rpc smoke] ACTION REQUIRED: send any RPC now, for example start {}");
+        "[TB rpc smoke] ACTION REQUIRED: send any RPC now, for example `start`");
     REQUIRE(wait_until([&] { return f.received_count() > 0; }, std::chrono::seconds(120)));
 }
 
@@ -426,7 +429,7 @@ TEST_CASE("Real ThingsBoard CloudService RPC smoke",
     REQUIRE(f.connect());
 
     spdlog::warn(
-        "[TB cloud rpc smoke] ACTION REQUIRED: send start {} now");
+        "[TB cloud rpc smoke] ACTION REQUIRED: send RPC `start` now");
     REQUIRE(wait_until([&] { return f.received_count() > 0; }, std::chrono::seconds(120)));
 }
 
@@ -494,10 +497,10 @@ TEST_CASE("Real ThingsBoard shared attributes update local pending config",
     const auto target = choose_legal_target(before_pending);
 
     spdlog::warn("[TB real test] ACTION REQUIRED: in ThingsBoard shared attributes, set "
-                 "passes={}, clean_speed_rpm={}, charging_side={}",
+                 "passes={}, clean_speed_rpm={}, parking_side={}",
                  target.passes,
                  target.clean_speed_rpm,
-                 target.charging_side_name);
+                 target.parking_side_name);
 
     REQUIRE(wait_until(
         [&] {
@@ -508,7 +511,7 @@ TEST_CASE("Real ThingsBoard shared attributes update local pending config",
             return pending.has_value() &&
                    pending->passes == Approx(target.passes) &&
                    pending->clean_speed_rpm == Approx(target.clean_speed_rpm) &&
-                   pending->charging_side == target.charging_side;
+                   pending->parking_side == target.parking_side;
         },
         std::chrono::seconds(120)));
 
@@ -517,10 +520,10 @@ TEST_CASE("Real ThingsBoard shared attributes update local pending config",
     REQUIRE(pending.has_value());
     CHECK(pending->passes == Approx(target.passes));
     CHECK(pending->clean_speed_rpm == Approx(target.clean_speed_rpm));
-    CHECK(pending->charging_side == target.charging_side);
+    CHECK(pending->parking_side == target.parking_side);
 }
 
-TEST_CASE("Real ThingsBoard rejects unsupported shared attributes for this release",
+TEST_CASE("Real ThingsBoard rejects unsupported shared attributes",
           "[integration][thingsboard][real][shared_attr][rejected]") {
     if (!real_tb_test_enabled()) {
         SUCCEED("Set TB_REAL_TEST=1 to enable real ThingsBoard rejected shared attribute test");
@@ -539,7 +542,7 @@ TEST_CASE("Real ThingsBoard rejects unsupported shared attributes for this relea
     const int before_attr_count = f.shared_attr_updates();
 
     spdlog::warn("[TB real test] ACTION REQUIRED: in ThingsBoard shared attributes, set "
-                 "passes=0.5 or parking_policy=both");
+                 "passes=0.5");
 
     REQUIRE(wait_until(
         [&] {
@@ -554,6 +557,7 @@ TEST_CASE("Real ThingsBoard rejects unsupported shared attributes for this relea
     const auto result = f.shared_attr_result();
     REQUIRE(result.has_value());
     CHECK_FALSE(result->accepted);
+    CHECK(result->reason == "passes must be a positive integer");
     CHECK(f.tb_cfg->active_config() == before_active);
     CHECK(f.tb_cfg->pending_config() == before_pending);
 }
@@ -572,9 +576,13 @@ TEST_CASE("Real ThingsBoard shared attributes modified while device offline are 
 
     const auto before_pending = f.tb_cfg->pending_config();
     const int before_attr_count = f.shared_attr_updates();
+    const auto target = choose_legal_target(before_pending);
 
     spdlog::warn("[TB real test] ACTION REQUIRED: while device is still offline, set shared "
-                 "attributes to passes=3, clean_speed_rpm=330, charging_side=terminal_b; then wait");
+                 "attributes to passes={}, clean_speed_rpm={}, parking_side={}; then wait",
+                 target.passes,
+                 target.clean_speed_rpm,
+                 target.parking_side_name);
 
     REQUIRE(f.connect_and_request_shared_snapshot());
 
@@ -585,15 +593,15 @@ TEST_CASE("Real ThingsBoard shared attributes modified while device offline are 
             }
             const auto pending = f.tb_cfg->pending_config();
             return pending.has_value() &&
-                   pending->passes == Approx(3.0) &&
-                   pending->clean_speed_rpm == Approx(330.0) &&
-                   pending->charging_side == robot::service::ChargingSide::TerminalB;
+                   pending->passes == Approx(target.passes) &&
+                   pending->clean_speed_rpm == Approx(target.clean_speed_rpm) &&
+                   pending->parking_side == target.parking_side;
         },
         std::chrono::seconds(120)));
 
     const auto pending = f.tb_cfg->pending_config();
     REQUIRE(pending.has_value());
-    CHECK(pending->passes == Approx(3.0));
-    CHECK(pending->clean_speed_rpm == Approx(330.0));
-    CHECK(pending->charging_side == robot::service::ChargingSide::TerminalB);
+    CHECK(pending->passes == Approx(target.passes));
+    CHECK(pending->clean_speed_rpm == Approx(target.clean_speed_rpm));
+    CHECK(pending->parking_side == target.parking_side);
 }

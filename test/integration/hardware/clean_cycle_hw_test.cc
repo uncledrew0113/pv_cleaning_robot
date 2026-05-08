@@ -6,8 +6,8 @@
  *
  * 测试分组：
  *   [hw_cycle][startup]          - 全层栈初始化，FSM = "Idle"
- *   [hw_cycle][self_check_pass]  - EvScheduleStart{at_home=true} → FSM = "CleanFwd"
- *   [hw_cycle][one_pass_no_pid]  - 完整一趟（PID 关），前后限位驱动换向，≤120s
+ *   [hw_cycle][self_check_pass]  - EvScheduleStart{right/left sensor facts} → FSM = "CleanFwd"
+ *   [hw_cycle][one_pass_no_pid]  - 完整一趟（PID 关），前右限位驱动换向，≤120s
  *   [hw_cycle][one_pass_with_pid]- 完整一趟（PID 开），整趟 yaw 漂移 < 10°
  *   [hw_cycle][fault_p0_estop]   - 注入 P0 故障 → FSM = "Fault"，电机停转
  *   [hw_cycle][low_battery_return]- 注入低电 → FSM = "Returning" → "Charging"
@@ -57,17 +57,19 @@ TEST_CASE("全层栈初始化", "[hw_cycle][startup]") {
 // ────────────────────────────────────────────────────────────────────────────
 // [hw_cycle][self_check_pass] — 自检通过，进入 CleanFwd
 // ────────────────────────────────────────────────────────────────────────────
-TEST_CASE("自检流程（at_home=true → CleanFwd）", "[hw_cycle][self_check_pass]") {
+TEST_CASE("自检流程（原始 right/left 限位事实 → CleanFwd）", "[hw_cycle][self_check_pass]") {
     hw::FullSystemFixture fx(false);
     REQUIRE(fx.init());
     REQUIRE(fx.wait_state("Idle", 2s));
 
-    // 机器人在停机位，后限位触发
-    const bool at_home  = !fx.rear_sw->read_current_level();   // 低=触发=在停机位
-    const bool at_front = !fx.front_sw->read_current_level();  // 低=触发=在前端
-    spdlog::info("[hw_cycle][self_check_pass] at_home={} at_front={}", at_home, at_front);
+    // 机器人在停机位，右限位触发
+    const bool right_limit_active = !fx.right_sw->read_current_level();
+    const bool left_limit_active = !fx.left_sw->read_current_level();
+    spdlog::info("[hw_cycle][self_check_pass] right_limit_active={} left_limit_active={}",
+                 right_limit_active,
+                 left_limit_active);
 
-    fx.fsm->dispatch(app::EvScheduleStart{at_home, at_front, 1.0f});
+    fx.fsm->dispatch(app::EvScheduleStart{right_limit_active, left_limit_active, 1.0f});
 
     // 自检 → CleanFwd（最多 5s 内）
     const bool in_clean_fwd = fx.wait_state("CleanFwd", 5s);
@@ -83,33 +85,33 @@ TEST_CASE("自检流程（at_home=true → CleanFwd）", "[hw_cycle][self_check_
 
 // ────────────────────────────────────────────────────────────────────────────
 // [hw_cycle][one_pass_no_pid] — 完整一趟（PID 关）
-// 流程：Idle → SelfCheck → CleanFwd → (前限位) → CleanReturn → (后限位) → Charging
+// 流程：Idle → SelfCheck → CleanFwd → (左限位) → CleanReturn → (右限位) → Charging
 // ────────────────────────────────────────────────────────────────────────────
 TEST_CASE("完整清扫一趟（PID 关闭）", "[hw_cycle][one_pass_no_pid]") {
     hw::FullSystemFixture fx(false /* pid_off */);
     REQUIRE(fx.init());
     REQUIRE(fx.wait_state("Idle", 2s));
 
-    const bool at_home  = !fx.rear_sw->read_current_level();
-    const bool at_front = !fx.front_sw->read_current_level();
+    const bool right_limit_active = !fx.right_sw->read_current_level();
+    const bool left_limit_active = !fx.left_sw->read_current_level();
     spdlog::warn("[hw_cycle][one_pass_no_pid] ★ 开始清扫（PID 关），预计 ≤120s ★");
 
     const auto t_start = std::chrono::steady_clock::now();
-    fx.fsm->dispatch(app::EvScheduleStart{at_home, at_front, 1.0f});
+    fx.fsm->dispatch(app::EvScheduleStart{right_limit_active, left_limit_active, 1.0f});
 
     // 阶段1：等待进入 CleanFwd
     REQUIRE(fx.wait_state("CleanFwd", 5s));
     const auto t_fwd_start = std::chrono::steady_clock::now();
     spdlog::info("[hw_cycle][one_pass_no_pid] → CleanFwd");
 
-    // 阶段2：等待前限位触发（最多 kLimitTimeoutSec 秒）
+    // 阶段2：等待左限位触发（最多 kLimitTimeoutSec 秒）
     REQUIRE(fx.wait_state("CleanReturn",
             std::chrono::seconds(fx.p.limit_timeout_sec)));
     const auto t_fwd_end = std::chrono::steady_clock::now();
     spdlog::info("[hw_cycle][one_pass_no_pid] → CleanReturn (正向 {:.1f}s)",
                  std::chrono::duration<float>(t_fwd_end - t_fwd_start).count());
 
-    // 阶段3：等待后限位触发 → Charging
+    // 阶段3：等待右限位触发 → Charging
     REQUIRE(fx.wait_state("Charging",
             std::chrono::seconds(fx.p.limit_timeout_sec)));
     const auto t_total = std::chrono::steady_clock::now();
@@ -147,12 +149,12 @@ TEST_CASE("完整清扫一趟（PID 开启，yaw 漂移 < 10°）", "[hw_cycle][
         }
     });
 
-    const bool at_home  = !fx.rear_sw->read_current_level();
-    const bool at_front = !fx.front_sw->read_current_level();
+    const bool right_limit_active = !fx.right_sw->read_current_level();
+    const bool left_limit_active = !fx.left_sw->read_current_level();
     spdlog::warn("[hw_cycle][one_pass_with_pid] ★ 开始清扫（PID 开），预计 ≤120s ★");
 
     const auto t_start = std::chrono::steady_clock::now();
-    fx.fsm->dispatch(app::EvScheduleStart{at_home, at_front, 1.0f});
+    fx.fsm->dispatch(app::EvScheduleStart{right_limit_active, left_limit_active, 1.0f});
 
     REQUIRE(fx.wait_state("CleanFwd", 5s));
     spdlog::info("[hw_cycle][one_pass_with_pid] → CleanFwd  初始 yaw={:.2f}°", yaw_start);
@@ -189,9 +191,9 @@ TEST_CASE("P0 故障急停（FSM → Fault，电机停转）", "[hw_cycle][fault
     REQUIRE(fx.wait_state("Idle", 2s));
 
     // 启动清扫
-    const bool at_home  = !fx.rear_sw->read_current_level();
-    const bool at_front = !fx.front_sw->read_current_level();
-    fx.fsm->dispatch(app::EvScheduleStart{at_home, at_front, 1.0f});
+    const bool right_limit_active = !fx.right_sw->read_current_level();
+    const bool left_limit_active = !fx.left_sw->read_current_level();
+    fx.fsm->dispatch(app::EvScheduleStart{right_limit_active, left_limit_active, 1.0f});
     REQUIRE(fx.wait_state("CleanFwd", 5s));
 
     // 注入 P0 故障
@@ -225,9 +227,9 @@ TEST_CASE("低电量触发安全返回", "[hw_cycle][low_battery_return]") {
     REQUIRE(fx.init());
     REQUIRE(fx.wait_state("Idle", 2s));
 
-    const bool at_home  = !fx.rear_sw->read_current_level();
-    const bool at_front = !fx.front_sw->read_current_level();
-    fx.fsm->dispatch(app::EvScheduleStart{at_home, at_front, 1.0f});
+    const bool right_limit_active = !fx.right_sw->read_current_level();
+    const bool left_limit_active = !fx.left_sw->read_current_level();
+    fx.fsm->dispatch(app::EvScheduleStart{right_limit_active, left_limit_active, 1.0f});
     REQUIRE(fx.wait_state("CleanFwd", 5s));
 
     // 注入低电量事件
@@ -239,7 +241,7 @@ TEST_CASE("低电量触发安全返回", "[hw_cycle][low_battery_return]") {
     REQUIRE(fx.wait_state("Returning", 3s));
     spdlog::info("[hw_cycle][low_battery_return] FSM → Returning ✓");
 
-    // 等待后限位触发 → Charging（最多 kLimitTimeoutSec 秒）
+    // 等待右限位触发 → Charging（最多 kLimitTimeoutSec 秒）
     REQUIRE(fx.wait_state("Charging",
             std::chrono::seconds(fx.p.limit_timeout_sec)));
     spdlog::info("[hw_cycle][low_battery_return] FSM → Charging ✓ (已归停机位)");
@@ -269,9 +271,9 @@ TEST_CASE("清扫过程 BMS 数据持续有效", "[hw_cycle][bms_valid]") {
         }
     });
 
-    const bool at_home  = !fx.rear_sw->read_current_level();
-    const bool at_front = !fx.front_sw->read_current_level();
-    fx.fsm->dispatch(app::EvScheduleStart{at_home, at_front, 1.0f});
+    const bool right_limit_active = !fx.right_sw->read_current_level();
+    const bool left_limit_active = !fx.left_sw->read_current_level();
+    fx.fsm->dispatch(app::EvScheduleStart{right_limit_active, left_limit_active, 1.0f});
 
     // 运行到 CleanFwd 后检查 BMS 持续有效 20s
     REQUIRE(fx.wait_state("CleanFwd", 5s));
@@ -302,9 +304,9 @@ TEST_CASE("清扫过程 IMU 数据持续有效", "[hw_cycle][imu_valid]") {
     REQUIRE(fx.init());
     REQUIRE(fx.wait_state("Idle", 2s));
 
-    const bool at_home  = !fx.rear_sw->read_current_level();
-    const bool at_front = !fx.front_sw->read_current_level();
-    fx.fsm->dispatch(app::EvScheduleStart{at_home, at_front, 1.0f});
+    const bool right_limit_active = !fx.right_sw->read_current_level();
+    const bool left_limit_active = !fx.left_sw->read_current_level();
+    fx.fsm->dispatch(app::EvScheduleStart{right_limit_active, left_limit_active, 1.0f});
     REQUIRE(fx.wait_state("CleanFwd", 5s));
 
     // 采样 IMU 20s
@@ -345,9 +347,9 @@ TEST_CASE("正常运行 watchdog 不超时", "[hw_cycle][watchdog_alive]") {
     });
     int wd_ticket = fx.watchdog->register_thread("walk_ctrl_test", 500);
 
-    const bool at_home  = !fx.rear_sw->read_current_level();
-    const bool at_front = !fx.front_sw->read_current_level();
-    fx.fsm->dispatch(app::EvScheduleStart{at_home, at_front, 1.0f});
+    const bool right_limit_active = !fx.right_sw->read_current_level();
+    const bool left_limit_active = !fx.left_sw->read_current_level();
+    fx.fsm->dispatch(app::EvScheduleStart{right_limit_active, left_limit_active, 1.0f});
     REQUIRE(fx.wait_state("CleanFwd", 5s));
 
     // 正常运行 30s，每 200ms 汇报一次心跳

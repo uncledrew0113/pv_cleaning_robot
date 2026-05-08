@@ -19,7 +19,7 @@
 
 namespace robot::device {
 
-enum class LimitSide { FRONT, REAR };
+enum class LimitSide { LEFT, RIGHT };
 
 /// @brief 感应式限位开关（GPIO边沿触发）
 ///
@@ -55,7 +55,7 @@ class LimitSwitch {
     void clear_trigger();
 
     /// @brief 直接读取 GPIO 当前电平（true=高/1，false=低/0）
-    /// @note 用于上电自检：尾部期望 false（低=在停机位），前部期望 true（高=无遮挡）
+    /// @note 用于上电自检：左右两侧的业务语义由 ParkingSideRuntime 决定。
     /// @pre  必须在 open() 之后调用
     bool read_current_level() const;
 

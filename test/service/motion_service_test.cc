@@ -18,18 +18,26 @@ using robot::device::WalkMotorGroup;
 using robot::middleware::EventBus;
 using robot::service::MotionService;
 
+namespace {
+
+MotionService::Config make_motion_config() {
+    MotionService::Config cfg;
+    cfg.clean_speed_rpm = 300.0f;
+    cfg.return_speed_rpm = 500.0f;
+    cfg.brush_rpm = 1200;
+    cfg.heading_pid_en = false;
+    return cfg;
+}
+
+}  // namespace
+
 struct MotionFixture {
     std::shared_ptr<MockCanBus> can{std::make_shared<MockCanBus>()};
     std::shared_ptr<WalkMotorGroup> group{std::make_shared<WalkMotorGroup>(can)};
     std::shared_ptr<MockSerialPort> serial{std::make_shared<MockSerialPort>()};
     std::shared_ptr<BrushMotor> brush{std::make_shared<BrushMotor>(serial, 0, 8192.0f, true, 0.5f)};
     EventBus bus;
-    MotionService::Config cfg{
-        .clean_speed_rpm = 300.0f,
-        .return_speed_rpm = 500.0f,
-        .brush_rpm = 1200,
-        .heading_pid_en = false
-    };
+    MotionService::Config cfg{make_motion_config()};
     MotionService motion;
 
     MotionFixture() : motion(group, brush, nullptr, bus, cfg) {

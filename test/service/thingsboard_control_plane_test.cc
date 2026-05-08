@@ -136,7 +136,8 @@ struct Fixture {
     "passes": 1.0,
     "clean_speed_rpm": 300.0,
     "return_speed_rpm": 280.0,
-    "brush_rpm": 1000
+    "brush_rpm": 1000,
+    "parking_side": "left"
   },
   "scheduler": {
     "windows": [
@@ -252,7 +253,7 @@ TEST_CASE("ThingsBoardControlPlane requests release shared attribute snapshot",
     const auto& [topic, payload] = f.mqtt->published.back();
     CHECK(topic.find("v1/devices/me/attributes/request/") == 0);
     CHECK(payload ==
-          R"({"sharedKeys":"passes,clean_speed_rpm,return_speed_rpm,brush_rpm,parking_policy,charging_side,schedules"})");
+          R"({"sharedKeys":"passes,clean_speed_rpm,return_speed_rpm,brush_rpm,parking_side,schedules"})");
 }
 
 TEST_CASE("ThingsBoardControlPlane publishes backup fallback event",
@@ -270,7 +271,8 @@ TEST_CASE("ThingsBoardControlPlane publishes backup fallback event",
 TEST_CASE("ThingsBoardControlPlane start RPC launches new task from idle",
           "[service][tb_control_plane]") {
     Fixture f;
-    f.control_plane->register_rpc_handlers([]() { return true; }, []() { return false; });
+    f.control_plane->register_rpc_handlers(
+        []() { return true; }, []() { return false; }, []() { return false; });
 
     f.mqtt->emit_rpc("42", R"({"method":"start","params":{}})");
 
@@ -282,6 +284,7 @@ TEST_CASE("ThingsBoardControlPlane start RPC launches new task from idle",
 
     bool saw_accepted = false;
     bool saw_completed = false;
+    bool saw_request_id = false;
     for (const auto& [topic, payload] : f.mqtt->published) {
         if (topic.find("telemetry") == std::string::npos) {
             continue;
@@ -289,6 +292,7 @@ TEST_CASE("ThingsBoardControlPlane start RPC launches new task from idle",
         const auto j = parse_json(payload);
         const auto event_it = j.FindMember("event");
         const auto reason_it = j.FindMember("reason");
+        const auto request_id_it = j.FindMember("request_id");
         const std::string event =
             event_it != j.MemberEnd() && event_it->value.IsString() ? event_it->value.GetString() : "";
         const std::string reason =
@@ -299,16 +303,21 @@ TEST_CASE("ThingsBoardControlPlane start RPC launches new task from idle",
         if (event == "command_completed" && reason == "started_new_task") {
             saw_completed = true;
         }
+        if (request_id_it != j.MemberEnd() && request_id_it->value.IsString() &&
+            std::string(request_id_it->value.GetString()) == "42") {
+            saw_request_id = true;
+        }
     }
     CHECK(saw_accepted);
     CHECK(saw_completed);
+    CHECK(saw_request_id);
 }
 
 TEST_CASE("ThingsBoardControlPlane publishes business telemetry from supervisor snapshot",
           "[service][tb_control_plane]") {
     Fixture f;
     f.fsm->dispatch(robot::app::EvScheduleStart{true, false, 2.0f});
-    f.fsm->dispatch(robot::app::EvFrontLimitSettled{});
+    f.fsm->dispatch(robot::app::EvFarEndLimitSettled{});
     f.command_tracker->reject("return", "req-1", "return_not_allowed_in_current_state");
 
     f.control_plane->publish_business_telemetry();
@@ -316,8 +325,8 @@ TEST_CASE("ThingsBoardControlPlane publishes business telemetry from supervisor 
     const auto j = f.last_published_json("telemetry");
     CHECK(std::string(j["device_state"].GetString()) == "CleanReturn");
     CHECK(std::string(j["task_state"].GetString()) == "RunningTask");
-    CHECK(j["target_half_passes"].GetInt() == 4);
-    CHECK(j["completed_half_passes"].GetInt() == 1);
+    CHECK(j["target_passes"].GetInt() == 2);
+    CHECK(j["completed_passes"].GetInt() == 0);
     REQUIRE(j.HasMember("last_command"));
     CHECK(std::string(j["last_command"]["name"].GetString()) == "return");
 }

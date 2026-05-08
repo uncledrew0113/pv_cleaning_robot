@@ -9,7 +9,7 @@ struct MockLimitSwitch {
     bool open_result{true};
     bool current_level_result{false};
     bool triggered_result{false};
-    robot::device::LimitSide side_val{robot::device::LimitSide::FRONT};
+    robot::device::LimitSide side_val{robot::device::LimitSide::LEFT};
 
     // ── 注册的回调（simulate_trigger 触发时调用）──────────────
     robot::device::LimitSwitch::TriggerCallback registered_cb;

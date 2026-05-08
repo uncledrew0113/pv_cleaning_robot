@@ -38,14 +38,14 @@ class SafetyMonitor {
     };
 
     /// @brief 限位防抖完成事件（monitor_loop 延迟 180ms 后发布）
-    /// 订阅者（main.cc）将其转发给 RobotFsm::dispatch<EvFrontLimitSettled/EvRearLimitSettled>
+    /// 订阅者（main.cc）将其转发给 RobotFsm::dispatch<EvFarEndLimitSettled/EvParkingSideLimitSettled>
     struct LimitSettledEvent {
         device::LimitSide side;
     };
 
     SafetyMonitor(std::shared_ptr<device::WalkMotorGroup> walk_group,
-                  std::shared_ptr<device::LimitSwitch> front_switch,
-                  std::shared_ptr<device::LimitSwitch> rear_switch,
+                  std::shared_ptr<device::LimitSwitch> left_switch,
+                  std::shared_ptr<device::LimitSwitch> right_switch,
                   EventBus& event_bus);
     ~SafetyMonitor();
 
@@ -55,12 +55,6 @@ class SafetyMonitor {
     /// 停止安全监控
     void stop();
 
-    /// 是否处于急停锁定状态（需上层手动 reset 才能解除）
-    bool is_estop_active() const;
-
-    /// 手动复位急停（上层确认安全后调用）
-    void reset_estop();
-
    private:
     /// LimitSwitch 触发回调（在 GPIO 监控线程中被调用，必须极短）
     void on_limit_trigger(device::LimitSide side);
@@ -69,17 +63,16 @@ class SafetyMonitor {
     void monitor_loop();
 
     std::shared_ptr<device::WalkMotorGroup> walk_group_;
-    std::shared_ptr<device::LimitSwitch> front_switch_;
-    std::shared_ptr<device::LimitSwitch> rear_switch_;
+    std::shared_ptr<device::LimitSwitch> left_switch_;
+    std::shared_ptr<device::LimitSwitch> right_switch_;
     EventBus& event_bus_;
 
     std::atomic<bool> running_{false};
-    std::atomic<bool> estop_active_{false};
     /// 防抖 pending 时间戳（ms）：GPIO 线程触发后记录触发时刻，0 = 未触发。
     /// monitor_loop 每 5ms 非阻塞检查，距触发 ≥180ms 后发布 LimitSettledEvent。
-    /// 使用时间戳替代 bool，支持前后端并行防抖（各自独立计时，互不阻塞）。
-    std::atomic<uint64_t> pending_front_ts_{0};
-    std::atomic<uint64_t> pending_rear_ts_{0};
+    /// 同一侧 pending 不为 0 时，GPIO 回调与备用轮询都会忽略重复触发。
+    std::atomic<uint64_t> pending_left_ts_{0};
+    std::atomic<uint64_t> pending_right_ts_{0};
     std::thread monitor_thread_;
 };
 

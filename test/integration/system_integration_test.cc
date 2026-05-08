@@ -98,6 +98,53 @@ rapidjson::Document parse_json_line(const std::string& line)
     return doc;
 }
 
+MotionService::Config make_motion_config()
+{
+    MotionService::Config cfg;
+    cfg.clean_speed_rpm = 30.0f;
+    cfg.return_speed_rpm = 30.0f;
+    cfg.brush_rpm = 1000;
+    cfg.return_brush_rpm = 1000;
+    cfg.edge_reverse_rpm = 0.0f;
+    cfg.heading_pid_en = false;
+    return cfg;
+}
+
+EvScheduleStart make_schedule_start(bool at_parking_side, bool at_far_end, float passes)
+{
+    EvScheduleStart evt;
+    evt.at_parking_side = at_parking_side;
+    evt.at_far_end = at_far_end;
+    evt.passes = passes;
+    return evt;
+}
+
+EvScheduleStart start_from_parking_side(float passes)
+{
+    return make_schedule_start(true, false, passes);
+}
+
+ThreadExecutor::Config make_executor_config()
+{
+    ThreadExecutor::Config cfg;
+    cfg.name = "test_ctrl";
+    cfg.period_ms = 50;
+    cfg.sched_policy = 0;
+    cfg.sched_priority = 0;
+    cfg.cpu_affinity = 0;
+    return cfg;
+}
+
+robot::middleware::Logger::Config make_logger_config()
+{
+    robot::middleware::Logger::Config cfg;
+    cfg.log_dir = "/tmp/pv_sys_test_logs";
+    cfg.file_name = "sys_test";
+    cfg.console_output = false;
+    cfg.level = "debug";
+    return cfg;
+}
+
 std::string build_test_config_json()
 {
     rapidjson::StringBuffer buffer;
@@ -138,6 +185,8 @@ std::string build_test_config_json()
     writer.Double(100.0);
     writer.Key("passes");
     writer.Double(1.0);
+    writer.Key("parking_side");
+    writer.String("left");
     writer.EndObject();
 
     writer.Key("diagnostics");
@@ -195,14 +244,14 @@ std::string build_test_config_json()
 
     writer.Key("gpio");
     writer.StartObject();
-    writer.Key("front_limit");
+    writer.Key("left_limit");
     writer.StartObject();
     writer.Key("chip");
     writer.String("gpiochip5");
     writer.Key("line");
     writer.Int(0);
     writer.EndObject();
-    writer.Key("rear_limit");
+    writer.Key("right_limit");
     writer.StartObject();
     writer.Key("chip");
     writer.String("gpiochip5");
@@ -247,8 +296,8 @@ struct SystemFixture {
     std::shared_ptr<MockSerialPort>     imu_sp   {std::make_shared<MockSerialPort>()};
     std::shared_ptr<MockSerialPort>     gps_sp   {std::make_shared<MockSerialPort>()};
     std::shared_ptr<MockSerialPort>     bms_sp   {std::make_shared<MockSerialPort>()};
-    std::shared_ptr<MockGpioPin>        front_pin{std::make_shared<MockGpioPin>()};
-    std::shared_ptr<MockGpioPin>        rear_pin {std::make_shared<MockGpioPin>()};
+    std::shared_ptr<MockGpioPin>        left_pin{std::make_shared<MockGpioPin>()};
+    std::shared_ptr<MockGpioPin>        right_pin {std::make_shared<MockGpioPin>()};
 
     // ── 设备层 ────────────────────────────────────────────────────
     std::shared_ptr<WalkMotorGroup>     group  {std::make_shared<WalkMotorGroup>(can)};
@@ -256,10 +305,10 @@ struct SystemFixture {
     std::shared_ptr<ImuDevice>          imu    {std::make_shared<ImuDevice>(imu_sp)};
     std::shared_ptr<GpsDevice>          gps    {std::make_shared<GpsDevice>(gps_sp)};
     std::shared_ptr<BMS>                bms    {std::make_shared<BMS>(bms_sp, 95.0f, 15.0f)};
-    std::shared_ptr<LimitSwitch>        front_sw
-        {std::make_shared<LimitSwitch>(front_pin, LimitSide::FRONT)};
-    std::shared_ptr<LimitSwitch>        rear_sw
-        {std::make_shared<LimitSwitch>(rear_pin, LimitSide::REAR)};
+    std::shared_ptr<LimitSwitch>        left_sw
+        {std::make_shared<LimitSwitch>(left_pin, LimitSide::LEFT)};
+    std::shared_ptr<LimitSwitch>        right_sw
+        {std::make_shared<LimitSwitch>(right_pin, LimitSide::RIGHT)};
 
     // ── 配置层 ────────────────────────────────────────────────────
     ConfigService cfg{kCfgPath};
@@ -293,19 +342,13 @@ struct SystemFixture {
     SystemFixture()
         : motion(std::make_shared<MotionService>(
               group, brush, nullptr, bus,
-              MotionService::Config{
-                  .clean_speed_rpm  = 30.0f,
-                  .return_speed_rpm = 30.0f,
-                  .brush_rpm        = 1000,
-                  .return_brush_rpm = 1000,
-                  .edge_reverse_rpm = 0.0f,
-                  .heading_pid_en   = false}))
+              make_motion_config()))
         , nav(std::make_shared<NavService>(group, imu, gps))
         // 注意：health 不在此处初始化，延迟到构造体内，
         // 必须在 std::filesystem::remove(kHealthPath) 之后创建，
         // 否则 HealthService 打开文件后被 remove 删掉目录项，
         // 写入将走未链接的 inode，exists() 永远返回 false
-        , safety_mon(group, front_sw, rear_sw, bus)
+        , safety_mon(group, left_sw, right_sw, bus)
         , fsm(motion, nav, fault_svc, bus)
         , fault_handler(motion, bus, [this](FaultEvent e) {
               dispatched_faults.push_back(e);
@@ -320,14 +363,14 @@ struct SystemFixture {
         can->send_result     = true;
         can->opened          = true;   // 允许 send_ctrl() is_open() 检查通过
         brush_sp->open_result = true;
-        front_pin->open_result = true;
-        rear_pin->open_result  = true;
+        left_pin->open_result = true;
+        right_pin->open_result  = true;
 
         // 打开设备（仅必要设备）
         cfg.load();
         brush->open();
-        front_sw->open();
-        rear_sw->open();
+        left_sw->open();
+        right_sw->open();
 
         // 预先清空落盘文件（必须在 HealthService 构造之前执行！）
         std::filesystem::remove(kHealthPath);
@@ -371,12 +414,7 @@ TEST_CASE("System: ConfigService 加载测试配置并正确返回字段值",
 // =============================================================================
 TEST_CASE("System: Logger 初始化后可获取合法 spdlog 实例",
           "[integration][system][logger]") {
-    robot::middleware::Logger::init({
-        .log_dir        = "/tmp/pv_sys_test_logs",
-        .file_name      = "sys_test",
-        .console_output = false,
-        .level          = "debug"
-    });
+    robot::middleware::Logger::init(make_logger_config());
     auto logger = robot::middleware::Logger::get();
     REQUIRE(logger != nullptr);
     // 验证日志调用不崩溃
@@ -502,7 +540,7 @@ TEST_CASE("System: SafetyMonitor 前端 GPIO 触发 → emergency_override → F
     SystemFixture f;
 
     // 启动任务，进入 CleanFwd
-    f.fsm.dispatch(EvScheduleStart{.at_home = true, .passes = 2.0f});
+    f.fsm.dispatch(start_from_parking_side(2.0f));
     REQUIRE(f.fsm.current_state() == "CleanFwd");
 
     // 记录触发前 CAN 帧数
@@ -511,17 +549,17 @@ TEST_CASE("System: SafetyMonitor 前端 GPIO 触发 → emergency_override → F
     // 订阅 LimitSettledEvent → 转发给 FSM（模拟 main.cc 中的 EventBus 桥接）
     f.bus.subscribe<SafetyMonitor::LimitSettledEvent>(
         [&](const SafetyMonitor::LimitSettledEvent& e) {
-            if (e.side == LimitSide::FRONT)
-                f.fsm.dispatch(EvFrontLimitSettled{});
+            if (e.side == LimitSide::LEFT)
+                f.fsm.dispatch(EvFarEndLimitSettled{});
             else
-                f.fsm.dispatch(EvRearLimitSettled{});
+                f.fsm.dispatch(EvParkingSideLimitSettled{});
         });
 
     f.safety_mon.start();
 
     // 模拟前端 GPIO 边沿触发
-    if (f.front_pin->registered_cb) {
-        f.front_pin->simulate_edge();
+    if (f.left_pin->registered_cb) {
+        f.left_pin->simulate_edge();
     }
 
     // 等待 SafetyMonitor monitor_loop 180ms 防抖完成后发布 LimitSettledEvent
@@ -543,7 +581,7 @@ TEST_CASE("System: P0 故障链 FaultService→FaultHandler→FSM Fault，复位
     write_test_config();
     SystemFixture f;
 
-    f.fsm.dispatch(EvScheduleStart{.at_home = true, .passes = 1.0f});
+    f.fsm.dispatch(start_from_parking_side(1.0f));
     REQUIRE(f.fsm.current_state() == "CleanFwd");
 
     // 通过 FaultService 上报 P0（FaultHandler → dispatch EvFaultP0 → FSM Fault）
@@ -560,7 +598,7 @@ TEST_CASE("System: P0 故障链 FaultService→FaultHandler→FSM Fault，复位
     REQUIRE(f.fsm.current_state() == "Idle");
 
     // 复位后可重新启动任务
-    f.fsm.dispatch(EvScheduleStart{.at_home = true, .passes = 1.0f});
+    f.fsm.dispatch(start_from_parking_side(1.0f));
     REQUIRE(f.fsm.current_state() == "CleanFwd");
 }
 
@@ -572,14 +610,14 @@ TEST_CASE("System: P1 故障发生在清扫中 → Returning → Charging",
     write_test_config();
     SystemFixture f;
 
-    f.fsm.dispatch(EvScheduleStart{.at_home = true, .passes = 2.0f});
-    f.fsm.dispatch(EvFrontLimitSettled{});  // → CleanReturn
+    f.fsm.dispatch(start_from_parking_side(2.0f));
+    f.fsm.dispatch(EvFarEndLimitSettled{});  // → CleanReturn
     REQUIRE(f.fsm.current_state() == "CleanReturn");
 
     f.fault_svc->report(FaultLevel::P1, 0x2001, "slope_too_steep");
     REQUIRE(f.fsm.current_state() == "Returning");
 
-    f.fsm.dispatch(EvRearLimitSettled{});
+    f.fsm.dispatch(EvParkingSideLimitSettled{});
     REQUIRE(f.fsm.current_state() == "Charging");
 }
 
@@ -591,13 +629,13 @@ TEST_CASE("System: EvLowBattery 在 CleanFwd 触发 → Returning → Charging",
     write_test_config();
     SystemFixture f;
 
-    f.fsm.dispatch(EvScheduleStart{.at_home = true, .passes = 2.0f});
+    f.fsm.dispatch(start_from_parking_side(2.0f));
     REQUIRE(f.fsm.current_state() == "CleanFwd");
 
     f.fsm.dispatch(EvLowBattery{});
     REQUIRE(f.fsm.current_state() == "Returning");
 
-    f.fsm.dispatch(EvRearLimitSettled{});
+    f.fsm.dispatch(EvParkingSideLimitSettled{});
     REQUIRE(f.fsm.current_state() == "Charging");
 }
 
@@ -610,18 +648,12 @@ TEST_CASE("System: N=1 完整任务链 + ThreadExecutor 驱动 MotionService 产
     SystemFixture f;
 
     // 启动 ThreadExecutor（SCHED_OTHER，不需 root；50ms 周期）
-    ThreadExecutor exec({
-        .name          = "test_ctrl",
-        .period_ms     = 50,
-        .sched_policy  = 0,
-        .sched_priority = 0,
-        .cpu_affinity  = 0
-    });
+    ThreadExecutor exec(make_executor_config());
     exec.add_runnable(f.motion);
     REQUIRE(exec.start());
 
     // N=1 往返任务链：CleanFwd → CleanReturn → Charging
-    f.fsm.dispatch(EvScheduleStart{.at_home = true, .passes = 1.0f});
+    f.fsm.dispatch(start_from_parking_side(1.0f));
     REQUIRE(f.fsm.current_state() == "CleanFwd");
     REQUIRE(!f.can->sent_frames.empty());   // start_cleaning() 已投帧
 
@@ -629,15 +661,15 @@ TEST_CASE("System: N=1 完整任务链 + ThreadExecutor 驱动 MotionService 产
     std::this_thread::sleep_for(std::chrono::milliseconds(120));
     const size_t frames_after_start = f.can->sent_frames.size();
 
-    // 前端限位 → CleanReturn
-    f.fsm.dispatch(EvFrontLimitSettled{});
+    // 对侧限位 → CleanReturn
+    f.fsm.dispatch(EvFarEndLimitSettled{});
     REQUIRE(f.fsm.current_state() == "CleanReturn");
 
     // 等待 start_returning() 心跳帧
     std::this_thread::sleep_for(std::chrono::milliseconds(120));
 
-    // 尾端限位 → Charging（N=1 完成）
-    f.fsm.dispatch(EvRearLimitSettled{});
+    // 停机侧限位 → Charging（N=1 完成）
+    f.fsm.dispatch(EvParkingSideLimitSettled{});
     REQUIRE(f.fsm.current_state() == "Charging");
 
     exec.stop();
@@ -666,7 +698,7 @@ TEST_CASE("System: SafetyMonitor + HealthService + WatchdogMgr 联合启动 300m
     REQUIRE(f.safety_mon.start());
 
     // FSM 进入 CleanFwd，MotionService 开始发帧
-    f.fsm.dispatch(EvScheduleStart{.at_home = true, .passes = 1.0f});
+    f.fsm.dispatch(start_from_parking_side(1.0f));
     REQUIRE(f.fsm.current_state() == "CleanFwd");
 
     // HealthService 落盘 3 次

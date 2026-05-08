@@ -46,8 +46,9 @@ public:
     /// 设备上线后主动请求一次当前 release 关心的 shared attributes 快照。
     void request_shared_attributes_snapshot() const;
     /// 注册当前 release 支持的 RPC: start / stop / return / terminate / reset
-    void register_rpc_handlers(const std::function<bool()>& is_at_home,
-                               const std::function<bool()>& is_at_front);
+    void register_rpc_handlers(const std::function<bool()>& is_at_start_parking_side,
+                               const std::function<bool()>& is_at_start_far_end,
+                               const std::function<bool()>& is_at_active_parking_side);
     void publish_backup_fallback_event() const;
     void publish_startup_attributes() const;
     void publish_status_event(const char* event_name, bool accepted, const char* reason) const;
@@ -62,14 +63,19 @@ private:
     bool publish_attributes_payload(size_t len, const char* error_message) const;
     bool publish_event_payload(size_t len, const char* error_message) const;
     bool publish_business_payload(size_t len, const char* error_message) const;
-    std::string reject_rpc_command(const char* command_name, const char* reason);
-    std::string complete_rpc_command(const char* command_name, const char* completion_reason);
+    std::string reject_rpc_command(const char* command_name,
+                                   const std::string& request_id,
+                                   const char* reason);
+    std::string complete_rpc_command(const char* command_name,
+                                     const std::string& request_id,
+                                     const char* completion_reason);
 
     ConfigService& config_;
     std::shared_ptr<CloudService> cloud_;
     std::shared_ptr<ThingsBoardConfigManager> tb_cfg_;
     std::shared_ptr<CommandTracker> command_tracker_;
     std::shared_ptr<app::RobotSupervisor> supervisor_;
+    mutable std::mutex publish_mtx_;
     mutable std::array<char, kBusinessPayloadBufferBytes> business_payload_buf_{};
     mutable std::string business_payload_cache_;
     mutable std::array<char, kEventPayloadBufferBytes> event_payload_buf_{};

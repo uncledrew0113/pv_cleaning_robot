@@ -4,13 +4,13 @@
  * 测试分组：
  *   [hw_sweep][with_pid]     - 带航向 PID 的清扫序列：验证 IMU 差速补偿 + 命令队列正确性
  *   [hw_sweep][no_pid]       - 纯速度环清扫序列：验证 4 轮在线状态与帧统计
- *   [hw_sweep][limit_stop]   - 手动触发前限位：验证 GPIO → 回调 → emergency_override 全链路
- *   [hw_sweep][limit_stop][rear] - 手动触发后限位：同上，针对后限位（REAR）
+ *   [hw_sweep][limit_stop]   - 手动触发左限位：验证 GPIO → 回调 → emergency_override 全链路
+ *   [hw_sweep][limit_stop][right] - 手动触发右限位：同上，针对右限位（RIGHT）
  *
  * 硬件接线要求：
  *   CAN  : can0，行走电机组 M1502E_111（motor_id_base=1）
  *   IMU  : /dev/ttyS1，WIT Motion 9轴（9600 baud，与 config.json 对齐）
- *   GPIO : gpiochip5 line0 = 前限位（FRONT），line1 = 后限位（REAR）
+ *   GPIO : gpiochip5 line0 = 左限位（LEFT），line1 = 右限位（RIGHT）
  *   滚刷 : 无真实硬件，BrushMotor 层不参与本测试（扫描序列直接操作 WalkMotorGroup）
  *
  * 运行方法（交叉编译后在目标机上）：
@@ -285,10 +285,10 @@ TEST_CASE("[hw_sweep][no_pid] 无 PID 纯速度环清扫序列", "[hw_sweep][no_
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  TEST 3：手动触发前限位 → 急停全链路验证
+//  TEST 3：手动触发左限位 → 急停全链路验证
 // ═══════════════════════════════════════════════════════════════════════════
 
-TEST_CASE("[hw_sweep][limit_stop] 手动触发前限位急停链路（FSM 全链路）", "[hw_sweep][limit_stop]") {
+TEST_CASE("[hw_sweep][limit_stop] 手动触发左限位急停链路（FSM 全链路）", "[hw_sweep][limit_stop]") {
     // ── 1. 建立 WalkMotorGroup（低速，安全演示）──────────────────────────
     auto can = std::make_shared<driver::LinuxCanSocket>(kp.can_iface);
     auto group = make_hw_group(can);
@@ -302,27 +302,27 @@ TEST_CASE("[hw_sweep][limit_stop] 手动触发前限位急停链路（FSM 全链
     REQUIRE(group.set_speeds(
                 kp.limit_test_rpm, kp.limit_test_rpm, -kp.limit_test_rpm, -kp.limit_test_rpm) ==
             device::DeviceError::OK);
-    spdlog::info("[hw_limit][manual_front] 行走电机已启动 {:.1f} RPM（前进）", kp.limit_test_rpm);
+    spdlog::info("[hw_limit][manual_left] 行走电机已启动 {:.1f} RPM（前进）", kp.limit_test_rpm);
 
-    // ── 2. 建立前限位开关（真实 gpiochip5 line0）─────────────────────────
-    auto front_gpio =
-        std::make_shared<driver::LibGpiodPin>(kp.gpio_chip, kp.front_limit_line, "hw_test_front");
-    device::LimitSwitch front_sw(front_gpio, device::LimitSide::FRONT);
+    // ── 2. 建立左限位开关（真实 gpiochip5 line0）─────────────────────────
+    auto left_gpio =
+        std::make_shared<driver::LibGpiodPin>(kp.gpio_chip, kp.left_limit_line, "hw_test_left");
+    device::LimitSwitch left_sw(left_gpio, device::LimitSide::LEFT);
 
     // 限位触发回调：复制 SafetyMonitor::on_limit_trigger() 的核心逻辑：
     //   → emergency_override(0.0f) 立即发送停车帧 + 置 override_active_=true
     // 注意：回调在 GPIO 监控线程（SCHED_FIFO 95，CPU4）中执行，必须极短（<100μs）
-    front_sw.set_trigger_callback([&](device::LimitSide /*side*/) {
+    left_sw.set_trigger_callback([&](device::LimitSide /*side*/) {
         group.emergency_override(0.0f);
-        spdlog::warn("[hw_limit][manual_front] 前限位已触发！emergency_override(0) 发出");
+        spdlog::warn("[hw_limit][manual_left] 左限位已触发！emergency_override(0) 发出");
     });
 
     // open: rt_priority=95（SCHED_FIFO，与生产对齐）, debounce_ms=2, cpu_affinity=0（不绑核）
-    REQUIRE(front_sw.open(95, 2, 0));
-    front_sw.start_monitoring();
-    spdlog::info("[hw_limit][manual_front] 前限位 GPIO 监控已启动（{} line{}）",
+    REQUIRE(left_sw.open(95, 2, 0));
+    left_sw.start_monitoring();
+    spdlog::info("[hw_limit][manual_left] 左限位 GPIO 监控已启动（{} line{}）",
                  kp.gpio_chip,
-                 kp.front_limit_line);
+                 kp.left_limit_line);
 
     // ── 3. 启动 update 后台线程（walk_ctrl 路径仿真，50ms 心跳）─────────────
     // 注：先启动 update 线程，motors 才真正开始周期性发送控制帧
@@ -335,18 +335,18 @@ TEST_CASE("[hw_sweep][limit_stop] 手动触发前限位急停链路（FSM 全链
     });
 
     // ── 4. 提示操作员手动触发 ─────────────────────────────────────────────
-    spdlog::warn("[hw_limit][manual_front] ====================================================");
-    spdlog::warn("[hw_limit][manual_front] 请在 {} 秒内手动触发前限位开关",
+    spdlog::warn("[hw_limit][manual_left] ====================================================");
+    spdlog::warn("[hw_limit][manual_left] 请在 {} 秒内手动触发左限位开关",
                  (kp.limit_timeout_sec * 1000) / 1000);
-    spdlog::warn("[hw_limit][manual_front]   硬件：{} line{}（低有效，下降沿触发）",
+    spdlog::warn("[hw_limit][manual_left]   硬件：{} line{}（低有效，下降沿触发）",
                  kp.gpio_chip,
-                 kp.front_limit_line);
-    spdlog::warn("[hw_limit][manual_front]   方法：将遮挡物接近传感器感应面，等待低电平触发");
-    spdlog::warn("[hw_limit][manual_front] ====================================================");
+                 kp.left_limit_line);
+    spdlog::warn("[hw_limit][manual_left]   方法：将遮挡物接近传感器感应面，等待低电平触发");
+    spdlog::warn("[hw_limit][manual_left] ====================================================");
 
     // ── 5. 等待限位触发（最多 limit_timeout_sec 秒）─────────────────────────
     const bool triggered =
-        wait_for([&] { return front_sw.is_triggered(); }, (kp.limit_timeout_sec * 1000));
+        wait_for([&] { return left_sw.is_triggered(); }, (kp.limit_timeout_sec * 1000));
 
     // ── 6. 先安全关停 update 线程，再执行断言（防止 thread::~thread 调用 terminate）──
     stop_loop.store(true, std::memory_order_relaxed);
@@ -356,23 +356,23 @@ TEST_CASE("[hw_sweep][limit_stop] 手动触发前限位急停链路（FSM 全链
     REQUIRE(triggered);
     REQUIRE(group.is_override_active());
     spdlog::info(
-        "[hw_limit][manual_front] 急停链路验证通过："
+        "[hw_limit][manual_left] 急停链路验证通过："
         "is_triggered={}  override_active={}",
-        front_sw.is_triggered(),
+        left_sw.is_triggered(),
         group.is_override_active());
 
-    // ── 8. 关闭（析构顺序：front_sw → group，safe_stop 走 disable_all 直接发帧）──
-    front_sw.close();
+    // ── 8. 关闭（析构顺序：left_sw → group，safe_stop 走 disable_all 直接发帧）──
+    left_sw.close();
     safe_stop(group);
     group.close();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  TEST 4：手动触发后限位 → 急停全链路验证
+//  TEST 4：手动触发右限位 → 急停全链路验证
 // ═══════════════════════════════════════════════════════════════════════════
 
-TEST_CASE("[hw_sweep][limit_stop] 手动触发后限位急停链路（FSM 全链路）",
-          "[hw_sweep][limit_stop][rear]") {
+TEST_CASE("[hw_sweep][limit_stop] 手动触发右限位急停链路（FSM 全链路）",
+          "[hw_sweep][limit_stop][right]") {
     // ── 1. 建立 WalkMotorGroup（低速后退，模拟返程场景）──────────────────
     auto can = std::make_shared<driver::LinuxCanSocket>(kp.can_iface);
     auto group = make_hw_group(can);
@@ -386,23 +386,23 @@ TEST_CASE("[hw_sweep][limit_stop] 手动触发后限位急停链路（FSM 全链
     REQUIRE(group.set_speeds(
                 -kp.limit_test_rpm, -kp.limit_test_rpm, kp.limit_test_rpm, kp.limit_test_rpm) ==
             device::DeviceError::OK);
-    spdlog::info("[hw_limit][manual_rear] 行走电机已启动 {:.1f} RPM（后退）", kp.limit_test_rpm);
+    spdlog::info("[hw_limit][manual_right] 行走电机已启动 {:.1f} RPM（后退）", kp.limit_test_rpm);
 
-    // ── 2. 建立后限位开关（真实 gpiochip5 line1）─────────────────────────
-    auto rear_gpio =
-        std::make_shared<driver::LibGpiodPin>(kp.gpio_chip, kp.rear_limit_line, "hw_test_rear");
-    device::LimitSwitch rear_sw(rear_gpio, device::LimitSide::REAR);
+    // ── 2. 建立右限位开关（真实 gpiochip5 line1）─────────────────────────
+    auto right_gpio =
+        std::make_shared<driver::LibGpiodPin>(kp.gpio_chip, kp.right_limit_line, "hw_test_right");
+    device::LimitSwitch right_sw(right_gpio, device::LimitSide::RIGHT);
 
-    rear_sw.set_trigger_callback([&](device::LimitSide /*side*/) {
+    right_sw.set_trigger_callback([&](device::LimitSide /*side*/) {
         group.emergency_override(0.0f);
-        spdlog::warn("[hw_limit][manual_rear] 后限位已触发！emergency_override(0) 发出");
+        spdlog::warn("[hw_limit][manual_right] 右限位已触发！emergency_override(0) 发出");
     });
 
-    REQUIRE(rear_sw.open(95, 2, 0));
-    rear_sw.start_monitoring();
-    spdlog::info("[hw_limit][manual_rear] 后限位 GPIO 监控已启动（{} line{}）",
+    REQUIRE(right_sw.open(95, 2, 0));
+    right_sw.start_monitoring();
+    spdlog::info("[hw_limit][manual_right] 右限位 GPIO 监控已启动（{} line{}）",
                  kp.gpio_chip,
-                 kp.rear_limit_line);
+                 kp.right_limit_line);
 
     // ── 3. 启动 update 后台线程 ───────────────────────────────────────────
     std::atomic<bool> stop_loop{false};
@@ -414,18 +414,18 @@ TEST_CASE("[hw_sweep][limit_stop] 手动触发后限位急停链路（FSM 全链
     });
 
     // ── 4. 提示操作员手动触发 ─────────────────────────────────────────────
-    spdlog::warn("[hw_limit][manual_rear] ====================================================");
-    spdlog::warn("[hw_limit][manual_rear] 请在 {} 秒内手动触发后限位开关",
+    spdlog::warn("[hw_limit][manual_right] ====================================================");
+    spdlog::warn("[hw_limit][manual_right] 请在 {} 秒内手动触发右限位开关",
                  (kp.limit_timeout_sec * 1000) / 1000);
-    spdlog::warn("[hw_limit][manual_rear]   硬件：{} line{}（低有效，下降沿触发）",
+    spdlog::warn("[hw_limit][manual_right]   硬件：{} line{}（低有效，下降沿触发）",
                  kp.gpio_chip,
-                 kp.rear_limit_line);
-    spdlog::warn("[hw_limit][manual_rear]   方法：将遮挡物接近传感器感应面，等待低电平触发");
-    spdlog::warn("[hw_limit][manual_rear] ====================================================");
+                 kp.right_limit_line);
+    spdlog::warn("[hw_limit][manual_right]   方法：将遮挡物接近传感器感应面，等待低电平触发");
+    spdlog::warn("[hw_limit][manual_right] ====================================================");
 
     // ── 5. 等待限位触发 ───────────────────────────────────────────────────
     const bool triggered =
-        wait_for([&] { return rear_sw.is_triggered(); }, (kp.limit_timeout_sec * 1000));
+        wait_for([&] { return right_sw.is_triggered(); }, (kp.limit_timeout_sec * 1000));
 
     // ── 6. 先安全关停 update 线程，再断言 ────────────────────────────────
     stop_loop.store(true, std::memory_order_relaxed);
@@ -435,13 +435,13 @@ TEST_CASE("[hw_sweep][limit_stop] 手动触发后限位急停链路（FSM 全链
     REQUIRE(triggered);
     REQUIRE(group.is_override_active());
     spdlog::info(
-        "[hw_limit][manual_rear] 急停链路验证通过："
+        "[hw_limit][manual_right] 急停链路验证通过："
         "is_triggered={}  override_active={}",
-        rear_sw.is_triggered(),
+        right_sw.is_triggered(),
         group.is_override_active());
 
     // ── 8. 关闭 ──────────────────────────────────────────────────────────
-    rear_sw.close();
+    right_sw.close();
     safe_stop(group);
     group.close();
 }

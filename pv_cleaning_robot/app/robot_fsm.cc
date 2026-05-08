@@ -24,14 +24,14 @@ std::string RobotFsm::current_state() const {
     return state_name_;
 }
 
-int RobotFsm::target_half_passes() const {
+int RobotFsm::target_passes() const {
     std::lock_guard<hal::PiMutex> lk(mtx_);
-    return target_half_passes_;
+    return target_passes_;
 }
 
-int RobotFsm::completed_half_passes() const {
+int RobotFsm::completed_passes() const {
     std::lock_guard<hal::PiMutex> lk(mtx_);
-    return completed_half_passes_;
+    return completed_passes_;
 }
 
 // ── 事件分发特化 ──────────────────────────────────────────────────────
@@ -73,15 +73,14 @@ void RobotFsm::dispatch<EvScheduleStart>(EvScheduleStart e) {
             return;
         }
 
-        // 计算目标半趟数（passes * 2）
-        target_half_passes_ = static_cast<int>(rounded_passes) * 2;
-        completed_half_passes_ = 0;
+        target_passes_ = static_cast<int>(rounded_passes);
+        completed_passes_ = 0;
 
         state_name_ = "SelfCheck";
-        spdlog::info("[FSM] → SelfCheck（趟数={:.1f}，目标半趟={}）",
-                     e.passes, target_half_passes_);
+        spdlog::info("[FSM] → SelfCheck（趟数={:.1f}，目标完整趟数={}）",
+                     e.passes, target_passes_);
 
-        if (e.at_home) {
+        if (e.at_parking_side) {
             // 正常情况：从停机位正向清扫
             going_forward_ = true;
             if (!sm_->process_event(EvSelfCheckOk{})) {
@@ -104,57 +103,41 @@ void RobotFsm::dispatch<EvScheduleStart>(EvScheduleStart e) {
 }
 
 template <>
-void RobotFsm::dispatch<EvFrontLimitSettled>(EvFrontLimitSettled e) {
+void RobotFsm::dispatch<EvFarEndLimitSettled>(EvFarEndLimitSettled e) {
     std::function<void()> action;
     {
         std::lock_guard<hal::PiMutex> lk(mtx_);
         if (!sm_->is(sml::state<StateCleanFwd>)) {
-            spdlog::warn("[FSM] 忽略 EvFrontLimitSettled (state={})", state_name_);
+            spdlog::warn("[FSM] 忽略 EvFarEndLimitSettled (state={})", state_name_);
             return;
         }
 
-        completed_half_passes_++;
-        spdlog::info("[FSM] 前端限位已稳定（已完成半趟 {}/{}）",
-                     completed_half_passes_, target_half_passes_);
-
-        if (completed_half_passes_ >= target_half_passes_) {
-            // 任务完成
-            if (!sm_->process_event(EvTaskComplete{})) {
-                spdlog::warn("[FSM] 忽略 EvTaskComplete after front limit (state={})", state_name_);
-                return;
-            }
-            state_name_ = "Charging";
-            spdlog::info("[FSM] → Charging（任务完成，停在前端）");
-            action = [this]() { motion_->stop_cleaning(); };
-        } else {
-            // 继续：前端到头，反向返回
-            if (!sm_->process_event(e)) {
-                spdlog::warn("[FSM] 忽略 EvFrontLimitSettled transition (state={})", state_name_);
-                return;
-            }
-            going_forward_ = false;
-            state_name_ = "CleanReturn";
-            spdlog::info("[FSM] → CleanReturn（前端到达，刷反向返回）");
-            action = [this]() { motion_->start_returning(); };
+        if (!sm_->process_event(e)) {
+            spdlog::warn("[FSM] 忽略 EvFarEndLimitSettled transition (state={})", state_name_);
+            return;
         }
+        going_forward_ = false;
+        state_name_ = "CleanReturn";
+        spdlog::info("[FSM] → CleanReturn（到达对侧，刷反向返回）");
+        action = [this]() { motion_->start_returning(); };
     }
     if (action) action();
 }
 
 template <>
-void RobotFsm::dispatch<EvRearLimitSettled>(EvRearLimitSettled e) {
+void RobotFsm::dispatch<EvParkingSideLimitSettled>(EvParkingSideLimitSettled e) {
     std::function<void()> action;
     {
         std::lock_guard<hal::PiMutex> lk(mtx_);
 
         if (sm_->is(sml::state<StateCleanReturn>)) {
-            completed_half_passes_++;
-            spdlog::info("[FSM] 尾端限位已稳定（已完成半趟 {}/{}）",
-                         completed_half_passes_, target_half_passes_);
+            completed_passes_++;
+            spdlog::info("[FSM] 停机侧限位已稳定（已完成趟数 {}/{}）",
+                         completed_passes_, target_passes_);
 
-            if (completed_half_passes_ >= target_half_passes_) {
+            if (completed_passes_ >= target_passes_) {
                 if (!sm_->process_event(EvTaskComplete{})) {
-                    spdlog::warn("[FSM] 忽略 EvTaskComplete after rear limit (state={})", state_name_);
+                    spdlog::warn("[FSM] 忽略 EvTaskComplete after parking-side limit (state={})", state_name_);
                     return;
                 }
                 state_name_ = "Charging";
@@ -162,7 +145,7 @@ void RobotFsm::dispatch<EvRearLimitSettled>(EvRearLimitSettled e) {
                 action = [this]() { motion_->stop_cleaning(); };
             } else {
                 if (!sm_->process_event(e)) {
-                    spdlog::warn("[FSM] 忽略 EvRearLimitSettled transition (state={})", state_name_);
+                    spdlog::warn("[FSM] 忽略 EvParkingSideLimitSettled transition (state={})", state_name_);
                     return;
                 }
                 going_forward_ = true;
@@ -172,7 +155,7 @@ void RobotFsm::dispatch<EvRearLimitSettled>(EvRearLimitSettled e) {
             }
         } else if (sm_->is(sml::state<StateReturning>)) {
             if (!sm_->process_event(e)) {
-                spdlog::warn("[FSM] 忽略 Returning->EvRearLimitSettled (state={})", state_name_);
+                spdlog::warn("[FSM] 忽略 Returning->EvParkingSideLimitSettled (state={})", state_name_);
                 return;
             }
             state_name_ = "Charging";
@@ -321,7 +304,7 @@ void RobotFsm::dispatch<EvManualReturn>(EvManualReturn e) {
         }
         state_name_ = "Returning";
         going_forward_ = false;
-        completed_half_passes_ = target_half_passes_;
+        completed_passes_ = target_passes_;
         spdlog::info("[FSM] → Returning（任务级返回停机位）");
         action = [this]() { motion_->start_returning(); };
     }
@@ -338,8 +321,8 @@ void RobotFsm::dispatch<EvTerminateTask>(EvTerminateTask e) {
             return;
         }
         state_name_ = "Terminated";
-        completed_half_passes_ = 0;
-        target_half_passes_ = 0;
+        completed_passes_ = 0;
+        target_passes_ = 0;
         spdlog::warn("[FSM] → Terminated（人工终止任务）");
         action = [this]() { motion_->emergency_stop(); };
     }

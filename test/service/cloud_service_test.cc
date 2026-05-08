@@ -88,14 +88,17 @@ TEST_CASE("CloudService RPC parsing preserves params JSON string for handler",
     auto cache = std::make_shared<DataCache>("/tmp/cloud_service_rpc_test.jsonl");
     CloudService cloud(net, cache);
 
+    std::string seen_request_id;
     std::string handler_params;
-    cloud.register_rpc("set_speed", [&](const std::string& params) {
+    cloud.register_rpc("set_speed", [&](const std::string& request_id, const std::string& params) {
+        seen_request_id = request_id;
         handler_params = params;
         return std::string{R"({"ok":true})"};
     });
 
     mqtt->emit_rpc("42", R"({"method":"set_speed","params":{"speed":80,"mode":"clean"}})");
 
+    REQUIRE(seen_request_id == "42");
     REQUIRE(handler_params == R"({"speed":80,"mode":"clean"})");
     REQUIRE(mqtt->last_publish_topic == "v1/devices/me/rpc/response/42");
     REQUIRE(mqtt->last_publish_payload == R"({"ok":true})");
@@ -108,10 +111,58 @@ TEST_CASE("CloudService requests shared attributes snapshot using ThingsBoard to
     auto cache = std::make_shared<DataCache>("/tmp/cloud_service_attr_request_test.jsonl");
     CloudService cloud(net, cache);
 
-    REQUIRE(cloud.request_shared_attributes_snapshot({"passes", "clean_speed_rpm", "charging_side"}));
+    REQUIRE(cloud.request_shared_attributes_snapshot({"passes", "clean_speed_rpm", "parking_side"}));
     REQUIRE(mqtt->last_publish_topic.find("v1/devices/me/attributes/request/") == 0);
     REQUIRE(mqtt->last_publish_payload ==
-            R"({"sharedKeys":"passes,clean_speed_rpm,charging_side"})");
+            R"({"sharedKeys":"passes,clean_speed_rpm,parking_side"})");
+}
+
+TEST_CASE("CloudService rejects unknown RPC methods with explicit response",
+          "[service][cloud]") {
+    auto mqtt = std::make_shared<MockTransport>();
+    auto net = std::make_shared<NetworkManager>(mqtt, nullptr, NetworkManager::Mode::MQTT_ONLY);
+    auto cache = std::make_shared<DataCache>("/tmp/cloud_service_unknown_rpc_test.jsonl");
+    CloudService cloud(net, cache);
+
+    cloud.register_rpc("start", [](const std::string&, const std::string&) {
+        return std::string{R"({"accepted":true,"result":"ok"})"};
+    });
+
+    mqtt->emit_rpc("99", R"({"method":"stop","params":{}})");
+
+    REQUIRE(mqtt->last_publish_topic == "v1/devices/me/rpc/response/99");
+    rapidjson::Document response;
+    response.Parse(mqtt->last_publish_payload.c_str());
+    REQUIRE_FALSE(response.HasParseError());
+    REQUIRE(response.IsObject());
+    REQUIRE(response["accepted"].IsBool());
+    CHECK_FALSE(response["accepted"].GetBool());
+    REQUIRE(response["result"].IsString());
+    CHECK(std::string(response["result"].GetString()) == "rejected");
+    REQUIRE(response["reason"].IsString());
+    CHECK(std::string(response["reason"].GetString()) == "method_not_supported");
+}
+
+TEST_CASE("CloudService rejects invalid RPC payload with explicit response",
+          "[service][cloud]") {
+    auto mqtt = std::make_shared<MockTransport>();
+    auto net = std::make_shared<NetworkManager>(mqtt, nullptr, NetworkManager::Mode::MQTT_ONLY);
+    auto cache = std::make_shared<DataCache>("/tmp/cloud_service_invalid_rpc_test.jsonl");
+    CloudService cloud(net, cache);
+
+    mqtt->emit_rpc("7", R"({"method":123,"params":{}})");
+
+    REQUIRE(mqtt->last_publish_topic == "v1/devices/me/rpc/response/7");
+    rapidjson::Document response;
+    response.Parse(mqtt->last_publish_payload.c_str());
+    REQUIRE_FALSE(response.HasParseError());
+    REQUIRE(response.IsObject());
+    REQUIRE(response["accepted"].IsBool());
+    CHECK_FALSE(response["accepted"].GetBool());
+    REQUIRE(response["result"].IsString());
+    CHECK(std::string(response["result"].GetString()) == "rejected");
+    REQUIRE(response["reason"].IsString());
+    CHECK(std::string(response["reason"].GetString()) == "invalid_request");
 }
 
 TEST_CASE("CloudService shared attributes response routes nested shared object to callback",
@@ -125,16 +176,16 @@ TEST_CASE("CloudService shared attributes response routes nested shared object t
     cloud.subscribe_shared_attributes([&](const rapidjson::Document& attrs) {
         REQUIRE(attrs.IsObject());
         const auto passes_it = attrs.FindMember("passes");
-        const auto side_it = attrs.FindMember("charging_side");
+        const auto side_it = attrs.FindMember("parking_side");
         REQUIRE(passes_it != attrs.MemberEnd());
         REQUIRE(side_it != attrs.MemberEnd());
         REQUIRE(passes_it->value.GetInt() == 3);
-        REQUIRE(std::string(side_it->value.GetString()) == "terminal_b");
+        REQUIRE(std::string(side_it->value.GetString()) == "right");
         ++call_count;
     });
 
     mqtt->emit_attributes_response(
-        "7", R"({"shared":{"passes":3,"charging_side":"terminal_b"}})");
+        "7", R"({"shared":{"passes":3,"parking_side":"right"}})");
 
     REQUIRE(call_count == 1);
 }

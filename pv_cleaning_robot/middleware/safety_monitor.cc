@@ -18,12 +18,12 @@ namespace robot::middleware {
 
 SafetyMonitor::SafetyMonitor(
     std::shared_ptr<device::WalkMotorGroup> walk_group,
-    std::shared_ptr<device::LimitSwitch>    front_switch,
-    std::shared_ptr<device::LimitSwitch>    rear_switch,
+    std::shared_ptr<device::LimitSwitch>    left_switch,
+    std::shared_ptr<device::LimitSwitch>    right_switch,
     EventBus&                               event_bus)
     : walk_group_(std::move(walk_group))
-    , front_switch_(std::move(front_switch))
-    , rear_switch_(std::move(rear_switch))
+    , left_switch_(std::move(left_switch))
+    , right_switch_(std::move(right_switch))
     , event_bus_(event_bus)
 {
 }
@@ -36,14 +36,14 @@ SafetyMonitor::~SafetyMonitor()
 bool SafetyMonitor::start()
 {
     // 注册限位触发回调（在各自 GPIO 监控线程内同步调用）
-    front_switch_->set_trigger_callback(
+    left_switch_->set_trigger_callback(
         [this](device::LimitSide side) { on_limit_trigger(side); });
-    rear_switch_->set_trigger_callback(
+    right_switch_->set_trigger_callback(
         [this](device::LimitSide side) { on_limit_trigger(side); });
 
     // 启动 GPIO 边沿监控
-    front_switch_->start_monitoring();
-    rear_switch_->start_monitoring();
+    left_switch_->start_monitoring();
+    right_switch_->start_monitoring();
 
     // 启动监控主循环线程（SCHED_FIFO 94，绑定安全专用 CPU 4）
     // 设计为低于 GPIO 线程(95)：保证边沿回调可优先执行，轮询仅作兜底。
@@ -56,22 +56,9 @@ bool SafetyMonitor::start()
 void SafetyMonitor::stop()
 {
     running_.store(false);
-    front_switch_->stop_monitoring();
-    rear_switch_->stop_monitoring();
+    left_switch_->stop_monitoring();
+    right_switch_->stop_monitoring();
     if (monitor_thread_.joinable()) monitor_thread_.join();
-}
-
-bool SafetyMonitor::is_estop_active() const
-{
-    return estop_active_.load(std::memory_order_acquire);
-}
-
-void SafetyMonitor::reset_estop()
-{
-    estop_active_.store(false, std::memory_order_release);
-    // 清除限位标志，允许恢复运动
-    front_switch_->clear_trigger();
-    rear_switch_->clear_trigger();
 }
 
 void SafetyMonitor::on_limit_trigger(device::LimitSide side)
@@ -80,28 +67,22 @@ void SafetyMonitor::on_limit_trigger(device::LimitSide side)
     // 安全优先关键路径：此函数在 GPIO 监控线程中被调用（SCHED_FIFO 95）
     // 目标：从触发到急停指令发出 ≤ 50 ms
     //
-    // 两端均执行：立即停车 + 置 pending 标志
-    // 防抖延迟（180ms）和 FSM 通知由 monitor_loop（SCHED_FIFO 94）负责
-    //
-    // 前端（FRONT）：清扫到头，不置 estop_active_（下一步由 FSM 反向）
-    // 尾端（REAR）：到达停机位，置 estop_active_ 防止 update() 重驱
+    // 两端完全对称：立即停车 + 清除触发标志 + 置 pending 时间戳。
+    // 防抖延迟（180ms）和 FSM 通知由 monitor_loop（SCHED_FIFO 94）负责。
+    // pending 时间戳本身就是去重门闩：同一侧在 settled 前不接受重复触发。
     // ============================================================
+    std::atomic<uint64_t>& pending_ts =
+        side == device::LimitSide::LEFT ? pending_left_ts_ : pending_right_ts_;
+    auto& limit_switch = side == device::LimitSide::LEFT ? left_switch_ : right_switch_;
 
-    if (side == device::LimitSide::FRONT) {
-        front_switch_->clear_trigger();
-        // 1. 立即停全部4轮（直写 CAN 帧，< 1ms）
-        walk_group_->emergency_override(0.0f);
-        // 2. 记录触发时间戳（monitor_loop 非阻塞计时，≥180ms 后发布 LimitSettledEvent）
-        pending_front_ts_.store(now_ms(), std::memory_order_release);
-    } else {
-        // 1. 置急停标志（防止 monitor_loop 5ms 心跳重复触发）
-        estop_active_.store(true, std::memory_order_release);
-        rear_switch_->clear_trigger();
-        // 2. 立即停全部4轮
-        walk_group_->emergency_override(0.0f);
-        // 3. 记录触发时间戳
-        pending_rear_ts_.store(now_ms(), std::memory_order_release);
+    if (pending_ts.load(std::memory_order_acquire) != 0) {
+        limit_switch->clear_trigger();
+        return;
     }
+
+    limit_switch->clear_trigger();
+    walk_group_->emergency_override(0.0f);
+    pending_ts.store(now_ms(), std::memory_order_release);
 }
 
 void SafetyMonitor::monitor_loop()
@@ -133,24 +114,24 @@ void SafetyMonitor::monitor_loop()
         if (now_ms() - t >= 180u) {
             ts_atom.store(0, std::memory_order_release);  // 清除，防止重复触发
             event_bus_.publish(LimitSettledEvent{side});
-            if (side == device::LimitSide::REAR) reset_estop();
         }
     };
 
     while (running_.load()) {
         // ── 非阻塞并行防抖检查（前后端独立计时）──────────────────────
-        check_settled(pending_front_ts_, device::LimitSide::FRONT);
-        check_settled(pending_rear_ts_,  device::LimitSide::REAR);
+        check_settled(pending_left_ts_, device::LimitSide::LEFT);
+        check_settled(pending_right_ts_, device::LimitSide::RIGHT);
 
         // ── 备用轮询路径：以防 GPIO 边沿回调丢失（双保险）────────────
         // 注意：on_limit_trigger() 内部已调用 clear_trigger()，
         // 因此重复触发被抑制，无需额外去重计数器。
-        if (front_switch_->is_triggered()) {
-            on_limit_trigger(device::LimitSide::FRONT);
+        if (left_switch_->is_triggered() &&
+            pending_left_ts_.load(std::memory_order_acquire) == 0) {
+            on_limit_trigger(device::LimitSide::LEFT);
         }
-        if (rear_switch_->is_triggered() &&
-            !estop_active_.load(std::memory_order_acquire)) {
-            on_limit_trigger(device::LimitSide::REAR);
+        if (right_switch_->is_triggered() &&
+            pending_right_ts_.load(std::memory_order_acquire) == 0) {
+            on_limit_trigger(device::LimitSide::RIGHT);
         }
         // 5 ms 轮询（SCHED_FIFO 94，低于 GPIO 95，避免兜底轮询反向压制边沿线程）
         struct timespec poll_ts{0, 5 * 1000 * 1000};

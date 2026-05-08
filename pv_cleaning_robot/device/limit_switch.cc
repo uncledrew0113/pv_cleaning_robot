@@ -34,7 +34,7 @@ bool LimitSwitch::open(int rt_priority, int debounce_ms, int cpu_affinity, bool 
     cfg.use_irq = use_irq;
     if (!pin_->open(cfg)) {
         spdlog::error("[LimitSwitch] Failed to open GPIO pin for {} side",
-                      side_ == LimitSide::FRONT ? "FRONT" : "REAR");
+                      side_ == LimitSide::LEFT ? "LEFT" : "RIGHT");
         return false;
     }
     return true;

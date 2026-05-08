@@ -1,9 +1,12 @@
 #pragma once
 #include "pv_cleaning_robot/middleware/i_network_transport.h"
-#include <memory>
 #include <atomic>
+#include <condition_variable>
+#include <deque>
+#include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 
 // 前向声明 paho-mqtt-cpp 类型（避免将 paho 头文件泄漏到全局）
@@ -91,13 +94,26 @@ public:
 
 private:
     friend class MqttCallback;  // 定义在 mqtt_transport.cc，授权访问私有成员
-    void subscribe_all_registered_topics();
+    struct PendingDelivery {
+        MessageCallback callback;
+        std::string topic;
+        std::string payload;
+    };
+
+    void enqueue_delivery(MessageCallback cb, std::string topic, std::string payload);
+    void delivery_loop();
+    void subscribe_all_registered_topics(bool wait_for_ack = true);
 
     Config cfg_;
     std::unique_ptr<mqtt::async_client> client_;
     std::unique_ptr<MqttCallback> callback_;  ///< 替代 raw new，持有 MqttCallback 对象
     std::unordered_map<std::string, MessageCallback> subscriptions_;
     mutable std::mutex sub_mtx_;
+    std::mutex delivery_mtx_;
+    std::condition_variable delivery_cv_;
+    std::deque<PendingDelivery> pending_deliveries_;
+    bool stop_delivery_{false};
+    std::thread delivery_thread_;
     std::atomic<bool> connected_{false};
     std::atomic<bool> initial_connect_completed_{false};
 };

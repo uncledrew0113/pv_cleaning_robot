@@ -12,6 +12,7 @@
 
 #include "../mock/mock_can_bus.h"
 #include "../mock/mock_serial_port.h"
+#include "pv_cleaning_robot/app/parking_side_runtime.h"
 #include "pv_cleaning_robot/app/robot_fsm.h"
 #include "pv_cleaning_robot/app/robot_supervisor.h"
 #include "pv_cleaning_robot/device/brush_motor.h"
@@ -102,6 +103,7 @@ robot::middleware::MqttTransport::Config build_mqtt_config(
         cfg.get<bool>("network.mqtt.insecure_skip_server_name_check", false);
     mqtt_cfg.keep_alive_sec = cfg.get<int>("network.mqtt.keep_alive_s", 60);
     mqtt_cfg.qos = cfg.get<int>("network.mqtt.qos", 1);
+    mqtt_cfg.client_id += "_runtime_mock_itest";
     return mqtt_cfg;
 }
 
@@ -156,8 +158,8 @@ struct RealThingsBoardRuntimeMockFixture {
     std::shared_ptr<robot::app::RobotSupervisor> supervisor;
     std::shared_ptr<robot::service::ThingsBoardControlPlane> tb_control;
 
-    bool at_home{true};
-    bool at_front{false};
+    bool left_sensor_active{true};
+    bool right_sensor_active{false};
 
     explicit RealThingsBoardRuntimeMockFixture(const RepoPaths& paths)
         : repo_root(paths.repo_root)
@@ -209,7 +211,9 @@ struct RealThingsBoardRuntimeMockFixture {
             cfg, cloud, tb_cfg, command_tracker, supervisor);
         tb_control->subscribe_shared_attributes();
         tb_control->register_rpc_handlers(
-            [this]() { return at_home; }, [this]() { return at_front; });
+            [this]() { return parking_facts().at_parking_side; },
+            [this]() { return parking_facts().at_far_end; },
+            [this]() { return parking_facts().at_parking_side; });
     }
 
     ~RealThingsBoardRuntimeMockFixture()
@@ -232,6 +236,12 @@ struct RealThingsBoardRuntimeMockFixture {
             return false;
         }
         return true;
+    }
+
+    robot::app::ParkingSideFacts parking_facts() const
+    {
+        return robot::app::ParkingSideRuntime::from_physical_limits(
+            tb_cfg->active_config().parking_side, left_sensor_active, right_sensor_active);
     }
 
     bool wait_state_with_cloud(const std::vector<std::string>& expected,
@@ -268,9 +278,10 @@ TEST_CASE("Real ThingsBoard with mock runtime RPC start/stop/return changes stat
     REQUIRE(f.connect());
 
     spdlog::warn("[TB runtime mock] ACTION REQUIRED: send RPC start -> stop -> return");
-    spdlog::warn("[TB runtime mock] mock state precondition: at_home={} at_front={}",
-                 f.at_home,
-                 f.at_front);
+    const auto facts = f.parking_facts();
+    spdlog::warn("[TB runtime mock] mock state precondition: at_parking_side={} at_far_end={}",
+                 facts.at_parking_side,
+                 facts.at_far_end);
 
     REQUIRE(f.wait_state_with_cloud({"CleanFwd", "CleanReturn"}, std::chrono::seconds(120)));
     auto snap = f.supervisor->snapshot();
@@ -285,7 +296,7 @@ TEST_CASE("Real ThingsBoard with mock runtime RPC start/stop/return changes stat
     REQUIRE(f.wait_state_with_cloud({"Returning"}, std::chrono::seconds(120)));
     snap = f.supervisor->snapshot();
     CHECK(snap.device_state == "Returning");
-    CHECK(snap.task_state == "ReturningHome");
+    CHECK(snap.task_state == "ReturningTask");
 }
 
 TEST_CASE("Real ThingsBoard with mock runtime RPC terminate/reset changes state",
@@ -301,18 +312,21 @@ TEST_CASE("Real ThingsBoard with mock runtime RPC terminate/reset changes state"
     REQUIRE(f.connect());
 
     spdlog::warn("[TB runtime mock] ACTION REQUIRED: send RPC start -> stop -> terminate -> reset");
-    spdlog::warn("[TB runtime mock] mock state precondition: at_home={} at_front={}",
-                 f.at_home,
-                 f.at_front);
+    const auto facts = f.parking_facts();
+    spdlog::warn("[TB runtime mock] mock state precondition: at_parking_side={} at_far_end={}",
+                 facts.at_parking_side,
+                 facts.at_far_end);
 
     REQUIRE(f.wait_state_with_cloud({"CleanFwd", "CleanReturn"}, std::chrono::seconds(120)));
     REQUIRE(f.wait_state_with_cloud({"Paused"}, std::chrono::seconds(120)));
     REQUIRE(f.wait_state_with_cloud({"Terminated"}, std::chrono::seconds(120)));
     auto snap = f.supervisor->snapshot();
     CHECK(snap.device_state == "Terminated");
-    CHECK(snap.task_state == "IdleTask");
+    CHECK(snap.task_state == "TerminatedTask");
 
-    f.at_home = true;
+    f.left_sensor_active =
+        (f.tb_cfg->active_config().parking_side == robot::service::ParkingSide::Left);
+    f.right_sensor_active = !f.left_sensor_active;
     REQUIRE(f.wait_state_with_cloud({"Idle"}, std::chrono::seconds(120)));
     snap = f.supervisor->snapshot();
     CHECK(snap.device_state == "Idle");

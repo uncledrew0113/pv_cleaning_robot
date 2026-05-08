@@ -22,8 +22,8 @@ TEST_CASE("ThingsBoardJsonCodec emits periodic business telemetry into caller bu
     robot::app::RobotRuntimeSnapshot snap;
     snap.device_state = "Paused";
     snap.task_state = "PausedTask";
-    snap.target_half_passes = 4;
-    snap.completed_half_passes = 1;
+    snap.target_passes = 2;
+    snap.completed_passes = 0;
     snap.clean_count = 7;
     snap.active_config_version = 42;
 
@@ -32,14 +32,12 @@ TEST_CASE("ThingsBoardJsonCodec emits periodic business telemetry into caller bu
     active_config.clean_speed_rpm = 180.0;
     active_config.return_speed_rpm = 120.0;
     active_config.brush_rpm = 900;
-    active_config.parking_policy = robot::service::ParkingPolicy::TerminalBOnly;
-    active_config.charging_side = robot::service::ChargingSide::TerminalB;
+    active_config.parking_side = robot::service::ParkingSide::Right;
     active_config.schedules = {{8, 30}};
     snap.active_config = active_config;
 
     robot::service::TbRuntimeConfig pending_config = active_config;
-    pending_config.parking_policy = robot::service::ParkingPolicy::TerminalAOnly;
-    pending_config.charging_side = robot::service::ChargingSide::Both;
+    pending_config.parking_side = robot::service::ParkingSide::Left;
     snap.pending_config = pending_config;
 
     robot::service::CommandSnapshot active_command;
@@ -57,9 +55,7 @@ TEST_CASE("ThingsBoardJsonCodec emits periodic business telemetry into caller bu
     CHECK(std::string(payload["device_state"].GetString()) == "Paused");
     CHECK(payload["active_config_version"].GetUint64() == 42);
     CHECK(payload["active_config"]["passes"].GetDouble() == Approx(2.0));
-    CHECK(std::string(payload["active_config"]["parking_policy"].GetString()) == "terminal_b_only");
-    CHECK(std::string(payload["active_config"]["charging_side"].GetString()) == "terminal_b");
-    CHECK(std::string(payload["pending_config"]["parking_policy"].GetString()) == "terminal_a_only");
-    CHECK(std::string(payload["pending_config"]["charging_side"].GetString()) == "both");
+    CHECK(std::string(payload["active_config"]["parking_side"].GetString()) == "right");
+    CHECK(std::string(payload["pending_config"]["parking_side"].GetString()) == "left");
     CHECK(std::string(payload["active_command"]["id"].GetString()) == "cmd-2");
 }

@@ -20,7 +20,7 @@ struct LimitFixture {
     std::shared_ptr<MockGpioPin> pin{std::make_shared<MockGpioPin>()};
     LimitSwitch sw;
 
-    explicit LimitFixture(LimitSide side = LimitSide::FRONT) : sw(pin, side) {
+    explicit LimitFixture(LimitSide side = LimitSide::LEFT) : sw(pin, side) {
         pin->open_result = true;
     }
 };
@@ -40,10 +40,10 @@ TEST_CASE("LimitSwitch: open() GPIO 失败时返回 false", "[device][limit_swit
 }
 
 TEST_CASE("LimitSwitch: side() 返回构造时传入的侧边", "[device][limit_switch]") {
-    LimitFixture front(LimitSide::FRONT);
-    LimitFixture rear(LimitSide::REAR);
-    REQUIRE(front.sw.side() == LimitSide::FRONT);
-    REQUIRE(rear.sw.side() == LimitSide::REAR);
+    LimitFixture left(LimitSide::LEFT);
+    LimitFixture right(LimitSide::RIGHT);
+    REQUIRE(left.sw.side() == LimitSide::LEFT);
+    REQUIRE(right.sw.side() == LimitSide::RIGHT);
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -92,7 +92,7 @@ TEST_CASE("LimitSwitch: set_trigger_callback 在 start_monitoring 前注册",
     f.sw.open();
 
     bool cb_fired = false;
-    LimitSide cb_side{LimitSide::FRONT};
+    LimitSide cb_side{LimitSide::LEFT};
     f.sw.set_trigger_callback([&](LimitSide s) {
         cb_fired = true;
         cb_side = s;
@@ -107,7 +107,7 @@ TEST_CASE("LimitSwitch: set_trigger_callback 在 start_monitoring 前注册",
 // GPIO edge 触发路径：通过 MockGpioPin::edge_callback 注入
 // ────────────────────────────────────────────────────────────────
 TEST_CASE("LimitSwitch: GPIO 低边沿触发后 is_triggered() 为 true", "[device][limit_switch]") {
-    LimitFixture f(LimitSide::FRONT);
+    LimitFixture f(LimitSide::LEFT);
     f.sw.open();
 
     // 注册回调

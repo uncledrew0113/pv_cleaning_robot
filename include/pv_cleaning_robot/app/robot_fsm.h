@@ -19,9 +19,9 @@ namespace robot::app {
 // ── 状态 ──────────────────────────────────────────────────────────────
 struct StateInit        {};
 struct StateIdle        {};
-struct StateSelfCheck   {};  ///< 调度触发后自检（确认停机位 + 初始化计数器）
-struct StateCleanFwd    {};  ///< 正向清扫（从停机位向前）
-struct StateCleanReturn {};  ///< 返程清扫（从前端返回停机位）
+struct StateSelfCheck   {};  ///< 调度触发后自检（确认当前在停机位 + 初始化计数器）
+struct StateCleanFwd    {};  ///< 正向清扫（从停机位驶向对侧端点）
+struct StateCleanReturn {};  ///< 返程清扫（从对侧端点返回停机位）
 struct StateReturning   {};  ///< 故障/低电主动返回停机位
 struct StatePaused      {};  ///< 任务暂停，保留后续恢复所需上下文
 struct StateCharging    {};  ///< 在停机位（充电或待机）
@@ -31,12 +31,12 @@ struct StateTerminated  {};  ///< 人工终止，等待复位重新投入服务
 // ── 公开事件 ──────────────────────────────────────────────────────────
 /// 调度器触发（SchedulerService 或 RPC "start"）
 struct EvScheduleStart {
-    bool  at_home{false};  ///< 尾端限位是否触发（设备在停机位）
-    bool  at_front{false}; ///< 前端限位是否触发（设备在前端）
-    float passes{1.0f};    ///< 本次任务趟数（首版仅支持整数趟）
+    bool  at_parking_side{false};  ///< 当前是否位于停机位一侧
+    bool  at_far_end{false};       ///< 当前是否位于对侧端点
+    float passes{1.0f};            ///< 本次任务趟数（首版仅支持整数趟）
 };
-struct EvFrontLimitSettled {};  ///< 前端限位防抖完成（SafetyMonitor 延迟后发布）
-struct EvRearLimitSettled  {};  ///< 尾端限位防抖完成
+struct EvFarEndLimitSettled {};  ///< 对侧端点限位防抖完成（SafetyMonitor 延迟后发布）
+struct EvParkingSideLimitSettled  {};  ///< 停机位一侧限位防抖完成
 struct EvFaultP2           {};  ///< P2 故障（不转换状态，仅记录告警）
 struct EvFaultP0           {};  ///< P0 严重故障 → Fault
 struct EvFaultP1           {};  ///< P1 故障 → 停刷安全返回
@@ -60,10 +60,10 @@ struct EvResumeReturn      {};  ///< 从暂停态恢复返程清扫
 ///
 /// 转换逻辑概述：
 ///   Idle/Charging   --EvScheduleStart→ SelfCheck（自检）
-///   SelfCheck       --[ok,正向]→       CleanFwd
+///   SelfCheck       --[ok]→            CleanFwd
 ///   SelfCheck       --[fail]→          Idle（拒绝）
-///   CleanFwd        --EvFrontLimitSettled→ CleanReturn  或  Charging（任务完成）
-///   CleanReturn     --EvRearLimitSettled→  CleanFwd     或  Charging（趟数完成）
+///   CleanFwd        --EvFarEndLimitSettled→ CleanReturn
+///   CleanReturn     --EvParkingSideLimitSettled→  CleanFwd     或  Charging（整数趟完成）
 ///   CleanFwd/Return --EvFaultP0→        Fault
 ///   CleanFwd/Return --EvFaultP1→        Returning（停刷）
 ///   CleanFwd/Return --EvFaultP2→        (不变，仅告警)
@@ -72,7 +72,7 @@ struct EvResumeReturn      {};  ///< 从暂停态恢复返程清扫
 ///   Paused         --EvResumeTask→      CleanFwd/CleanReturn（按暂停前方向恢复）
 ///   CleanFwd/Return/Paused --EvManualReturn→ Returning
 ///   CleanFwd/Return/Paused/Returning --EvTerminateTask→ Terminated
-///   Returning       --EvRearLimitSettled→ Charging
+///   Returning       --EvParkingSideLimitSettled→ Charging（回到停机位）
 ///   Fault/Terminated --EvFaultReset→    Idle
 class RobotFsm {
 public:
@@ -86,8 +86,8 @@ public:
     void dispatch(Event e);
 
     std::string current_state() const;
-    int target_half_passes() const;
-    int completed_half_passes() const;
+    int target_passes() const;
+    int completed_passes() const;
 
     // SML 状态机定义（必须在头文件中完整定义，sml::sm<> 模板需要完整类型）
     struct Fsm {
@@ -103,9 +103,9 @@ public:
                 state<StateSelfCheck>       + event<EvSelfCheckOk>           = state<StateCleanFwd>,
                 state<StateSelfCheck>       + event<EvSelfCheckFail>         = state<StateIdle>,
                 // 清扫往复
-                state<StateCleanFwd>        + event<EvFrontLimitSettled>     = state<StateCleanReturn>,
+                state<StateCleanFwd>        + event<EvFarEndLimitSettled>     = state<StateCleanReturn>,
                 state<StateCleanFwd>        + event<EvTaskComplete>          = state<StateCharging>,
-                state<StateCleanReturn>     + event<EvRearLimitSettled>      = state<StateCleanFwd>,
+                state<StateCleanReturn>     + event<EvParkingSideLimitSettled>      = state<StateCleanFwd>,
                 state<StateCleanReturn>     + event<EvTaskComplete>          = state<StateCharging>,
                 // 任务控制
                 state<StateCleanFwd>        + event<EvPauseTask>             = state<StatePaused>,
@@ -124,7 +124,7 @@ public:
                 state<StateCleanReturn>     + event<EvLowBattery>            = state<StateReturning>,
                 state<StateCleanFwd>        + event<EvFaultP1>               = state<StateReturning>,
                 state<StateCleanReturn>     + event<EvFaultP1>               = state<StateReturning>,
-                state<StateReturning>       + event<EvRearLimitSettled>      = state<StateCharging>,
+                state<StateReturning>       + event<EvParkingSideLimitSettled>      = state<StateCharging>,
                 state<StateCharging>        + event<EvChargeDone>            = state<StateIdle>,
                 // P0 故障
                 state<StateCleanFwd>        + event<EvFaultP0>               = state<StateFault>,
@@ -150,8 +150,8 @@ private:
     std::unique_ptr<sml::sm<Fsm>> sm_;
 
     // N 趟计数
-    int  target_half_passes_{2};     ///< passes * 2（1→2, 2→4, 3→6）
-    int  completed_half_passes_{0};  ///< 已完成半趟数
+    int  target_passes_{1};          ///< 目标完整趟数（1=一去一回）
+    int  completed_passes_{0};       ///< 已完成完整趟数
     bool going_forward_{true};       ///< 当前方向（用于暂停后恢复）
 };
 

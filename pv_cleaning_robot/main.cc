@@ -64,6 +64,7 @@
 #include <thread>
 
 #include "pv_cleaning_robot/app/fault_handler.h"
+#include "pv_cleaning_robot/app/parking_side_runtime.h"
 #include "pv_cleaning_robot/app/robot_fsm.h"
 #include "pv_cleaning_robot/app/robot_supervisor.h"
 #include "pv_cleaning_robot/app/watchdog_mgr.h"
@@ -180,17 +181,17 @@ int main() {
     }
 
     // ── 8. GPIO 限位开关 ───────────────────────────────────────────────
-    auto front_gpio = std::make_shared<robot::driver::LibGpiodPin>(
-        cfg.get<std::string>("gpio.front_limit.chip", "gpiochip0"),
-        cfg.get<int>("gpio.front_limit.line", 10));
-    auto rear_gpio = std::make_shared<robot::driver::LibGpiodPin>(
-        cfg.get<std::string>("gpio.rear_limit.chip", "gpiochip0"),
-        cfg.get<int>("gpio.rear_limit.line", 11));
+    auto left_gpio = std::make_shared<robot::driver::LibGpiodPin>(
+        cfg.get<std::string>("gpio.left_limit.chip", "gpiochip0"),
+        cfg.get<int>("gpio.left_limit.line", 10));
+    auto right_gpio = std::make_shared<robot::driver::LibGpiodPin>(
+        cfg.get<std::string>("gpio.right_limit.chip", "gpiochip0"),
+        cfg.get<int>("gpio.right_limit.line", 11));
 
-    auto front_switch =
-        std::make_shared<robot::device::LimitSwitch>(front_gpio, robot::device::LimitSide::FRONT);
-    auto rear_switch =
-        std::make_shared<robot::device::LimitSwitch>(rear_gpio, robot::device::LimitSide::REAR);
+    auto left_switch =
+        std::make_shared<robot::device::LimitSwitch>(left_gpio, robot::device::LimitSide::LEFT);
+    auto right_switch =
+        std::make_shared<robot::device::LimitSwitch>(right_gpio, robot::device::LimitSide::RIGHT);
 
     // ── 9. 初始化设备 ──────────────────────────────────────────────────
     // 行走电机组是运动控制核心（open 失败则整体无法运行）
@@ -220,39 +221,49 @@ int main() {
     // gpio.use_irq: 若 GPIO 控制器不支持硬件 IRQ（如 RK3576 gpiochip5），配置为 false 使用 1ms
     // 软件轮询
     const bool gpio_use_irq = cfg.get<bool>("gpio.use_irq", false);
-    const bool front_open_ok = front_switch->open(95,  // SCHED_FIFO 95: GPIO 边缘最高硬件响应优先级
-                                                  2,       // 2ms 软件消抖
-                                                  1 << 4,  // 绑定大核 CPU 4（安全关键专用）
-                                                  gpio_use_irq);
-    const bool rear_open_ok =
-        rear_switch->open(95,
-                          2,
-                          1 << 4,  // 绑定大核 CPU 4（与 safety_monitor 同核，减少跨核缓存失效）
-                          gpio_use_irq);
-    if (!front_open_ok)
-        log->warn("[Main] 前限位开关初始化失败");
-    if (!rear_open_ok)
-        log->warn("[Main] 后限位开关初始化失败");
+    const bool left_open_ok = left_switch->open(95,  // SCHED_FIFO 95: GPIO 边缘最高硬件响应优先级
+                                                2,       // 2ms 软件消抖
+                                                1 << 4,  // 绑定大核 CPU 4（安全关键专用）
+                                                gpio_use_irq);
+    const bool right_open_ok =
+        right_switch->open(95,
+                           2,
+                           1 << 4,  // 绑定大核 CPU 4（与 safety_monitor 同核，减少跨核缓存失效）
+                           gpio_use_irq);
+    if (!left_open_ok)
+        log->warn("[Main] 左限位开关初始化失败");
+    if (!right_open_ok)
+        log->warn("[Main] 右限位开关初始化失败");
 
-    // ── 上电自检：确认设备在停机位（尾0前1）────────────────────────────────────
-    // 感应式接近开关：接近边框时输出低电平（ read_value()=false=0 ）
-    //   尾部 false（低/0） = 在停机位边框内  → 正常
-    //   前部 true （高/1） = 前方无遮挡       → 正常
-    const bool rear_at_home = rear_open_ok && !rear_switch->read_current_level();
-    const bool front_clear = front_open_ok && front_switch->read_current_level();
-    if (!rear_at_home) {
+    // ── 上电自检：确认设备在当前配置的停机位，且对侧无遮挡 ───────────────────────
+    // left_limit 实际对应左侧传感器，right_limit 实际对应右侧传感器。
+    const auto configured_parking_side_text =
+        cfg.get<std::string>("robot.parking_side", "left");
+    const auto configured_parking_side =
+        configured_parking_side_text == "right" ? robot::service::ParkingSide::Right
+                                                : robot::service::ParkingSide::Left;
+    const bool left_sensor_active = left_open_ok && !left_switch->read_current_level();
+    const bool right_sensor_active = right_open_ok && !right_switch->read_current_level();
+    const auto startup_facts = robot::app::ParkingSideRuntime::from_physical_limits(
+        configured_parking_side, left_sensor_active, right_sensor_active);
+    if (!startup_facts.at_parking_side) {
         log->warn(
-            "[Main] [自检警告] 尾部限位开关读数不为 0，"
-            "设备可能不在停机位，请手动归位再启动");
+            "[Main] [自检警告] 当前未检测到停机位一侧限位触发，"
+            "设备可能不在配置停机位（parking_side={}），请手动归位再启动",
+            configured_parking_side_text);
     }
-    if (!front_clear) {
+    if (startup_facts.at_far_end) {
         log->warn(
-            "[Main] [自检警告] 前部限位开关读数不为 1，"
-            "前方有遮挡或传感器异常，请检查环境");
+            "[Main] [自检警告] 对侧限位当前处于触发状态，"
+            "可能有遮挡或传感器异常，请检查环境");
     }
-    log->info("[Main] 上电自检：尾部={}（期望 0/false），前部={}（期望 1/true）",
-              rear_at_home ? "OK(0)" : "FAIL(1)",
-              front_clear ? "OK(1)" : "FAIL(0)");
+    log->info(
+        "[Main] 上电自检：parking_side={} at_parking_side={} at_far_end={} (left_sensor={} right_sensor={})",
+        configured_parking_side_text,
+        startup_facts.at_parking_side,
+        startup_facts.at_far_end,
+        left_sensor_active,
+        right_sensor_active);
     if (!brush_motor->open())
         log->warn("[Main] 滚刷电机 RS485 初始化失败");
     if (bms->open() != robot::device::DeviceError::OK)
@@ -260,7 +271,7 @@ int main() {
 
     // ── 10. 安全监控器 ─────────────────────────────────────────────────
     robot::middleware::SafetyMonitor safety_monitor(
-        walk_group, front_switch, rear_switch, event_bus);
+        walk_group, left_switch, right_switch, event_bus);
     safety_monitor.start();
 
     // ── 11. 网络传输 ───────────────────────────────────────────────────
@@ -328,20 +339,6 @@ int main() {
         walk_group, brush_motor, imu, event_bus, motion_cfg);
     auto nav = std::make_shared<robot::service::NavService>(walk_group, imu, gps);
     robot::service::SchedulerService scheduler;
-    {
-        auto windows_json = cfg.get_subtree("scheduler.windows");
-        if (windows_json.IsArray()) {
-            for (const auto& w : windows_json.GetArray()) {
-                robot::service::SchedulerService::TimeWindow tw;
-                const auto hour_it = w.FindMember("hour");
-                const auto minute_it = w.FindMember("minute");
-                tw.hour = (hour_it != w.MemberEnd() && hour_it->value.IsInt()) ? hour_it->value.GetInt() : 8;
-                tw.minute =
-                    (minute_it != w.MemberEnd() && minute_it->value.IsInt()) ? minute_it->value.GetInt() : 0;
-                scheduler.add_window(tw);
-            }
-        }
-    }
     auto cloud = std::make_shared<robot::service::CloudService>(net_mgr, data_cache);
     auto tb_cfg =
         std::make_shared<robot::service::ThingsBoardConfigManager>(cfg, scheduler);
@@ -360,14 +357,33 @@ int main() {
         tb_cfg,
         command_tracker,
         supervisor);
+    const auto physical_limit_facts_for = [&left_switch, &right_switch, &left_open_ok, &right_open_ok](
+                                              robot::service::ParkingSide parking_side) {
+        const bool left_sensor_active = left_open_ok && !left_switch->read_current_level();
+        const bool right_sensor_active = right_open_ok && !right_switch->read_current_level();
+        return robot::app::ParkingSideRuntime::from_physical_limits(
+            parking_side, left_sensor_active, right_sensor_active);
+    };
+    const auto current_active_parking_facts = [&tb_cfg, physical_limit_facts_for]() {
+        return physical_limit_facts_for(tb_cfg->active_config().parking_side);
+    };
+    const auto current_start_parking_facts = [&tb_cfg, physical_limit_facts_for]() {
+        const auto pending = tb_cfg->pending_config();
+        const auto parking_side =
+            pending ? pending->parking_side : tb_cfg->active_config().parking_side;
+        return physical_limit_facts_for(parking_side);
+    };
     tb_control->subscribe_shared_attributes();
     // 在 connect() 前完成 shared attributes / RPC 注册，避免首个云端下行消息丢失。
     tb_control->register_rpc_handlers(
-        [&rear_switch, &rear_open_ok]() {
-            return rear_open_ok && !rear_switch->read_current_level();
+        [current_start_parking_facts]() {
+            return current_start_parking_facts().at_parking_side;
         },
-        [&front_switch, &front_open_ok]() {
-            return front_open_ok && !front_switch->read_current_level();
+        [current_start_parking_facts]() {
+            return current_start_parking_facts().at_far_end;
+        },
+        [current_active_parking_facts]() {
+            return current_active_parking_facts().at_parking_side;
         });
 
     net_mgr->connect();
@@ -385,22 +401,27 @@ int main() {
     // SafetyMonitor::monitor_loop (SCHED_FIFO 94) 在急停后延迟 180ms 发布此事件。
     // 回调在 monitor_loop 线程上执行，必须极短（不阻塞，不持锁调 I/O）。
     event_bus.subscribe<robot::middleware::SafetyMonitor::LimitSettledEvent>(
-        [&fsm, &log](const robot::middleware::SafetyMonitor::LimitSettledEvent& evt) {
-            if (evt.side == robot::device::LimitSide::FRONT) {
-                log->info("[Limit] 前端防抖完成，调度 EvFrontLimitSettled");
-                fsm->dispatch(robot::app::EvFrontLimitSettled{});
+        [&fsm, &log, &tb_cfg](const robot::middleware::SafetyMonitor::LimitSettledEvent& evt) {
+            const bool parking_left =
+                tb_cfg->active_config().parking_side == robot::service::ParkingSide::Left;
+            const bool parking_side_hit =
+                (parking_left && evt.side == robot::device::LimitSide::LEFT) ||
+                (!parking_left && evt.side == robot::device::LimitSide::RIGHT);
+
+            if (parking_side_hit) {
+                log->info("[Limit] 停机侧防抖完成，调度 EvParkingSideLimitSettled");
+                fsm->dispatch(robot::app::EvParkingSideLimitSettled{});
             } else {
-                log->info("[Limit] 尾端防抖完成，调度 EvRearLimitSettled");
-                fsm->dispatch(robot::app::EvRearLimitSettled{});
+                log->info("[Limit] 对侧防抖完成，调度 EvFarEndLimitSettled");
+                fsm->dispatch(robot::app::EvFarEndLimitSettled{});
             }
         });
 
     // ── 调度服务：定时触发清扫任务（读取 config.json 的 scheduler.windows） ─────
     scheduler.set_on_window_hit(
-        [&rear_switch, &front_switch, &rear_open_ok, &front_open_ok, &log, &supervisor]() {
-            const bool at_home = rear_open_ok && !rear_switch->read_current_level();
-            const bool at_front = front_open_ok && !front_switch->read_current_level();
-            if (!supervisor->start_scheduled_task(at_home, at_front)) {
+        [current_start_parking_facts, &log, &supervisor]() {
+            const auto facts = current_start_parking_facts();
+            if (!supervisor->start_task(facts.at_parking_side)) {
                 log->warn("[Main] 调度启动被拒绝");
             }
         });
@@ -458,7 +479,7 @@ int main() {
     //   CPU 4-7: Cortex-A76 (BIG 核)     → RT 任务专用
     //
     // 线程绑定策略（与 safety_monitor/gpio 线程配合，不竞争同一核心）：
-    //   CPU 4: gpio_front/rear(95) + safety_monitor(94)  → GPIO 边沿优先，轮询兜底
+    //   CPU 4: gpio_left/right(95) + safety_monitor(94)  → GPIO 边沿优先，轮询兜底
     //   CPU 5: group_recv(82) + walk_ctrl(80)            → 先接收后控制，降低读旧数据概率
     //   CPU 6: nav(65) + imu_read(68)                    → 导航路径，专用核
     //   CPU 7: watchdog(50) + main(SCHED_OTHER)          → 管理任务
@@ -522,8 +543,13 @@ int main() {
         // 调度器 tick：切换到从 SCHED_OTHER 主循环调用，精度 100ms（调度窪口最小误微差 1min）
         scheduler.tick();
 
+        const std::string current_state = supervisor->current_state();
+        const bool active_task_state = current_state == "CleanFwd" ||
+                                       current_state == "CleanReturn" ||
+                                       current_state == "Returning" ||
+                                       current_state == "Paused";
         const int desired_report_period =
-            supervisor->desired_cloud_period_ms(active_report_period, idle_report_period);
+            active_task_state ? active_report_period : idle_report_period;
         if (cloud_exec.period_ms() != desired_report_period) {
             cloud_exec.set_period_ms(desired_report_period);
         }

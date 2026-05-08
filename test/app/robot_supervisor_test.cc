@@ -93,7 +93,8 @@ struct SupervisorFixture {
     "passes": 1.0,
     "clean_speed_rpm": 300.0,
     "return_speed_rpm": 280.0,
-    "brush_rpm": 1000
+    "brush_rpm": 1000,
+    "parking_side": "left"
   },
   "scheduler": {
     "windows": [
@@ -136,10 +137,10 @@ struct SupervisorFixture {
 
 }  // namespace
 
-TEST_CASE("RobotSupervisor rejects schedule start when robot is not at home",
+TEST_CASE("RobotSupervisor rejects schedule start when robot is not at parking side",
           "[app][robot_supervisor]") {
     SupervisorFixture f;
-    REQUIRE_FALSE(f.supervisor->start_scheduled_task(false, false));
+    REQUIRE_FALSE(f.supervisor->start_task(false));
     REQUIRE(f.fsm->current_state() == "Idle");
 }
 
@@ -148,31 +149,31 @@ TEST_CASE("RobotSupervisor promotes pending config before scheduled task start",
     SupervisorFixture f;
     f.apply_pending_config_with_passes(3);
 
-    REQUIRE(f.supervisor->start_scheduled_task(true, false));
+    REQUIRE(f.supervisor->start_task(true));
     REQUIRE(f.fsm->current_state() == "CleanFwd");
     REQUIRE(f.tb_cfg->active_config().passes == Approx(3));
 }
 
-TEST_CASE("RobotSupervisor rejects manual start from idle when robot is not at home",
+TEST_CASE("RobotSupervisor rejects manual start from idle when robot is not at parking side",
           "[app][robot_supervisor]") {
     SupervisorFixture f;
-    REQUIRE_FALSE(f.supervisor->start_manual_task(false, false));
+    REQUIRE_FALSE(f.supervisor->start_task(false));
     REQUIRE(f.fsm->current_state() == "Idle");
 }
 
-TEST_CASE("RobotSupervisor starts manual task from charging when robot is at home",
+TEST_CASE("RobotSupervisor starts manual task from charging when robot is at parking side",
           "[app][robot_supervisor]") {
     SupervisorFixture f;
     f.fsm->dispatch(EvScheduleStart{true, false, 1.0f});
-    f.fsm->dispatch(EvFrontLimitSettled{});
-    f.fsm->dispatch(EvRearLimitSettled{});
+    f.fsm->dispatch(EvFarEndLimitSettled{});
+    f.fsm->dispatch(EvParkingSideLimitSettled{});
     REQUIRE(f.fsm->current_state() == "Charging");
 
-    REQUIRE(f.supervisor->start_manual_task(true, false));
+    REQUIRE(f.supervisor->start_task(true));
     REQUIRE(f.fsm->current_state() == "CleanFwd");
 }
 
-TEST_CASE("RobotSupervisor resumes paused task without requiring home position",
+TEST_CASE("RobotSupervisor resumes paused task without requiring parking-side position",
           "[app][robot_supervisor]") {
     SupervisorFixture f;
     f.fsm->dispatch(EvScheduleStart{true, false, 2.0f});
@@ -186,7 +187,7 @@ TEST_CASE("RobotSupervisor reports active cadence for running states",
           "[app][robot_supervisor]") {
     SupervisorFixture f;
     f.fsm->dispatch(EvScheduleStart{true, false, 2.0f});
-    REQUIRE(f.supervisor->desired_cloud_period_ms(1000, 300000) == 1000);
+    REQUIRE(f.supervisor->current_state() == "CleanFwd");
 }
 
 TEST_CASE("RobotSupervisor pauses only from cleaning states", "[app][robot_supervisor]") {
@@ -234,7 +235,7 @@ TEST_CASE("RobotSupervisor terminates active tasks and returning state",
     }
 }
 
-TEST_CASE("RobotSupervisor resets only from fault or terminated at home",
+TEST_CASE("RobotSupervisor resets only from fault or terminated at parking side",
           "[app][robot_supervisor]") {
     SECTION("reject reset outside faulted states") {
         SupervisorFixture f;
@@ -242,7 +243,7 @@ TEST_CASE("RobotSupervisor resets only from fault or terminated at home",
         REQUIRE(f.fsm->current_state() == "Idle");
     }
 
-    SECTION("reset fault state at home") {
+    SECTION("reset fault state at parking side") {
         SupervisorFixture f;
         f.fsm->dispatch(EvScheduleStart{true, false, 1.0f});
         f.fsm->dispatch(EvFaultP0{});
@@ -252,7 +253,7 @@ TEST_CASE("RobotSupervisor resets only from fault or terminated at home",
         REQUIRE(f.fsm->current_state() == "Idle");
     }
 
-    SECTION("reject reset when not at home") {
+    SECTION("reject reset when not at parking side") {
         SupervisorFixture f;
         f.fsm->dispatch(EvScheduleStart{true, false, 1.0f});
         f.fsm->dispatch(EvTerminateTask{});
@@ -296,13 +297,13 @@ TEST_CASE("RobotSupervisor snapshot reflects active task progress",
           "[app][robot_supervisor]") {
     SupervisorFixture f;
     f.fsm->dispatch(EvScheduleStart{true, false, 2.0f});
-    f.fsm->dispatch(EvFrontLimitSettled{});
+    f.fsm->dispatch(EvFarEndLimitSettled{});
 
     const auto snap = f.supervisor->snapshot();
     REQUIRE(snap.device_state == "CleanReturn");
     REQUIRE(snap.task_state == "RunningTask");
-    REQUIRE(snap.target_half_passes == 4);
-    REQUIRE(snap.completed_half_passes == 1);
+    REQUIRE(snap.target_passes == 2);
+    REQUIRE(snap.completed_passes == 0);
     REQUIRE(snap.clean_count == 0);
 }
 
@@ -324,28 +325,15 @@ TEST_CASE("RobotSupervisor snapshot includes config and command visibility",
     REQUIRE(snap.last_command->reason == "started_new_task");
 }
 
-TEST_CASE("RobotSupervisor active config version changes with parking and charging fields",
+TEST_CASE("RobotSupervisor active config version changes with parking side field",
           "[app][robot_supervisor]") {
-    SECTION("parking_policy changes active config version") {
+    SECTION("parking_side changes active config version") {
         SupervisorFixture f;
         const auto before = f.supervisor->snapshot().active_config_version;
 
-        auto attrs = parse_json(R"({"parking_policy":"terminal_b_only"})");
+        auto attrs = parse_json(R"({"parking_side":"right"})");
         f.apply_pending_runtime_attrs(attrs);
-        REQUIRE(f.supervisor->start_scheduled_task(true, false));
-
-        const auto after = f.supervisor->snapshot().active_config_version;
-        REQUIRE(after != 0);
-        REQUIRE(after != before);
-    }
-
-    SECTION("charging_side changes active config version") {
-        SupervisorFixture f;
-        const auto before = f.supervisor->snapshot().active_config_version;
-
-        auto attrs = parse_json(R"({"charging_side":"terminal_b"})");
-        f.apply_pending_runtime_attrs(attrs);
-        REQUIRE(f.supervisor->start_scheduled_task(true, false));
+        REQUIRE(f.supervisor->start_task(true));
 
         const auto after = f.supervisor->snapshot().active_config_version;
         REQUIRE(after != 0);

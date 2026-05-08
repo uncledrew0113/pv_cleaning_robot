@@ -13,7 +13,7 @@
  *   GPSD     : 127.0.0.1:2947（默认），由目标机 gpsd 服务提供 TCP JSON 数据
  *   BMS      : /dev/ttyS8（默认），嘉佰达通用协议 V4，9600 baud
  *   距离传感器: /dev/ttyS9（默认），RS485 Modbus RTU，9600 baud
- *   GPIO     : gpiochip5 line0=前限位，line1=后限位（默认）
+ *   GPIO     : gpiochip5 line0=左限位，line1=右限位（默认）
  */
 #include <atomic>
 #include <chrono>
@@ -59,6 +59,7 @@
 
 // App
 #include "pv_cleaning_robot/app/fault_handler.h"
+#include "pv_cleaning_robot/app/parking_side_runtime.h"
 #include "pv_cleaning_robot/app/robot_fsm.h"
 #include "pv_cleaning_robot/app/robot_supervisor.h"
 #include "pv_cleaning_robot/app/watchdog_mgr.h"
@@ -92,8 +93,8 @@ struct HwParams {
     uint8_t dist_slave_id = 1u;
     uint8_t dist_channel_count = 2u;
     std::string gpio_chip = "gpiochip5";
-    unsigned front_limit_line = 0u;
-    unsigned rear_limit_line = 1u;
+    unsigned left_limit_line = 0u;
+    unsigned right_limit_line = 1u;
     // timing
     int limit_timeout_sec = 60;   ///< 每段（单一限位）等待最大秒数
     int online_timeout_ms = 600;  ///< 等待电机上线最大毫秒数
@@ -170,10 +171,10 @@ inline HwParams load_hw_test_config() {
         p.dist_channel_count = static_cast<uint8_t>(
             cfg.get<int>("hardware.dist_channel_count", (int)p.dist_channel_count));
         p.gpio_chip = cfg.get<std::string>("hardware.gpio_chip", p.gpio_chip);
-        p.front_limit_line = static_cast<unsigned>(
-            cfg.get<int>("hardware.front_limit_line", (int)p.front_limit_line));
-        p.rear_limit_line =
-            static_cast<unsigned>(cfg.get<int>("hardware.rear_limit_line", (int)p.rear_limit_line));
+        p.left_limit_line = static_cast<unsigned>(
+            cfg.get<int>("hardware.left_limit_line", (int)p.left_limit_line));
+        p.right_limit_line =
+            static_cast<unsigned>(cfg.get<int>("hardware.right_limit_line", (int)p.right_limit_line));
         p.limit_timeout_sec = cfg.get<int>("timing.limit_timeout_sec", p.limit_timeout_sec);
         p.online_timeout_ms = cfg.get<int>("timing.online_timeout_ms", p.online_timeout_ms);
         p.sweep_duration_ms = cfg.get<int>("timing.sweep_duration_ms", p.sweep_duration_ms);
@@ -267,6 +268,7 @@ inline robot::middleware::MqttTransport::Config build_tb_mqtt_config(
     mqtt_cfg.keep_alive_sec = cfg.get<int>("network.mqtt.keep_alive_s", 60);
     mqtt_cfg.connect_timeout_sec = cfg.get<int>("network.mqtt.connect_timeout_s", 10);
     mqtt_cfg.qos = cfg.get<int>("network.mqtt.qos", 1);
+    mqtt_cfg.client_id += "_hw_tb_itest";
     return mqtt_cfg;
 }
 
@@ -279,10 +281,10 @@ struct DeviceFixture {
     std::shared_ptr<robot::device::ImuDevice> imu;
     std::shared_ptr<robot::driver::LibSerialPort> bms_serial;
     std::shared_ptr<robot::device::BMS> bms;
-    std::shared_ptr<robot::driver::LibGpiodPin> front_gpio;
-    std::shared_ptr<robot::driver::LibGpiodPin> rear_gpio;
-    std::shared_ptr<robot::device::LimitSwitch> front_sw;
-    std::shared_ptr<robot::device::LimitSwitch> rear_sw;
+    std::shared_ptr<robot::driver::LibGpiodPin> left_gpio;
+    std::shared_ptr<robot::driver::LibGpiodPin> right_gpio;
+    std::shared_ptr<robot::device::LimitSwitch> left_sw;
+    std::shared_ptr<robot::device::LimitSwitch> right_sw;
 
     DeviceFixture() : p(load_hw_test_config()) {
         using namespace robot;
@@ -300,17 +302,17 @@ struct DeviceFixture {
         bms_serial =
             std::make_shared<driver::LibSerialPort>(p.bms_port, hal::UartConfig{p.bms_baud});
         bms = std::make_shared<device::BMS>(bms_serial, 95.0f, 15.0f);
-        front_gpio = std::make_shared<driver::LibGpiodPin>(p.gpio_chip, p.front_limit_line);
-        rear_gpio = std::make_shared<driver::LibGpiodPin>(p.gpio_chip, p.rear_limit_line);
-        front_sw = std::make_shared<device::LimitSwitch>(front_gpio, device::LimitSide::FRONT);
-        rear_sw = std::make_shared<device::LimitSwitch>(rear_gpio, device::LimitSide::REAR);
+        left_gpio = std::make_shared<driver::LibGpiodPin>(p.gpio_chip, p.left_limit_line);
+        right_gpio = std::make_shared<driver::LibGpiodPin>(p.gpio_chip, p.right_limit_line);
+        left_sw = std::make_shared<device::LimitSwitch>(left_gpio, device::LimitSide::LEFT);
+        right_sw = std::make_shared<device::LimitSwitch>(right_gpio, device::LimitSide::RIGHT);
     }
 
     ~DeviceFixture() {
-        if (front_sw)
-            front_sw->close();
-        if (rear_sw)
-            rear_sw->close();
+        if (left_sw)
+            left_sw->close();
+        if (right_sw)
+            right_sw->close();
         if (imu)
             imu->close();
         if (walk_group) {
@@ -348,7 +350,7 @@ struct FullSystemFixture : DeviceFixture {
 
         // SafetyMonitor 构造时内部绑定 LimitSwitch 回调
         safety =
-            std::make_unique<middleware::SafetyMonitor>(walk_group, front_sw, rear_sw, event_bus);
+            std::make_unique<middleware::SafetyMonitor>(walk_group, left_sw, right_sw, event_bus);
 
         robot::device::GpsdSourceConfig gpsd_cfg;
         gpsd_cfg.host = p.gpsd_host;
@@ -385,10 +387,10 @@ struct FullSystemFixture : DeviceFixture {
         // SafetyMonitor LimitSettledEvent → RobotFsm
         event_bus.subscribe<middleware::SafetyMonitor::LimitSettledEvent>(
             [this](const middleware::SafetyMonitor::LimitSettledEvent& evt) {
-                if (evt.side == device::LimitSide::FRONT)
-                    fsm->dispatch(app::EvFrontLimitSettled{});
+                if (evt.side == device::LimitSide::LEFT)
+                    fsm->dispatch(app::EvFarEndLimitSettled{});
                 else
-                    fsm->dispatch(app::EvRearLimitSettled{});
+                    fsm->dispatch(app::EvParkingSideLimitSettled{});
             });
 
         // FaultHandler: P0→emergency_stop+EvFaultP0，P1→stop+EvFaultP1；同时记录 dispatched_faults
@@ -424,10 +426,10 @@ struct FullSystemFixture : DeviceFixture {
             spdlog::warn("[FullSystemFixture] GPS(gpsd) open 失败（非致命）");
 
         // 限位开关：gpiochip5 不支持 IRQ，使用 1ms 软件轮询；测试中不设 RT 优先级，无 CPU 绑定
-        if (!front_sw->open(0, 2, 0, false))
-            spdlog::warn("[FullSystemFixture] front_sw open 失败");
-        if (!rear_sw->open(0, 2, 0, false))
-            spdlog::warn("[FullSystemFixture] rear_sw open 失败");
+        if (!left_sw->open(0, 2, 0, false))
+            spdlog::warn("[FullSystemFixture] left_sw open 失败");
+        if (!right_sw->open(0, 2, 0, false))
+            spdlog::warn("[FullSystemFixture] right_sw open 失败");
 
         if (!safety->start()) {
             spdlog::error("[FullSystemFixture] safety monitor start 失败");
@@ -638,12 +640,30 @@ struct ThingsBoardRuntimeFixture : FullSystemFixture {
         : FullSystemFixture(false)
     {}
 
-    bool is_at_home() const {
-        return rear_sw && !rear_sw->read_current_level();
+    bool right_limit_active() const {
+        return right_sw && !right_sw->read_current_level();
     }
 
-    bool is_at_front() const {
-        return front_sw && !front_sw->read_current_level();
+    bool left_limit_active() const {
+        return left_sw && !left_sw->read_current_level();
+    }
+
+    robot::app::ParkingSideFacts parking_facts() const {
+        const bool left_sensor_active = left_limit_active();
+        const bool right_sensor_active = right_limit_active();
+        return robot::app::ParkingSideRuntime::from_physical_limits(
+            tb_cfg ? tb_cfg->active_config().parking_side
+                   : robot::service::ParkingSide::Left,
+            left_sensor_active,
+            right_sensor_active);
+    }
+
+    bool is_at_parking_side() const {
+        return parking_facts().at_parking_side;
+    }
+
+    bool is_at_far_end() const {
+        return parking_facts().at_far_end;
     }
 
     bool init_thingsboard_runtime(const std::string& health_jsonl_path = "") {
@@ -692,7 +712,9 @@ struct ThingsBoardRuntimeFixture : FullSystemFixture {
 
         tb_control->subscribe_shared_attributes();
         tb_control->register_rpc_handlers(
-            [this] { return is_at_home(); }, [this] { return is_at_front(); });
+            [this] { return is_at_parking_side(); },
+            [this] { return is_at_far_end(); },
+            [this] { return is_at_parking_side(); });
 
         if (!net_mgr->connect()) {
             return false;
