@@ -23,8 +23,10 @@
  *   ./hw_tests "[hw_system][pid_combined]"
  */
 #include <atomic>
+#include <algorithm>
 #include <catch2/catch.hpp>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <fstream>
 #include <rapidjson/document.h>
@@ -186,6 +188,197 @@ std::string build_final_summary_json(int total_segs,
     writer.Double(deadband_rate_dps);
     writer.EndObject();
     return {buffer.GetString(), buffer.GetSize()};
+}
+
+void run_combined_system_test(hw::FullSystemFixture& f,
+                              const char* tag,
+                              bool expect_real_brush) {
+    const int passes_int = static_cast<int>(f.p.combined_passes);
+    const double passes_half = f.p.combined_passes * 2.0;
+    spdlog::warn("[{}] ====================================", tag);
+    spdlog::warn("[{}] ⚠ 机器人将运动 {:.1f} 趟（{} 段）！",
+                 tag,
+                 f.p.combined_passes,
+                 static_cast<int>(passes_half));
+    spdlog::warn("[{}] 全程持续记录健康数据到: {}", tag, f.p.health_jsonl_path);
+    spdlog::warn("[{}] 本地日志轮转: max_bytes={} max_files={}",
+                 tag,
+                 f.p.health_log_max_bytes,
+                 f.p.health_log_max_files);
+    spdlog::warn("[{}] 每段限位超时: {}s（触发后重置）", tag, f.p.limit_timeout_sec);
+    if (expect_real_brush) {
+        spdlog::warn("[{}] 真实滚刷已接入: port={} axis={} test_rpm={}",
+                     tag,
+                     f.p.brush_port,
+                     static_cast<int>(f.p.brush_axis),
+                     f.p.brush_test_rpm);
+    }
+    spdlog::warn("[{}] 请确保：导轨就位，轨道无人员/障碍物", tag);
+    spdlog::warn("[{}] ====================================", tag);
+    (void)passes_int;
+    REQUIRE(f.init(f.p.health_jsonl_path));
+    REQUIRE(f.health != nullptr);
+
+    std::atomic<bool> wd_timeout{false};
+    f.watchdog->set_timeout_callback([&](const std::string& n) {
+        spdlog::error("[{}] 看门狗超时: {}", tag, n);
+        wd_timeout.store(true);
+    });
+    const int wd_tid = f.watchdog->register_thread(tag, f.p.limit_timeout_sec * 2 * 1000);
+    REQUIRE(wd_tid >= 0);
+
+    const uint32_t frames_before = f.walk_group->get_group_diagnostics().ctrl_frame_count;
+    int total_health_records = 0;
+    int max_abs_brush_rpm = 0;
+    int brush_fault_samples = 0;
+
+    auto poll_once = [&]() {
+        f.bms->update();
+        f.health->update();
+        f.watchdog->heartbeat(wd_tid);
+        ++total_health_records;
+        auto gd = f.walk_group->get_group_diagnostics();
+        auto ld = f.imu->get_latest();
+        const auto brush_diag = f.brush->get_diagnostics();
+        max_abs_brush_rpm = std::max(max_abs_brush_rpm, std::abs(brush_diag.actual_rpm));
+        if (brush_diag.fault) {
+            ++brush_fault_samples;
+        }
+        spdlog::info(
+            "[{}] #{}: LT={:.1f} RT={:.1f} LB={:.1f} RB={:.1f} walk_rpm brush_rpm={} "
+            "brush_fault={} yaw={:.2f}° state={}",
+            tag,
+            total_health_records,
+            gd.wheel[0].speed_rpm,
+            gd.wheel[1].speed_rpm,
+            gd.wheel[2].speed_rpm,
+            gd.wheel[3].speed_rpm,
+            brush_diag.actual_rpm,
+            brush_diag.fault,
+            ld.yaw_deg,
+            f.fsm->current_state());
+    };
+
+    auto wait_transition = [&](const std::string& from) -> std::string {
+        using clock = std::chrono::steady_clock;
+        auto deadline = clock::now() + std::chrono::seconds(f.p.limit_timeout_sec);
+        while (clock::now() < deadline) {
+            std::string curr = f.fsm->current_state();
+            if (curr != from)
+                return curr;
+            poll_once();
+            std::this_thread::sleep_for(5ms);
+        }
+        return from;
+    };
+
+    f.fsm->dispatch(start_from_parking_side(f.p.combined_passes));
+    REQUIRE(f.fsm->current_state() == "CleanFwd");
+
+    std::string state = "CleanFwd";
+    int seg_idx = 0;
+
+    while (state != "Charging") {
+        ++seg_idx;
+        const bool going_fwd = (state == "CleanFwd");
+        spdlog::warn("[{}] 段 {}: {} → 等待{}限位（最多 {}s）...",
+                     tag,
+                     seg_idx,
+                     state,
+                     going_fwd ? "【前端】" : "【尾端】",
+                     f.p.limit_timeout_sec);
+
+        std::string next = wait_transition(state);
+
+        if (next == state) {
+            spdlog::error("[{}] 段 {} 超时 {}s，当前状态仍为 {}",
+                          tag,
+                          seg_idx,
+                          f.p.limit_timeout_sec,
+                          state);
+            INFO("限位等待超时，请检查导轨/传感器接线");
+            REQUIRE(next != state);
+            break;
+        }
+
+        spdlog::info("[{}] ✓ 段 {} 完成：{} → {}（已采集 {} 条）",
+                     tag,
+                     seg_idx,
+                     state,
+                     next,
+                     total_health_records);
+        poll_once();
+        state = next;
+    }
+
+    {
+        INFO("任务未能到达 Charging 状态");
+        REQUIRE(state == "Charging");
+    }
+    spdlog::info("[{}] ✓ 全部 {} 段完成，总采集 {} 条", tag, seg_idx, total_health_records);
+
+    CHECK(!wd_timeout.load());
+
+    const uint32_t frames_after = f.walk_group->get_group_diagnostics().ctrl_frame_count;
+    spdlog::info("[{}] CAN 帧: {} → {} (增量={})",
+                 tag,
+                 frames_before,
+                 frames_after,
+                 frames_after - frames_before);
+    CHECK(frames_after > frames_before + 10u * static_cast<uint32_t>(passes_half));
+    CHECK(f.dispatched_faults.empty());
+
+    if (expect_real_brush) {
+        spdlog::info("[{}] 真实滚刷统计: max_abs_brush_rpm={} fault_samples={}",
+                     tag,
+                     max_abs_brush_rpm,
+                     brush_fault_samples);
+        CHECK(max_abs_brush_rpm >= 50);
+        CHECK(brush_fault_samples == 0);
+    }
+
+    REQUIRE(std::filesystem::exists(f.p.health_jsonl_path));
+    {
+        const auto health_files = collect_rotated_health_logs(f.p.health_jsonl_path);
+        REQUIRE_FALSE(health_files.empty());
+
+        int total_retained_lines = 0;
+        for (const auto& path : health_files) {
+            std::ifstream ifs(path);
+            REQUIRE(ifs.is_open());
+
+            std::string line;
+            while (std::getline(ifs, line)) {
+                if (line.empty()) {
+                    continue;
+                }
+                ++total_retained_lines;
+                auto j = parse_json_line(line);
+                REQUIRE(j.HasMember("ts"));
+                REQUIRE(j.HasMember("walk"));
+                REQUIRE(j.HasMember("bms"));
+                REQUIRE(j.HasMember("imu"));
+                CHECK(!std::string(j["ts"].GetString()).empty());
+            }
+        }
+
+        CHECK(total_retained_lines > 0);
+        CHECK(total_retained_lines <= total_health_records);
+        spdlog::info("[{}] 保留健康日志 {} 个文件，共 {} 行，主路径: {}",
+                     tag,
+                     health_files.size(),
+                     total_retained_lines,
+                     f.p.health_jsonl_path);
+    }
+
+    auto ld = f.imu->get_latest();
+    spdlog::info("[{}] 末帧 IMU: valid={} pitch={:.2f}° roll={:.2f}° yaw={:.2f}°",
+                 tag,
+                 ld.valid,
+                 ld.pitch_deg,
+                 ld.roll_deg,
+                 ld.yaw_deg);
+    spdlog::info("[{}] PASS — 健康数据已保存至 {}", tag, f.p.health_jsonl_path);
 }
 
 }  // namespace
@@ -734,178 +927,16 @@ TEST_CASE("System（真实硬件）N=1 完整任务链（真实限位触发）",
 // ────────────────────────────────────────────────────────────────────────────
 TEST_CASE("System（真实硬件）N 趟完整任务链 + 全程持续采集健康数据", "[hw_system][combined]") {
     hw::FullSystemFixture f;
-    const int passes_int = static_cast<int>(f.p.combined_passes);
-    const double passes_half = f.p.combined_passes * 2.0;
-    spdlog::warn("[hw_system][combined] ====================================");
-    spdlog::warn("[hw_system][combined] ⚠ 机器人将运动 {:.1f} 趟（{} 段）！",
-                 f.p.combined_passes,
-                 static_cast<int>(passes_half));
-    spdlog::warn("[hw_system][combined] 全程持续记录健康数据到: {}", f.p.health_jsonl_path);
-    spdlog::warn("[hw_system][combined] 本地日志轮转: max_bytes={} max_files={}",
-                 f.p.health_log_max_bytes,
-                 f.p.health_log_max_files);
-    spdlog::warn("[hw_system][combined] 每段限位超时: {}s（触发后重置）", f.p.limit_timeout_sec);
-    spdlog::warn("[hw_system][combined] 请确保：导轨就位，轨道无人员/障碍物");
-    spdlog::warn("[hw_system][combined] ====================================");
-    (void)passes_int;
-    REQUIRE(f.init(f.p.health_jsonl_path));
-    REQUIRE(f.health != nullptr);
+    run_combined_system_test(f, "hw_system][combined", false);
+}
 
-    // 注册看门狗（超时 = kLimitTimeoutSec * 2，每次 poll 喂狗）
-    std::atomic<bool> wd_timeout{false};
-    f.watchdog->set_timeout_callback([&](const std::string& n) {
-        spdlog::error("[hw_system][combined] 看门狗超时: {}", n);
-        wd_timeout.store(true);
-    });
-    const int wd_tid = f.watchdog->register_thread("hw_combined", f.p.limit_timeout_sec * 2 * 1000);
-    REQUIRE(wd_tid >= 0);
-
-    const uint32_t frames_before = f.walk_group->get_group_diagnostics().ctrl_frame_count;
-    int total_health_records = 0;
-
-    // 每次调用：刷新 BMS + 写 JSONL + 喂狗 + 打印当前状态
-    auto poll_once = [&]() {
-        f.bms->update();
-        f.health->update();
-        f.watchdog->heartbeat(wd_tid);
-        ++total_health_records;
-        auto gd = f.walk_group->get_group_diagnostics();
-        auto ld = f.imu->get_latest();
-        spdlog::info(
-            "[hw_system][combined] #{}: LT={:.1f} RT={:.1f} LB={:.1f} RB={:.1f} rpm "
-            "yaw={:.2f}° state={}",
-            total_health_records,
-            gd.wheel[0].speed_rpm,
-            gd.wheel[1].speed_rpm,
-            gd.wheel[2].speed_rpm,
-            gd.wheel[3].speed_rpm,
-            ld.yaw_deg,
-            f.fsm->current_state());
-    };
-
-    // ── 等待函数：从 from 状态等待切换到任意其他状态（每段独立 60s 超时）──
-    // 返回切换后的新状态；若超时返回 from（未变）
-    auto wait_transition = [&](const std::string& from) -> std::string {
-        using clock = std::chrono::steady_clock;
-        auto deadline = clock::now() + std::chrono::seconds(f.p.limit_timeout_sec);
-        while (clock::now() < deadline) {
-            std::string curr = f.fsm->current_state();
-            if (curr != from)
-                return curr;
-            poll_once();
-            std::this_thread::sleep_for(5ms);
-        }
-        return from;  // 超时：状态未变
-    };
-
-    // ── 启动任务，进入 CleanFwd ─────────────────────────────────────────────
-    f.fsm->dispatch(start_from_parking_side(f.p.combined_passes));
-    REQUIRE(f.fsm->current_state() == "CleanFwd");
-
-    // ── 逐段等待，每触发一次限位重置 60s 计时 ──────────────────────────────
-    std::string state = "CleanFwd";
-    int seg_idx = 0;
-
-    while (state != "Charging") {
-        ++seg_idx;
-        const bool going_fwd = (state == "CleanFwd");
-        spdlog::warn("[hw_system][combined] 段 {}: {} → 等待{}限位（最多 {}s）...",
-                     seg_idx,
-                     state,
-                     going_fwd ? "【前端】" : "【尾端】",
-                     f.p.limit_timeout_sec);
-
-        std::string next = wait_transition(state);
-
-        if (next == state) {
-            // 超时，限位未触发
-            spdlog::error("[hw_system][combined] 段 {} 超时 {}s，当前状态仍为 {}",
-                          seg_idx,
-                          f.p.limit_timeout_sec,
-                          state);
-            INFO("限位等待超时，请检查导轨/传感器接线");
-            REQUIRE(next != state);  // 明确失败
-            break;
-        }
-
-        spdlog::info("[hw_system][combined] ✓ 段 {} 完成：{} → {}（已采集 {} 条）",
-                     seg_idx,
-                     state,
-                     next,
-                     total_health_records);
-        poll_once();  // 在状态切换点额外采集一条
-        state = next;
-    }
-
-    // ── 任务完成断言 ────────────────────────────────────────────────────────
-    {
-        INFO("任务未能到达 Charging 状态");
-        REQUIRE(state == "Charging");
-    }
-    spdlog::info(
-        "[hw_system][combined] ✓ 全部 {} 段完成，总采集 {} 条", seg_idx, total_health_records);
-
-    // 看门狗全程无超时
-    CHECK(!wd_timeout.load());
-
-    // CAN 控制帧增加（MotionService 全程在发帧）
-    const uint32_t frames_after = f.walk_group->get_group_diagnostics().ctrl_frame_count;
-    spdlog::info("[hw_system][combined] CAN 帧: {} → {} (增量={})",
-                 frames_before,
-                 frames_after,
-                 frames_after - frames_before);
-    CHECK(frames_after > frames_before + 10u * static_cast<uint32_t>(passes_half));
-
-    // 无故障
-    CHECK(f.dispatched_faults.empty());
-
-    // 本地健康日志存在；若启用了轮转，则允许出现 base + .1/.2...
-    REQUIRE(std::filesystem::exists(f.p.health_jsonl_path));
-    {
-        const auto health_files = collect_rotated_health_logs(f.p.health_jsonl_path);
-        REQUIRE_FALSE(health_files.empty());
-
-        int total_retained_lines = 0;
-        for (const auto& path : health_files) {
-            std::ifstream ifs(path);
-            REQUIRE(ifs.is_open());
-
-            std::string line;
-            while (std::getline(ifs, line)) {
-                if (line.empty()) {
-                    continue;
-                }
-                ++total_retained_lines;
-                auto j = parse_json_line(line);
-                REQUIRE(j.HasMember("ts"));  // 时间戳
-                REQUIRE(j.HasMember("walk"));
-                REQUIRE(j.HasMember("bms"));
-                REQUIRE(j.HasMember("imu"));
-                CHECK(!std::string(j["ts"].GetString()).empty());
-            }
-        }
-
-        // 未发生轮转时，保留行数应等于本次采样条数。
-        // 发生轮转时，只要求保留文件中仍有合法 JSONL 记录。
-        CHECK(total_retained_lines > 0);
-        CHECK(total_retained_lines <= total_health_records);
-        spdlog::info(
-            "[hw_system][combined] 保留健康日志 {} 个文件，共 {} 行，主路径: {}",
-            health_files.size(),
-            total_retained_lines,
-            f.p.health_jsonl_path);
-    }
-
-    // IMU 末帧（仅记录）
-    auto ld = f.imu->get_latest();
-    spdlog::info("[hw_system][combined] 末帧 IMU: valid={} pitch={:.2f}° roll={:.2f}° yaw={:.2f}°",
-                 ld.valid,
-                 ld.pitch_deg,
-                 ld.roll_deg,
-                 ld.yaw_deg);
-
-    // ⚠ 不删除 JSONL，供事后分析
-    spdlog::info("[hw_system][combined] PASS — 健康数据已保存至 {}", f.p.health_jsonl_path);
+// ────────────────────────────────────────────────────────────────────────────
+// [hw_system][combined_brush_real] — 全系统联合启动 + 真实滚刷
+// ────────────────────────────────────────────────────────────────────────────
+TEST_CASE("System（真实硬件）N 趟完整任务链 + 真实滚刷 + 全程持续采集健康数据",
+          "[hw_system][combined_brush_real]") {
+    hw::FullSystemFixture f(false, true);
+    run_combined_system_test(f, "hw_system][combined_brush_real", true);
 }
 
 // ────────────────────────────────────────────────────────────────────────────

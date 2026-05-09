@@ -116,7 +116,7 @@ TEST_CASE("MotionService start_cleaning switches brush to speed mode and sets rp
 
     const auto tx = f.serial->take_tx_text();
     REQUIRE(tx.find("w axis0.controller.config.control_mode 2\n") != std::string::npos);
-    REQUIRE(tx.find("v 0 163840.000 0\n") != std::string::npos);
+    REQUIRE(tx.find("v 0 20.000 0\n") != std::string::npos);
 }
 
 TEST_CASE("MotionService start_cleaning flips brush direction for left parking side",
@@ -128,7 +128,7 @@ TEST_CASE("MotionService start_cleaning flips brush direction for left parking s
     f.motion.start_cleaning();
 
     const auto tx = f.serial->take_tx_text();
-    REQUIRE(tx.find("v 0 -163840.000 0\n") != std::string::npos);
+    REQUIRE(tx.find("v 0 -20.000 0\n") != std::string::npos);
 }
 
 TEST_CASE("MotionService stop_cleaning commands brush stop", "[service][motion]") {
@@ -160,7 +160,7 @@ TEST_CASE("MotionService start_returning reverses brush direction", "[service][m
 
     REQUIRE(f.motion.start_returning());
 
-    REQUIRE(f.serial->take_tx_text().find("v 0 -163840.000 0\n") != std::string::npos);
+    REQUIRE(f.serial->take_tx_text().find("v 0 -20.000 0\n") != std::string::npos);
 }
 
 TEST_CASE("MotionService start_returning flips walk and brush direction for left parking side",
@@ -177,7 +177,7 @@ TEST_CASE("MotionService start_returning flips walk and brush direction for left
         f.can->sent_frames,
         robot::protocol::WalkMotorCanCodec::encode_group_speed(
             1u, 210.0f, 210.0f, -210.0f, -210.0f)));
-    REQUIRE(f.serial->take_tx_text().find("v 0 163840.000 0\n") != std::string::npos);
+    REQUIRE(f.serial->take_tx_text().find("v 0 20.000 0\n") != std::string::npos);
 }
 
 TEST_CASE("MotionService start_cleaning syncs runtime config before sending commands",
@@ -201,7 +201,7 @@ TEST_CASE("MotionService start_cleaning syncs runtime config before sending comm
     REQUIRE(diag.wheel[1].target_value == Approx(210.0f));
     REQUIRE(diag.wheel[2].target_value == Approx(-210.0f));
     REQUIRE(diag.wheel[3].target_value == Approx(-210.0f));
-    REQUIRE(f.serial->take_tx_text().find("v 0 204800.000 0\n") != std::string::npos);
+    REQUIRE(f.serial->take_tx_text().find("v 0 25.000 0\n") != std::string::npos);
 }
 
 TEST_CASE("MotionService start_returning syncs runtime return brush rpm before sending commands",
@@ -225,7 +225,7 @@ TEST_CASE("MotionService start_returning syncs runtime return brush rpm before s
     REQUIRE(diag.wheel[1].target_value == Approx(-210.0f));
     REQUIRE(diag.wheel[2].target_value == Approx(210.0f));
     REQUIRE(diag.wheel[3].target_value == Approx(210.0f));
-    REQUIRE(f.serial->take_tx_text().find("v 0 -122880.000 0\n") != std::string::npos);
+    REQUIRE(f.serial->take_tx_text().find("v 0 -15.000 0\n") != std::string::npos);
 }
 
 TEST_CASE("MotionService start_returning_no_brush stops brush before reversing walk motors",

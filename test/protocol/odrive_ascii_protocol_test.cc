@@ -19,6 +19,11 @@ TEST_CASE("OdriveAsciiProtocol encodes property reads", "[protocol][odrive]") {
         OdriveReadProperty::IQ_MEASURED, 0, line, sizeof(line));
     REQUIRE(len > 0);
     REQUIRE(std::string(line, len) == "r axis0.motor.current_control.Iq_measured\n");
+
+    const size_t temp_len = robot::protocol::encode_read_property(
+        OdriveReadProperty::FET_TEMPERATURE, 0, line, sizeof(line));
+    REQUIRE(temp_len > 0);
+    REQUIRE(std::string(line, temp_len) == "r axis0.fet_thermistor.temperature\n");
 }
 
 TEST_CASE("OdriveAsciiProtocol parses feedback response", "[protocol][odrive]") {

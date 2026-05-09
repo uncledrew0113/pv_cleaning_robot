@@ -2,16 +2,16 @@
  * @Author: UncleDrew
  * @Date: 2026-03-14 16:03:29
  * @LastEditors: UncleDrew
- * @LastEditTime: 2026-03-23 00:06:17
+ * @LastEditTime: 2026-05-09 09:53:14
  * @FilePath: /pv_cleaning_robot/pv_cleaning_robot/service/health_service.cc
  * @Description:
  *
  * Copyright (c) 2026 by UncleDrew, All Rights Reserved.
  */
 #include <chrono>
-#include <ctime>
 #include <cstdarg>
 #include <cstdio>
+#include <ctime>
 #include <filesystem>
 #include <spdlog/logger.h>
 #include <spdlog/sinks/rotating_file_sink.h>
@@ -24,16 +24,20 @@ namespace robot::service {
 namespace {
 
 class FixedJsonWriter {
-public:
+   public:
     FixedJsonWriter(char* out, size_t cap) noexcept : out_(out), cap_(cap) {
         if (out_ && cap_ > 0) {
             out_[0] = '\0';
         }
     }
 
-    size_t size() const noexcept { return overflow_ ? 0u : len_; }
+    size_t size() const noexcept {
+        return overflow_ ? 0u : len_;
+    }
 
-    void append_raw(const char* text) noexcept { append_format("%s", text ? text : ""); }
+    void append_raw(const char* text) noexcept {
+        append_format("%s", text ? text : "");
+    }
 
     void append_char(char ch) noexcept {
         if (!ensure_space(1u)) {
@@ -51,34 +55,34 @@ public:
         for (const unsigned char* p = reinterpret_cast<const unsigned char*>(text); *p != '\0';
              ++p) {
             switch (*p) {
-            case '"':
-                append_raw("\\\"");
-                break;
-            case '\\':
-                append_raw("\\\\");
-                break;
-            case '\b':
-                append_raw("\\b");
-                break;
-            case '\f':
-                append_raw("\\f");
-                break;
-            case '\n':
-                append_raw("\\n");
-                break;
-            case '\r':
-                append_raw("\\r");
-                break;
-            case '\t':
-                append_raw("\\t");
-                break;
-            default:
-                if (*p < 0x20u) {
-                    append_format("\\u%04x", static_cast<unsigned>(*p));
-                } else {
-                    append_char(static_cast<char>(*p));
-                }
-                break;
+                case '"':
+                    append_raw("\\\"");
+                    break;
+                case '\\':
+                    append_raw("\\\\");
+                    break;
+                case '\b':
+                    append_raw("\\b");
+                    break;
+                case '\f':
+                    append_raw("\\f");
+                    break;
+                case '\n':
+                    append_raw("\\n");
+                    break;
+                case '\r':
+                    append_raw("\\r");
+                    break;
+                case '\t':
+                    append_raw("\\t");
+                    break;
+                default:
+                    if (*p < 0x20u) {
+                        append_format("\\u%04x", static_cast<unsigned>(*p));
+                    } else {
+                        append_char(static_cast<char>(*p));
+                    }
+                    break;
             }
             if (overflow_) {
                 return;
@@ -87,13 +91,23 @@ public:
         append_char('"');
     }
 
-    void append_bool(bool v) noexcept { append_raw(v ? "true" : "false"); }
-    void append_int(int v) noexcept { append_format("%d", v); }
-    void append_uint(unsigned v) noexcept { append_format("%u", v); }
-    void append_float(float v) noexcept { append_format("%.6f", static_cast<double>(v)); }
-    void append_double(double v) noexcept { append_format("%.6f", v); }
+    void append_bool(bool v) noexcept {
+        append_raw(v ? "true" : "false");
+    }
+    void append_int(int v) noexcept {
+        append_format("%d", v);
+    }
+    void append_uint(unsigned v) noexcept {
+        append_format("%u", v);
+    }
+    void append_float(float v) noexcept {
+        append_format("%.6f", static_cast<double>(v));
+    }
+    void append_double(double v) noexcept {
+        append_format("%.6f", v);
+    }
 
-private:
+   private:
     bool ensure_space(size_t extra) noexcept {
         if (!out_ || cap_ == 0 || overflow_ || len_ + extra >= cap_) {
             overflow_ = true;
@@ -131,71 +145,15 @@ private:
     bool overflow_{false};
 };
 
-const char* wheel_name(int idx) noexcept
-{
+const char* wheel_name(int idx) noexcept {
     static constexpr const char* kWheelNames[device::WalkMotorGroup::kWheelCount] = {
         "lt", "rt", "lb", "rb"};
     return kWheelNames[idx];
 }
 
-void append_health_dist(const device::DistSensorData* dist, FixedJsonWriter& w) noexcept
-{
-    if (!dist) {
-        return;
-    }
-
-    bool any_valid = false;
-    for (uint8_t i = 0; i < dist->channel_count; ++i) {
-        any_valid |= dist->channels[i].valid;
-    }
-
-    w.append_raw(",\"dist\":{\"valid\":");
-    w.append_bool(any_valid);
-    w.append_raw(",\"ch\":[");
-    for (uint8_t i = 0; i < dist->channel_count; ++i) {
-        if (i != 0u) {
-            w.append_char(',');
-        }
-        w.append_float(dist->channels[i].value_v);
-    }
-    w.append_raw("]}");
-}
-
-void append_diag_dist(const device::DistSensorData* dist, FixedJsonWriter& w) noexcept
-{
-    if (!dist) {
-        return;
-    }
-
-    bool any_valid = false;
-    for (uint8_t i = 0; i < dist->channel_count; ++i) {
-        any_valid |= dist->channels[i].valid;
-    }
-
-    w.append_raw(",\"dist\":{\"valid\":");
-    w.append_bool(any_valid);
-    w.append_raw(",\"ch\":[");
-    for (uint8_t i = 0; i < dist->channel_count; ++i) {
-        if (i != 0u) {
-            w.append_char(',');
-        }
-        w.append_raw("{\"v\":");
-        w.append_float(dist->channels[i].value_v);
-        w.append_raw(",\"ma\":");
-        w.append_float(dist->channels[i].value_ma);
-        w.append_raw(",\"ok\":");
-        w.append_bool(dist->channels[i].valid);
-        w.append_char('}');
-    }
-    w.append_raw("],\"comm_errors\":");
-    w.append_uint(dist->error_count);
-    w.append_char('}');
-}
-
 }  // namespace
 
-size_t HealthPayloadBuilder::build_health(const HealthView& view, char* out, size_t cap) noexcept
-{
+size_t HealthPayloadBuilder::build_health(const HealthView& view, char* out, size_t cap) noexcept {
     FixedJsonWriter w(out, cap);
 
     float avg_rpm = 0.0f;
@@ -244,15 +202,13 @@ size_t HealthPayloadBuilder::build_health(const HealthView& view, char* out, siz
     w.append_raw(",\"valid\":");
     w.append_bool(view.gps.valid);
     w.append_char('}');
-    append_health_dist(view.dist, w);
     w.append_char('}');
     return w.size();
 }
 
 size_t HealthPayloadBuilder::build_diagnostics(const DiagnosticsView& view,
                                                char* out,
-                                               size_t cap) noexcept
-{
+                                               size_t cap) noexcept {
     FixedJsonWriter w(out, cap);
 
     w.append_raw("{\"ts\":");
@@ -357,7 +313,6 @@ size_t HealthPayloadBuilder::build_diagnostics(const DiagnosticsView& view,
     w.append_raw(",\"sentences\":");
     w.append_uint(view.gps.sentence_count);
     w.append_char('}');
-    append_diag_dist(view.dist, w);
     w.append_char('}');
     return w.size();
 }
@@ -371,14 +326,12 @@ HealthService::HealthService(std::shared_ptr<device::WalkMotorGroup> walk,
                              Mode mode,
                              std::string local_log_path,
                              size_t local_log_max_bytes,
-                             size_t local_log_max_files,
-                             std::shared_ptr<device::DistanceSensor> dist)
+                             size_t local_log_max_files)
     : walk_(std::move(walk))
     , brush_(std::move(brush))
     , bms_(std::move(bms))
     , imu_(std::move(imu))
     , gps_(std::move(gps))
-    , dist_(std::move(dist))
     , cloud_(std::move(cloud))
     , mode_(mode) {
     payload_cache_.reserve(kPayloadBufferBytes);
@@ -419,12 +372,12 @@ void HealthService::update() {
     // 本地 JSONL 落盘：每条记录一行，独立于网络，离线测试直接 cat 查看
     if (local_log_) {
         try {
-            local_log_->log(
-                spdlog::level::info,
-                spdlog::string_view_t(payload_cache_.data(), payload_cache_.size()));
+            local_log_->log(spdlog::level::info,
+                            spdlog::string_view_t(payload_cache_.data(), payload_cache_.size()));
         } catch (const std::exception& ex) {
-            spdlog::error("[HealthService] local rotating log write failed, disabling local log: {}",
-                          ex.what());
+            spdlog::error(
+                "[HealthService] local rotating log write failed, disabling local log: {}",
+                ex.what());
             local_log_.reset();
         }
     }
@@ -435,14 +388,6 @@ size_t HealthService::build_payload(char* out, size_t cap) const {
     auto tt = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
     char ts_buf[24];
     std::strftime(ts_buf, sizeof(ts_buf), "%Y-%m-%dT%H:%M:%SZ", std::gmtime(&tt));
-    device::DistSensorData dist_data{};
-    auto attach_distance = [&](auto& view) {
-        if (!dist_) {
-            return;
-        }
-        dist_data = dist_->get_data();
-        view.dist = &dist_data;
-    };
 
     if (mode_ == Mode::DIAGNOSTICS) {
         HealthPayloadBuilder::DiagnosticsView view{};
@@ -452,7 +397,6 @@ size_t HealthService::build_payload(char* out, size_t cap) const {
         view.bms = bms_->get_diagnostics();
         view.imu = imu_->get_diagnostics();
         view.gps = gps_->get_diagnostics();
-        attach_distance(view);
         return HealthPayloadBuilder::build_diagnostics(view, out, cap);
     }
 
@@ -463,7 +407,6 @@ size_t HealthService::build_payload(char* out, size_t cap) const {
     view.bms = bms_->get_data();
     view.imu = imu_->get_latest();
     view.gps = gps_->get_latest();
-    attach_distance(view);
     return HealthPayloadBuilder::build_health(view, out, cap);
 }
 

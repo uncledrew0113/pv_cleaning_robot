@@ -18,11 +18,11 @@
     "imu": { "port": "/dev/ttyS1", "baudrate": 9600 },
     "gps": { "port": "/dev/ttyS2", "baudrate": 115200 },
     "brush": {
-      "port": "/dev/ttyS3",
+      "port": "/dev/ttyACM0",
       "baudrate": 115200,
       "axis": 0,
       "counts_per_rev": 8192,
-      "watchdog_enabled": true,
+      "watchdog_enabled": false,
       "watchdog_timeout_s": 0.5
     },
     "bms": { "port": "/dev/ttyS8", "baudrate": 9600 },
@@ -90,7 +90,7 @@
     "local_log": true,
     "local_log_path": "/data/pv_robot/logs/telemetry.jsonl",
     "local_log_max_bytes": 10485760,
-    "local_log_max_files": 3
+    "local_log_max_files": 5
   },
   "device": {
     "software_version": "1.0.0",

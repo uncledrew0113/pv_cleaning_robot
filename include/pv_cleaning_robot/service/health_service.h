@@ -4,7 +4,6 @@
 #include "pv_cleaning_robot/device/bms.h"
 #include "pv_cleaning_robot/device/imu_device.h"
 #include "pv_cleaning_robot/device/gps_device.h"
-#include "pv_cleaning_robot/device/distance_sensor.h"
 #include "pv_cleaning_robot/service/cloud_service.h"
 #include "pv_cleaning_robot/middleware/thread_executor.h"
 #include <array>
@@ -29,7 +28,6 @@ public:
         device::BMS::BatteryData bms{};
         device::ImuDevice::ImuData imu{};
         device::GpsDevice::GpsData gps{};
-        const device::DistSensorData* dist{nullptr};
     };
 
     struct DiagnosticsView {
@@ -39,7 +37,6 @@ public:
         device::BMS::Diagnostics bms{};
         device::ImuDevice::Diagnostics imu{};
         device::GpsDevice::Diagnostics gps{};
-        const device::DistSensorData* dist{nullptr};
     };
 
     static size_t build_health(const HealthView& view, char* out, size_t cap) noexcept;
@@ -73,8 +70,7 @@ public:
                   Mode                                    mode = Mode::HEALTH,
                   std::string                             local_log_path = "",
                   size_t                                  local_log_max_bytes = 10u * 1024u * 1024u,
-                  size_t                                  local_log_max_files = 3u,
-                  std::shared_ptr<device::DistanceSensor> dist = nullptr);
+                  size_t                                  local_log_max_files = 3u);
 
     void update() override;  ///< 由 ThreadExecutor 调用
 
@@ -87,7 +83,6 @@ private:
     std::shared_ptr<device::BMS>            bms_;
     std::shared_ptr<device::ImuDevice>      imu_;
     std::shared_ptr<device::GpsDevice>      gps_;
-    std::shared_ptr<device::DistanceSensor> dist_;  ///< 可选；nullptr 时 JSONL 不含 dist 字段
     std::shared_ptr<CloudService>           cloud_;
     Mode                                mode_;
     mutable std::array<char, kPayloadBufferBytes> payload_buf_{};

@@ -8,13 +8,13 @@
   "robot": {
     "track_length_m": 1000.0,
     "passes": 1.0,
-    "parking_side": "left",
+    "parking_side": "right",
     "clean_speed_rpm": 20.0,
     "return_speed_rpm": 20.0,
-    "return_brush_rpm": 1000,
-    "brush_rpm": 1000,
+    "return_brush_rpm": 3000,
+    "brush_rpm": 3000,
     "edge_reverse_rpm": 0.0,
-    "heading_pid_en": true,
+    "heading_pid_en": false,
     "pid": {
       "kp": 2.0,
       "ki": 0.0,

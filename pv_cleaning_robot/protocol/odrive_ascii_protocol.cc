@@ -32,8 +32,8 @@ const char* property_path(OdriveReadProperty property, uint8_t axis) noexcept {
             return axis == 0 ? "axis0.motor.current_control.Iq_measured"
                              : "axis1.motor.current_control.Iq_measured";
         case OdriveReadProperty::FET_TEMPERATURE:
-            return axis == 0 ? "axis0.motor.fet_thermistor.temperature"
-                             : "axis1.motor.fet_thermistor.temperature";
+            return axis == 0 ? "axis0.fet_thermistor.temperature"
+                             : "axis1.fet_thermistor.temperature";
         case OdriveReadProperty::MOTOR_ERROR:
             return axis == 0 ? "axis0.motor.error" : "axis1.motor.error";
         case OdriveReadProperty::AXIS_ERROR:

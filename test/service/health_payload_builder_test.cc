@@ -17,6 +17,8 @@ TEST_CASE("HealthPayloadBuilder emits diagnostics payload into caller buffer",
         view, out, sizeof(out));
 
     REQUIRE(len > 0);
-    REQUIRE(std::string_view(out, len).find("\"brush\":{\"rpm\":800") != std::string_view::npos);
-    REQUIRE(std::string_view(out, len).find("\"gps\":{\"lat\":0.0") != std::string_view::npos);
+    const std::string_view payload(out, len);
+    REQUIRE(payload.find("\"brush\":{\"rpm\":800") != std::string_view::npos);
+    REQUIRE(payload.find("\"gps\":{\"lat\":0.0") != std::string_view::npos);
+    REQUIRE(payload.find("\"dist\"") == std::string_view::npos);
 }

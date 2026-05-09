@@ -438,7 +438,7 @@ int main() {
     motion_cfg.brush_rpm = cfg.get<int>("robot.brush_rpm", 1000);
     motion_cfg.return_brush_rpm = cfg.get<int>("robot.return_brush_rpm", 1000);
     motion_cfg.edge_reverse_rpm = cfg.get<float>("robot.edge_reverse_rpm", 0.0f);
-    motion_cfg.heading_pid_en = cfg.get<bool>("robot.heading_pid_en", true);
+    motion_cfg.heading_pid_en = cfg.get<bool>("robot.heading_pid_en", false);
     // PID 参数从 robot.pid.* 读取；未配置时使用头文件默认值（kp=1.5, ki=0.05, kd=0.3）
     motion_cfg.pid.kp                    = cfg.get<float>("robot.pid.kp",                    1.5f);
     motion_cfg.pid.ki                    = cfg.get<float>("robot.pid.ki",                    0.05f);

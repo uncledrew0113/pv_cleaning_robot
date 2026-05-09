@@ -519,6 +519,7 @@ TEST_CASE("System: HealthService DIAGNOSTICS 模式落盘 JSONL 文件并验证 
         REQUIRE(j.HasMember("bms"));
         REQUIRE(j.HasMember("imu"));
         REQUIRE(j.HasMember("gps"));
+        REQUIRE_FALSE(j.HasMember("dist"));
 
         // walk 子键：lt/rt/lb/rb 每轮独立诊断 + ctrl_frames
         REQUIRE(j["walk"].HasMember("lt"));

@@ -2,7 +2,7 @@
  * @Author: UncleDrew
  * @Date: 2026-03-14 16:03:29
  * @LastEditors: UncleDrew
- * @LastEditTime: 2026-03-30 16:02:45
+ * @LastEditTime: 2026-05-09 15:23:06
  * @FilePath: /pv_cleaning_robot/pv_cleaning_robot/service/motion_service.cc
  * @Description: 运动服务——集成 WalkMotorGroup + IMU 航向 PID + 边缘触发覆盖
  *
@@ -72,7 +72,7 @@ bool MotionService::start_returning_impl(bool run_brush) {
     group_->clear_override();
 
     const int dir = task_direction_sign();
-    brush_->set_mode_speed();
+    // brush_->set_mode_speed();
     if (run_brush) {
         // 返程刷反向转，用 return_brush_rpm 单独表达返程刷速。
         brush_->set_rpm(-cfg_.return_brush_rpm * dir);
@@ -110,7 +110,7 @@ bool MotionService::start_cleaning() {
     if (group_->set_speeds(spd, spd, -spd, -spd) != device::DeviceError::OK)
         return false;
 
-    brush_->set_mode_speed();
+    // brush_->set_mode_speed();
     brush_->set_rpm(cfg_.brush_rpm * dir);
     return true;
 }
@@ -138,7 +138,7 @@ bool MotionService::start_returning_no_brush() {
 }
 
 void MotionService::emergency_stop() {
-    brush_->enter_idle();
+    brush_->stop();
     group_->emergency_override(0.0f);  // 原地停止 + 抑制心跳
     group_->disable_all();
 }
