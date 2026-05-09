@@ -11,26 +11,26 @@
 #include "pv_cleaning_robot/service/command_tracker.h"
 #include "pv_cleaning_robot/service/fault_service.h"
 #include "pv_cleaning_robot/service/nav_service.h"
-#include "pv_cleaning_robot/service/thingsboard_config_manager.h"
+#include "pv_cleaning_robot/service/thingsboard_control_plane.h"
 
 namespace robot::app {
 
-namespace {
-
-bool is_new_task_start_state(const std::string& state) {
+bool RobotSupervisor::is_new_task_start_state(const std::string& state) {
     return state == "Idle" || state == "Charging" || state == "Stopped";
 }
 
-bool is_cleaning_state(const std::string& state) {
+bool RobotSupervisor::is_cleaning_state(const std::string& state) {
     return state == "CleanFwd" || state == "CleanReturn";
 }
 
-bool can_trigger_spin_free_fault(const std::string& state) {
+bool RobotSupervisor::is_return_allowed_state(const std::string& state) {
+    return is_cleaning_state(state) || state == "Stopped" || state == "Idle";
+}
+
+bool RobotSupervisor::can_trigger_spin_free_fault(const std::string& state) {
     return state != "Idle" && state != "Charging" && state != "Fault" &&
            state != "Stopped";
 }
-
-}  // namespace
 
 RobotSupervisor::RobotSupervisor(std::shared_ptr<RobotFsm> fsm,
                                  std::shared_ptr<service::ThingsBoardConfigManager> tb_cfg,
@@ -43,12 +43,18 @@ RobotSupervisor::RobotSupervisor(std::shared_ptr<RobotFsm> fsm,
     , fault_(std::move(fault))
     , nav_(std::move(nav)) {}
 
+service::TbRuntimeConfig RobotSupervisor::start_runtime_config() const {
+    // 新任务启动前只需要一种“若现在允许启动，将采用哪份配置”的视图。
+    // pending 存在时优先读取 pending，避免调用点重复写同一段选择逻辑。
+    return tb_cfg_->has_pending_config() ? *tb_cfg_->pending_config() : tb_cfg_->active_config();
+}
+
 bool RobotSupervisor::start_task(bool at_parking_side, bool position_valid, float battery_soc) {
-    if (!is_new_task_start_state(fsm_->current_state()) || !position_valid || !at_parking_side) {
+    const auto state = fsm_->current_state();
+    if (!is_new_task_start_state(state) || !position_valid || !at_parking_side) {
         return false;
     }
-    const auto runtime_cfg = tb_cfg_->has_pending_config() ? *tb_cfg_->pending_config()
-                                                           : tb_cfg_->active_config();
+    const auto runtime_cfg = start_runtime_config();
     if (battery_soc < static_cast<float>(runtime_cfg.start_battery_soc)) {
         return false;
     }
@@ -73,10 +79,7 @@ bool RobotSupervisor::stop_task() {
 
 bool RobotSupervisor::return_task(bool at_parking_side) {
     const auto state = fsm_->current_state();
-    if (at_parking_side) {
-        return false;
-    }
-    if (!is_cleaning_state(state) && state != "Stopped" && state != "Idle") {
+    if (at_parking_side || !is_return_allowed_state(state)) {
         return false;
     }
     fsm_->dispatch(EvManualReturn{});
@@ -144,6 +147,8 @@ uint64_t RobotSupervisor::runtime_config_version(const service::TbRuntimeConfig&
     writer.Double(config.return_speed_rpm);
     writer.Key("brush_rpm");
     writer.Int(config.brush_rpm);
+    writer.Key("return_brush_rpm");
+    writer.Int(config.return_brush_rpm);
     writer.Key("parking_side");
     writer.String(service::parking_side_config_string(config.parking_side));
     writer.Key("start_battery_soc");

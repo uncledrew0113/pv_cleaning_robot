@@ -8,6 +8,7 @@
 #include <fstream>
 #include <rapidjson/document.h>
 
+#include "integration/thingsboard_test_support.h"
 #include "pv_cleaning_robot/service/config_service.h"
 
 using robot::service::ConfigService;
@@ -84,16 +85,20 @@ struct LegacyConfigFixture {
 };
 
 struct SplitConfigFixture {
-    std::string runtime_path{"/tmp/test_runtime_config_service.runtime.json"};
-    std::string fixed_path{"/tmp/test_runtime_config_service.fixed.json"};
-    std::string pending_path{"/tmp/test_runtime_config_service.runtime.pending.json"};
-    std::string backup_path{"/tmp/test_runtime_config_service.runtime.backup.json"};
+    tb_test_support::TempSplitConfigPaths paths{
+        tb_test_support::make_temp_split_config_paths("test_runtime_config_service")};
 
     SplitConfigFixture()
     {
-        {
-            std::ofstream fixed(fixed_path);
-            fixed << R"({
+        tb_test_support::write_split_config(paths,
+                                            R"({
+  "robot": {
+    "clean_speed_rpm": 320.0,
+    "passes": 1.0,
+    "parking_side": "left"
+  }
+})",
+                                            R"({
   "gpio": {
     "left_limit": { "line": 12 },
     "right_limit": { "line": 13 }
@@ -101,37 +106,19 @@ struct SplitConfigFixture {
   "network": {
     "mqtt": { "client_id": "fixed_client" }
   }
-})";
-        }
-
-        {
-            std::ofstream runtime(runtime_path);
-            runtime << R"({
-  "robot": {
-    "clean_speed_rpm": 320.0,
-    "passes": 1.0,
-    "parking_side": "left"
-  }
-})";
-        }
-
-        {
-            std::ofstream pending(pending_path);
-            pending << R"({
+})");
+        tb_test_support::write_text_file(paths.pending_path,
+                                         R"({
   "robot": {
     "passes": 3.0,
     "parking_side": "right"
   }
-})";
-        }
+})");
     }
 
     ~SplitConfigFixture()
     {
-        fs::remove(runtime_path);
-        fs::remove(fixed_path);
-        fs::remove(pending_path);
-        fs::remove(backup_path);
+        tb_test_support::cleanup_split_config_paths(paths);
     }
 };
 
@@ -155,14 +142,14 @@ TEST_CASE("ConfigService: load() 文件不存在时返回 false", "[service][con
 TEST_CASE("ConfigService: fixed/runtime/pending 三份配置独立加载", "[service][config]")
 {
     SplitConfigFixture f;
-    ConfigService cfg(f.runtime_path, f.fixed_path);
+    ConfigService cfg(f.paths.runtime_path.string(), f.paths.fixed_path.string());
 
     REQUIRE(cfg.load());
     REQUIRE(cfg.load_fixed());
 
-    CHECK(cfg.runtime_path() == f.runtime_path);
-    CHECK(cfg.fixed_path() == f.fixed_path);
-    CHECK(cfg.pending_path() == f.pending_path);
+    CHECK(cfg.runtime_path() == f.paths.runtime_path.string());
+    CHECK(cfg.fixed_path() == f.paths.fixed_path.string());
+    CHECK(cfg.pending_path() == f.paths.pending_path.string());
 
     CHECK(cfg.get<float>("robot.clean_speed_rpm", 0.0f) == Approx(320.0f).epsilon(0.01f));
     CHECK(cfg.get_fixed<int>("gpio.left_limit.line", -1) == 12);
@@ -179,10 +166,10 @@ TEST_CASE("ConfigService: fixed/runtime/pending 三份配置独立加载", "[ser
 TEST_CASE("ConfigService: clear_pending() 清除 runtime pending 文件", "[service][config]")
 {
     SplitConfigFixture f;
-    ConfigService cfg(f.runtime_path, f.fixed_path);
+    ConfigService cfg(f.paths.runtime_path.string(), f.paths.fixed_path.string());
     REQUIRE(cfg.load());
     REQUIRE(cfg.clear_pending());
-    CHECK_FALSE(fs::exists(f.pending_path));
+    CHECK_FALSE(fs::exists(f.paths.pending_path));
     CHECK_FALSE(cfg.load_pending().has_value());
 }
 

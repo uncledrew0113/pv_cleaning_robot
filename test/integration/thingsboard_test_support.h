@@ -1,6 +1,7 @@
 #pragma once
 
 #include <filesystem>
+#include <fstream>
 #include <optional>
 #include <string>
 
@@ -16,6 +17,66 @@ struct RepoPaths {
     fs::path runtime_config_path;
     fs::path fixed_config_path;
 };
+
+struct TempSplitConfigPaths {
+    fs::path runtime_path;
+    fs::path fixed_path;
+    fs::path pending_path;
+    fs::path backup_path;
+    fs::path cache_path;
+};
+
+inline TempSplitConfigPaths make_temp_split_config_paths(const std::string& prefix)
+{
+    const fs::path base = fs::path("/tmp") / prefix;
+    return {
+        base.string() + ".runtime.json",
+        base.string() + ".fixed.json",
+        base.string() + ".runtime.pending.json",
+        base.string() + ".runtime.backup.json",
+        base.string() + ".cache.jsonl",
+    };
+}
+
+inline void write_text_file(const fs::path& path, const std::string& text)
+{
+    std::ofstream out(path);
+    out << text;
+}
+
+inline void write_split_config(const TempSplitConfigPaths& paths,
+                               const std::string& runtime_json,
+                               const std::string& fixed_json)
+{
+    write_text_file(paths.runtime_path, runtime_json);
+    write_text_file(paths.fixed_path, fixed_json);
+}
+
+// Real/mock ThingsBoard tests use the same split-config file contract as runtime:
+// start from runtime/fixed, keep pending/backup/cache isolated under /tmp.
+inline void copy_repo_split_config(const RepoPaths& repo_paths, const TempSplitConfigPaths& paths)
+{
+    fs::copy_file(
+        repo_paths.runtime_config_path, paths.runtime_path, fs::copy_options::overwrite_existing);
+    if (!repo_paths.fixed_config_path.empty()) {
+        fs::copy_file(
+            repo_paths.fixed_config_path, paths.fixed_path, fs::copy_options::overwrite_existing);
+    } else {
+        fs::remove(paths.fixed_path);
+    }
+    fs::remove(paths.pending_path);
+    fs::remove(paths.backup_path);
+    fs::remove(paths.cache_path);
+}
+
+inline void cleanup_split_config_paths(const TempSplitConfigPaths& paths)
+{
+    fs::remove(paths.runtime_path);
+    fs::remove(paths.fixed_path);
+    fs::remove(paths.pending_path);
+    fs::remove(paths.backup_path);
+    fs::remove(paths.cache_path);
+}
 
 inline std::optional<RepoPaths> find_repo_paths()
 {

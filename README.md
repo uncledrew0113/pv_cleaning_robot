@@ -41,6 +41,8 @@ cmake --build --preset rk3576-build
 - 单元测试：`build/aarch64/bin/unit_tests`（可在 QEMU 或目标板运行，**不需要真实硬件**）
 - 硬件集成测试：`build/aarch64/bin/hw_tests`（**必须在目标板上运行，需要真实硬件**）
 
+> `build/aarch64/bin/*` 是目标机 `aarch64` 产物。若在 x86 开发机直接执行，出现 `Exec format error` 是正常现象。
+
 ## 运行测试
 
 ### 单元测试（Mock 硬件，无需真实设备）
@@ -92,6 +94,61 @@ cmake --build --preset rk3576-build
 # 运行全部硬件系统测试
 ./hw_tests "[hw_system]"
 ```
+
+### 目标机推荐测试顺序
+
+1. 在开发机交叉编译：
+
+```bash
+source .env.example
+cmake --preset rk3576-cross-linux
+cmake --build --preset rk3576-build
+```
+
+2. 把以下内容拷到目标机同一目录，例如 `/opt/pv_robot/tests/`：
+
+```bash
+build/aarch64/bin/unit_tests
+build/aarch64/bin/hw_tests
+config/
+certs/   # 如果 MQTT TLS 证书放在仓库内
+```
+
+3. 在目标机进入测试目录，先跑不依赖真实云和硬件的回归：
+
+```bash
+./unit_tests "[service][config]"
+./unit_tests "[service][tb_control_plane]"
+./unit_tests "[app][robot_supervisor]"
+./unit_tests "[integration][task_chain]"
+```
+
+4. 需要验证真实 ThingsBoard 时，再开启真实云测试：
+
+```bash
+export TB_REAL_TEST=1
+./unit_tests "[integration][thingsboard][real]"
+```
+
+5. 需要验证真实硬件链路时，先准备 `hw_test_config.json`，再按风险从低到高执行：
+
+```bash
+export HW_TEST_CONFIG=/path/to/hw_test_config.json
+./hw_tests "[hw_system][full_init]"
+./hw_tests "[hw_system][health_real_data]"
+./hw_tests "[hw_system][n1_clean_cycle]"
+```
+
+6. 查看硬件测试产物：
+
+```bash
+ls -lh /data/pv_robot/logs/
+```
+
+说明：
+- `TB_REAL_TEST=1` 只在真实 ThingsBoard 联调时需要。
+- `HW_TEST_CONFIG` 不设时，测试会按 `CWD/hw_test_config.json`，再退回内嵌默认值。
+- `n1_clean_cycle` 前必须确认机器人已停在停机位，轨道无遮挡，前后限位传感器和电机线束都已接好。
 
 ## 配置文件
 

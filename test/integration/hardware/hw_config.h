@@ -54,7 +54,6 @@
 #include "pv_cleaning_robot/service/motion_service.h"
 #include "pv_cleaning_robot/service/nav_service.h"
 #include "pv_cleaning_robot/service/scheduler_service.h"
-#include "pv_cleaning_robot/service/thingsboard_config_manager.h"
 #include "pv_cleaning_robot/service/thingsboard_control_plane.h"
 
 // App

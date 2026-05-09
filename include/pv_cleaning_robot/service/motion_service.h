@@ -8,7 +8,7 @@
 #include "pv_cleaning_robot/device/walk_motor_group.h"
 #include "pv_cleaning_robot/middleware/event_bus.h"
 #include "pv_cleaning_robot/middleware/thread_executor.h"
-#include "pv_cleaning_robot/service/thingsboard_config_manager.h"
+#include "pv_cleaning_robot/service/thingsboard_control_plane.h"
 
 namespace robot::service {
 
@@ -109,6 +109,9 @@ class MotionService : public middleware::IRunnable {
 
     int task_direction_sign() const;
     void sync_runtime_config();
+    bool enable_speed_mode();
+    void sync_heading_pid_enabled();
+    bool start_returning_impl(bool run_brush);
 };
 
 }  // namespace robot::service

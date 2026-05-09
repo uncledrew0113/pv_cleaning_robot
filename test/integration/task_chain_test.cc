@@ -16,12 +16,12 @@
 #include <catch2/catch.hpp>
 #include <chrono>
 #include <filesystem>
-#include <fstream>
 #include <thread>
 
 #include "../mock/mock_can_bus.h"
 #include "../mock/mock_gpio_pin.h"
 #include "../mock/mock_serial_port.h"
+#include "integration/thingsboard_test_support.h"
 #include "pv_cleaning_robot/app/fault_handler.h"
 #include "pv_cleaning_robot/app/robot_fsm.h"
 #include "pv_cleaning_robot/app/robot_supervisor.h"
@@ -38,7 +38,7 @@
 #include "pv_cleaning_robot/service/motion_service.h"
 #include "pv_cleaning_robot/service/nav_service.h"
 #include "pv_cleaning_robot/service/scheduler_service.h"
-#include "pv_cleaning_robot/service/thingsboard_config_manager.h"
+#include "pv_cleaning_robot/service/thingsboard_control_plane.h"
 #include "pv_cleaning_robot/middleware/data_cache.h"
 
 using namespace robot::app;
@@ -65,10 +65,8 @@ namespace fs = std::filesystem;
 // 完整任务链构建辅助
 // ────────────────────────────────────────────────────────────────
 struct TaskChainFixture {
-    std::string runtime_path{"/tmp/test_task_chain_supervisor.runtime.json"};
-    std::string fixed_path{"/tmp/test_task_chain_supervisor.fixed.json"};
-    std::string pending_path{"/tmp/test_task_chain_supervisor.runtime.pending.json"};
-    std::string backup_path{"/tmp/test_task_chain_supervisor.runtime.backup.json"};
+    tb_test_support::TempSplitConfigPaths paths{
+        tb_test_support::make_temp_split_config_paths("test_task_chain_supervisor")};
 
     // 底层 mock
     std::shared_ptr<MockCanBus> can{std::make_shared<MockCanBus>()};
@@ -93,7 +91,7 @@ struct TaskChainFixture {
     std::shared_ptr<MotionService> motion;
     std::shared_ptr<NavService> nav;
     std::shared_ptr<FaultService> fault_svc{std::make_shared<FaultService>(bus)};
-    ConfigService cfg{runtime_path, fixed_path};
+    ConfigService cfg{paths.runtime_path.string(), paths.fixed_path.string()};
     SchedulerService scheduler;
     std::shared_ptr<CommandTracker> command_tracker{std::make_shared<CommandTracker>()};
     std::shared_ptr<ThingsBoardConfigManager> tb_cfg;
@@ -131,9 +129,8 @@ struct TaskChainFixture {
         brush->open();
         left_sw->open();
         right_sw->open();
-        {
-        std::ofstream f(runtime_path);
-        f << R"({
+        tb_test_support::write_split_config(paths,
+                                            R"({
   "robot": {
     "passes": 1.0,
     "clean_speed_rpm": 300.0,
@@ -146,12 +143,8 @@ struct TaskChainFixture {
       { "hour": 8, "minute": 0 }
     ]
   }
-})";
-        }
-        {
-        std::ofstream f(fixed_path);
-        f << R"({})";
-        }
+})",
+                                            R"({})");
         REQUIRE(cfg.load());
         scheduler.clear_windows();
         scheduler.add_window({8, 0});
@@ -170,10 +163,7 @@ struct TaskChainFixture {
     }
 
     ~TaskChainFixture() {
-        fs::remove(runtime_path);
-        fs::remove(fixed_path);
-        fs::remove(pending_path);
-        fs::remove(backup_path);
+        tb_test_support::cleanup_split_config_paths(paths);
     }
 };
 

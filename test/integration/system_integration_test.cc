@@ -36,6 +36,7 @@
 #include "../mock/mock_gpio_pin.h"
 #include "../mock/mock_modbus_master.h"
 #include "../mock/mock_serial_port.h"
+#include "integration/thingsboard_test_support.h"
 
 #include "pv_cleaning_robot/app/fault_handler.h"
 #include "pv_cleaning_robot/app/robot_fsm.h"
@@ -81,15 +82,9 @@ using robot::service::NavService;
 using FaultEvent = FaultService::FaultEvent;
 using FaultLevel = FaultEvent::Level;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 辅助常量
-// ─────────────────────────────────────────────────────────────────────────────
-static const char* kRuntimePath  = "/tmp/pv_sys_test_config.runtime.json";
-static const char* kFixedPath    = "/tmp/pv_sys_test_config.fixed.json";
-static const char* kHealthPath   = "/tmp/pv_sys_test_health.jsonl";
-static const char* kCachePath    = "/tmp/pv_sys_test_cache.jsonl";
-
 namespace {
+
+namespace fs = std::filesystem;
 
 rapidjson::Document parse_json_line(const std::string& line)
 {
@@ -199,7 +194,8 @@ std::string build_test_runtime_config_json()
     return {buffer.GetString(), buffer.GetSize()};
 }
 
-std::string build_test_fixed_config_json()
+std::string build_test_fixed_config_json(const std::string& health_path,
+                                         const std::string& cache_path)
 {
     rapidjson::StringBuffer buffer;
     rapidjson::PrettyWriter<rapidjson::StringBuffer> writer(buffer);
@@ -220,7 +216,7 @@ std::string build_test_fixed_config_json()
     writer.Key("mode");
     writer.String("development");
     writer.Key("local_path");
-    writer.String(kHealthPath);
+    writer.String(health_path.c_str());
     writer.Key("cloud_upload");
     writer.Bool(false);
     writer.Key("local_log");
@@ -236,7 +232,7 @@ std::string build_test_fixed_config_json()
     writer.Key("storage");
     writer.StartObject();
     writer.Key("cache_path");
-    writer.String(kCachePath);
+    writer.String(cache_path.c_str());
     writer.EndObject();
 
     writer.Key("system");
@@ -290,6 +286,39 @@ std::string build_test_fixed_config_json()
     return {buffer.GetString(), buffer.GetSize()};
 }
 
+struct SystemTestFiles {
+    tb_test_support::TempSplitConfigPaths split_config{
+        tb_test_support::make_temp_split_config_paths("pv_sys_test_config")};
+    fs::path health_path{"/tmp/pv_sys_test_health.jsonl"};
+    fs::path log_dir{"/tmp/pv_sys_test_logs"};
+
+    void write_config() const
+    {
+        tb_test_support::write_split_config(split_config,
+                                            build_test_runtime_config_json(),
+                                            build_test_fixed_config_json(health_path.string(),
+                                                                         split_config.cache_path.string()));
+    }
+
+    void cleanup_runtime_files() const
+    {
+        fs::remove(health_path);
+        fs::remove(split_config.cache_path);
+    }
+
+    void cleanup_all() const
+    {
+        cleanup_runtime_files();
+        tb_test_support::cleanup_split_config_paths(split_config);
+    }
+};
+
+const SystemTestFiles& system_test_files()
+{
+    static const SystemTestFiles files{};
+    return files;
+}
+
 }  // namespace
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -304,24 +333,11 @@ struct NullTransport : robot::middleware::INetworkTransport {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 测试专用 split config（写入临时文件，ConfigService 从 runtime+fixed 加载）
-// ─────────────────────────────────────────────────────────────────────────────
-static void write_test_config() {
-    std::filesystem::create_directories("/tmp");
-    {
-        std::ofstream f(kRuntimePath);
-        f << build_test_runtime_config_json();
-    }
-    {
-        std::ofstream f(kFixedPath);
-        f << build_test_fixed_config_json();
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // SystemFixture：组装完整系统（类 main），全部层次均使用真实类 + Mock 硬件
 // ─────────────────────────────────────────────────────────────────────────────
 struct SystemFixture {
+    SystemTestFiles files{system_test_files()};
+
     // ── Mock 硬件层 ────────────────────────────────────────────────
     std::shared_ptr<MockCanBus>         can      {std::make_shared<MockCanBus>()};
     std::shared_ptr<MockSerialPort>     brush_sp {std::make_shared<MockSerialPort>()};
@@ -343,12 +359,12 @@ struct SystemFixture {
         {std::make_shared<LimitSwitch>(right_pin, LimitSide::RIGHT)};
 
     // ── 配置层 ────────────────────────────────────────────────────
-    ConfigService cfg{kRuntimePath, kFixedPath};
+    ConfigService cfg{files.split_config.runtime_path.string(), files.split_config.fixed_path.string()};
 
     // ── 中间件层 ──────────────────────────────────────────────────
     EventBus bus;
     std::shared_ptr<DataCache> cache
-        {std::make_shared<DataCache>(kCachePath)};
+        {std::make_shared<DataCache>(files.split_config.cache_path.string())};
     std::shared_ptr<NetworkManager> net_mgr
         {std::make_shared<NetworkManager>(
             std::make_shared<NullTransport>(),
@@ -377,7 +393,7 @@ struct SystemFixture {
               make_motion_config()))
         , nav(std::make_shared<NavService>(group, imu, gps))
         // 注意：health 不在此处初始化，延迟到构造体内，
-        // 必须在 std::filesystem::remove(kHealthPath) 之后创建，
+        // 必须在清理 health JSONL 之后创建，
         // 否则 HealthService 打开文件后被 remove 删掉目录项，
         // 写入将走未链接的 inode，exists() 永远返回 false
         , safety_mon(group, left_sw, right_sw, bus)
@@ -390,6 +406,7 @@ struct SystemFixture {
                   fsm.dispatch(EvFaultP1{});
           })
     {
+        files.write_config();
         // 配置 Mock 返回值
         can->open_result     = true;
         can->send_result     = true;
@@ -405,18 +422,22 @@ struct SystemFixture {
         right_sw->open();
 
         // 预先清空落盘文件（必须在 HealthService 构造之前执行！）
-        std::filesystem::remove(kHealthPath);
-        std::filesystem::remove(kCachePath);
+        files.cleanup_runtime_files();
 
         // HealthService 在文件清理之后才构造，保证打开的是新文件
         health = std::make_shared<HealthService>(
             group, brush, bms, imu, gps,
             cloud,
             HealthService::Mode::DIAGNOSTICS,
-            kHealthPath);
+            files.health_path.string());
 
         fault_handler.start_listening();
         fsm.dispatch(EvInitDone{});
+    }
+
+    ~SystemFixture()
+    {
+        files.cleanup_all();
     }
 };
 
@@ -425,8 +446,10 @@ struct SystemFixture {
 // =============================================================================
 TEST_CASE("System: ConfigService 加载测试配置并正确返回字段值",
           "[integration][system][config]") {
-    write_test_config();
-    ConfigService cfg{kRuntimePath, kFixedPath};
+    const auto& files = system_test_files();
+    files.write_config();
+    ConfigService cfg(files.split_config.runtime_path.string(),
+                      files.split_config.fixed_path.string());
     REQUIRE(cfg.load());
     REQUIRE(cfg.is_loaded());
 
@@ -436,10 +459,11 @@ TEST_CASE("System: ConfigService 加载测试配置并正确返回字段值",
     REQUIRE(cfg.get<float>("robot.charge_stop_soc", 0.0f)  == Approx(95.0f));
     REQUIRE(cfg.get<bool>("robot.heading_pid_en", true) == false);
     REQUIRE(cfg.get<std::string>("diagnostics.mode", "") == "development");
-    REQUIRE(cfg.get<std::string>("diagnostics.local_path", "") == kHealthPath);
+    REQUIRE(cfg.get<std::string>("diagnostics.local_path", "") == files.health_path.string());
     REQUIRE(cfg.get<std::string>("system.hw_watchdog", "x") == "");
     REQUIRE(cfg.get<int>("can.walk_motor.motor_id", 0) == 1);
     REQUIRE(cfg.get<int>("can.walk_motor.comm_timeout_ms", 0) == 200);
+    files.cleanup_all();
 }
 
 // =============================================================================
@@ -460,7 +484,6 @@ TEST_CASE("System: Logger 初始化后可获取合法 spdlog 实例",
 // =============================================================================
 TEST_CASE("System: 系统启动后 FSM 处于 Idle 状态",
           "[integration][system][fsm]") {
-    write_test_config();
     SystemFixture f;
     REQUIRE(f.fsm.current_state() == "Idle");
 }
@@ -470,9 +493,6 @@ TEST_CASE("System: 系统启动后 FSM 处于 Idle 状态",
 // =============================================================================
 TEST_CASE("System: HealthService DIAGNOSTICS 模式落盘 JSONL 文件并验证 JSON 合法性",
           "[integration][system][health]") {
-    write_test_config();
-    std::filesystem::remove(kHealthPath);
-
     SystemFixture f;
     // 连续调用 3 次 update，期望产生 3 行 JSONL
     f.health->update();
@@ -480,10 +500,10 @@ TEST_CASE("System: HealthService DIAGNOSTICS 模式落盘 JSONL 文件并验证 
     f.health->update();
 
     // 文件必须存在
-    REQUIRE(std::filesystem::exists(kHealthPath));
+    REQUIRE(std::filesystem::exists(f.files.health_path));
 
     // 读取行数并验证每行是合法 JSON
-    std::ifstream ifs(kHealthPath);
+    std::ifstream ifs(f.files.health_path);
     REQUIRE(ifs.is_open());
 
     int line_count = 0;
@@ -513,7 +533,6 @@ TEST_CASE("System: HealthService DIAGNOSTICS 模式落盘 JSONL 文件并验证 
     }
     REQUIRE(line_count == 3);
 
-    std::filesystem::remove(kHealthPath);
 }
 
 // =============================================================================
@@ -569,7 +588,6 @@ TEST_CASE("System: WatchdogMgr 超时后回调触发并包含正确线程名",
 // =============================================================================
 TEST_CASE("System: SafetyMonitor 前端 GPIO 触发 → emergency_override → FSM CleanReturn",
           "[integration][system][safety]") {
-    write_test_config();
     SystemFixture f;
 
     // 启动任务，进入 CleanFwd
@@ -611,7 +629,6 @@ TEST_CASE("System: SafetyMonitor 前端 GPIO 触发 → emergency_override → F
 // =============================================================================
 TEST_CASE("System: P0 故障链 FaultService→FaultHandler→FSM Fault，复位后回 Idle",
           "[integration][system][fault]") {
-    write_test_config();
     SystemFixture f;
 
     f.fsm.dispatch(start_from_parking_side(1.0f));
@@ -640,7 +657,6 @@ TEST_CASE("System: P0 故障链 FaultService→FaultHandler→FSM Fault，复位
 // =============================================================================
 TEST_CASE("System: P1 故障发生在清扫中 → Fault",
           "[integration][system][fault]") {
-    write_test_config();
     SystemFixture f;
 
     f.fsm.dispatch(start_from_parking_side(2.0f));
@@ -656,7 +672,6 @@ TEST_CASE("System: P1 故障发生在清扫中 → Fault",
 // =============================================================================
 TEST_CASE("System: N=1 完整任务链 + ThreadExecutor 驱动 MotionService 产生心跳帧",
           "[integration][system][full_chain]") {
-    write_test_config();
     SystemFixture f;
 
     // 启动 ThreadExecutor（SCHED_OTHER，不需 root；50ms 周期）
@@ -695,7 +710,6 @@ TEST_CASE("System: N=1 完整任务链 + ThreadExecutor 驱动 MotionService 产
 // =============================================================================
 TEST_CASE("System: SafetyMonitor + HealthService + WatchdogMgr 联合启动 300ms 无崩溃",
           "[integration][system][combined]") {
-    write_test_config();
     SystemFixture f;
 
     // 启动看门狗（线程化）
@@ -727,10 +741,9 @@ TEST_CASE("System: SafetyMonitor + HealthService + WatchdogMgr 联合启动 300m
     f.watchdog.stop();
 
     // 验证 JSONL 有内容
-    REQUIRE(std::filesystem::exists(kHealthPath));
+    REQUIRE(std::filesystem::exists(f.files.health_path));
 
     // 验证 CAN 总线收到帧（MotionService 已调 set_speeds）
     REQUIRE(!f.can->sent_frames.empty());
 
-    std::filesystem::remove(kHealthPath);
 }

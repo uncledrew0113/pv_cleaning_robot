@@ -5,18 +5,25 @@
 
 namespace robot::service {
 
-std::string CommandTracker::accept(const std::string& name, const std::string& request_id) {
-    std::lock_guard<std::mutex> lk(mtx_);
-
+CommandSnapshot CommandTracker::make_snapshot(const std::string& name,
+                                              const std::string& request_id,
+                                              CommandPhase phase,
+                                              const std::string& reason) const {
     CommandSnapshot snap;
-    snap.id = "cmd-" + std::to_string(next_id_++);
+    snap.id = "cmd-" + std::to_string(next_id_);
     snap.name = name;
     snap.request_id = request_id;
-    snap.phase = CommandPhase::Accepted;
+    snap.phase = phase;
+    snap.reason = reason;
     snap.accepted_at_ms = now_ms();
-    snap.finished_at_ms = 0;
-    snap.reason.clear();
+    snap.finished_at_ms = phase == CommandPhase::Rejected ? snap.accepted_at_ms : 0;
+    return snap;
+}
 
+std::string CommandTracker::accept(const std::string& name, const std::string& request_id) {
+    std::lock_guard<std::mutex> lk(mtx_);
+    CommandSnapshot snap = make_snapshot(name, request_id, CommandPhase::Accepted);
+    ++next_id_;
     active_ = snap;
     return snap.id;
 }
@@ -29,23 +36,21 @@ void CommandTracker::mark_running(const std::string& id) {
 }
 
 void CommandTracker::finish_success(const std::string& id, const std::string& reason) {
-    std::lock_guard<std::mutex> lk(mtx_);
-    if (!active_ || active_->id != id)
-        return;
-
-    active_->phase = CommandPhase::Succeeded;
-    active_->reason = reason;
-    active_->finished_at_ms = now_ms();
-    last_completed_ = active_;
-    active_.reset();
+    finish_active(id, CommandPhase::Succeeded, reason);
 }
 
 void CommandTracker::finish_failure(const std::string& id, const std::string& reason) {
-    std::lock_guard<std::mutex> lk(mtx_);
-    if (!active_ || active_->id != id)
-        return;
+    finish_active(id, CommandPhase::Failed, reason);
+}
 
-    active_->phase = CommandPhase::Failed;
+void CommandTracker::finish_active(const std::string& id,
+                                   CommandPhase phase,
+                                   const std::string& reason) {
+    std::lock_guard<std::mutex> lk(mtx_);
+    if (!active_ || active_->id != id) {
+        return;
+    }
+    active_->phase = phase;
     active_->reason = reason;
     active_->finished_at_ms = now_ms();
     last_completed_ = active_;
@@ -56,17 +61,8 @@ void CommandTracker::reject(const std::string& name,
                             const std::string& request_id,
                             const std::string& reason) {
     std::lock_guard<std::mutex> lk(mtx_);
-
-    CommandSnapshot snap;
-    snap.id = "cmd-" + std::to_string(next_id_++);
-    snap.name = name;
-    snap.request_id = request_id;
-    snap.phase = CommandPhase::Rejected;
-    snap.reason = reason;
-    snap.accepted_at_ms = now_ms();
-    snap.finished_at_ms = snap.accepted_at_ms;
-
-    last_completed_ = std::move(snap);
+    last_completed_ = make_snapshot(name, request_id, CommandPhase::Rejected, reason);
+    ++next_id_;
 }
 
 std::optional<CommandSnapshot> CommandTracker::active() const {

@@ -2,7 +2,7 @@
 
 #include <string_view>
 
-#include "pv_cleaning_robot/service/health_payload_builder.h"
+#include "pv_cleaning_robot/service/health_service.h"
 
 TEST_CASE("HealthPayloadBuilder emits diagnostics payload into caller buffer",
           "[service][health][payload]") {

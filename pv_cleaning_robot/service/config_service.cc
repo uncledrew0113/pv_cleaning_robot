@@ -55,24 +55,14 @@ bool ConfigService::load()
 {
     std::lock_guard<std::mutex> lk(mtx_);
     last_load_used_backup_ = false;
-    fixed_root_.SetObject();
-    fixed_loaded_ = false;
-    if (!fixed_path_.empty()) {
-        if (auto fixed_root = read_json_file(fixed_path_)) {
-            fixed_root_.Swap(*fixed_root);
-            fixed_loaded_ = true;
-        }
-    }
+    fixed_loaded_ = load_json_file_into(fixed_path_, &fixed_root_);
 
-    if (auto main_root = read_json_file(config_path_)) {
-        root_.Swap(*main_root);
+    if (load_json_file_into(config_path_, &root_)) {
         loaded_ = true;
         return true;
     }
 
-    const auto backup_path = derive_companion_path(config_path_, "backup");
-    if (auto backup_root = read_json_file(backup_path)) {
-        root_.Swap(*backup_root);
+    if (load_json_file_into(backup_path(), &root_)) {
         loaded_ = true;
         last_load_used_backup_ = true;
         return true;
@@ -86,21 +76,8 @@ bool ConfigService::load()
 bool ConfigService::load_fixed()
 {
     std::lock_guard<std::mutex> lk(mtx_);
-    if (fixed_path_.empty()) {
-        fixed_root_.SetObject();
-        fixed_loaded_ = false;
-        return false;
-    }
-
-    if (auto fixed_root = read_json_file(fixed_path_)) {
-        fixed_root_.Swap(*fixed_root);
-        fixed_loaded_ = true;
-        return true;
-    }
-
-    fixed_root_.SetObject();
-    fixed_loaded_ = false;
-    return false;
+    fixed_loaded_ = load_json_file_into(fixed_path_, &fixed_root_);
+    return fixed_loaded_;
 }
 
 rapidjson::Document ConfigService::get_subtree(const std::string& path) const
@@ -151,9 +128,8 @@ bool ConfigService::replace_and_save(const rapidjson::Value& new_root)
     std::lock_guard<std::mutex> lk(mtx_);
     auto old_root = clone_document(root_);
     const bool old_loaded = loaded_;
-    const auto backup_path = derive_companion_path(config_path_, "backup");
 
-    if (old_loaded && !write_json_file(backup_path, old_root)) {
+    if (old_loaded && !write_json_file(backup_path(), old_root)) {
         return false;
     }
 
@@ -219,6 +195,29 @@ std::string ConfigService::derive_fixed_path(const std::string& runtime_path)
         return runtime_path + ".fixed";
     }
     return runtime_path.substr(0, dot) + ".fixed" + runtime_path.substr(dot);
+}
+
+std::string ConfigService::backup_path() const
+{
+    return derive_companion_path(config_path_, "backup");
+}
+
+bool ConfigService::load_json_file_into(const std::string& path, rapidjson::Document* out)
+{
+    if (!out || path.empty()) {
+        if (out) {
+            out->SetObject();
+        }
+        return false;
+    }
+
+    if (auto root = read_json_file(path)) {
+        out->Swap(*root);
+        return true;
+    }
+
+    out->SetObject();
+    return false;
 }
 
 bool ConfigService::write_json_file(const std::string& path, const rapidjson::Value& root)

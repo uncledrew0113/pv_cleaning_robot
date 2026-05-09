@@ -32,8 +32,13 @@ public:
     RobotRuntimeSnapshot snapshot() const;
 
 private:
+    static bool is_new_task_start_state(const std::string& state);
+    static bool is_cleaning_state(const std::string& state);
+    static bool is_return_allowed_state(const std::string& state);
+    static bool can_trigger_spin_free_fault(const std::string& state);
     static std::string task_state_from_device_state(const std::string& device_state);
     static uint64_t runtime_config_version(const service::TbRuntimeConfig& config);
+    service::TbRuntimeConfig start_runtime_config() const;
 
     std::shared_ptr<RobotFsm> fsm_;
     std::shared_ptr<service::ThingsBoardConfigManager> tb_cfg_;

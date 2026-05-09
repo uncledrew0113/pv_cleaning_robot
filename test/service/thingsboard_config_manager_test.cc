@@ -1,13 +1,13 @@
 #include <catch2/catch.hpp>
 
 #include <filesystem>
-#include <fstream>
 #include <memory>
 #include <rapidjson/document.h>
 
+#include "integration/thingsboard_test_support.h"
 #include "pv_cleaning_robot/service/config_service.h"
 #include "pv_cleaning_robot/service/scheduler_service.h"
-#include "pv_cleaning_robot/service/thingsboard_config_manager.h"
+#include "pv_cleaning_robot/service/thingsboard_control_plane.h"
 
 using robot::service::ConfigService;
 using robot::service::ParkingSide;
@@ -26,18 +26,15 @@ rapidjson::Document parse_json(const char* text)
 }
 
 struct Fixture {
-    std::string runtime_path{"/tmp/test_tb_config_manager.runtime.json"};
-    std::string fixed_path{"/tmp/test_tb_config_manager.fixed.json"};
-    std::string pending_path{"/tmp/test_tb_config_manager.runtime.pending.json"};
-    std::string backup_path{"/tmp/test_tb_config_manager.runtime.backup.json"};
-    ConfigService cfg{runtime_path, fixed_path};
+    tb_test_support::TempSplitConfigPaths paths{
+        tb_test_support::make_temp_split_config_paths("test_tb_config_manager")};
+    ConfigService cfg{paths.runtime_path.string(), paths.fixed_path.string()};
     SchedulerService scheduler;
     std::unique_ptr<ThingsBoardConfigManager> manager;
 
     Fixture() {
-        {
-        std::ofstream f(runtime_path);
-        f << R"({
+        tb_test_support::write_split_config(paths,
+                                            R"({
   "robot": {
     "passes": 1.0,
     "clean_speed_rpm": 300.0,
@@ -51,12 +48,8 @@ struct Fixture {
       { "hour": 8, "minute": 0 }
     ]
   }
-})";
-        }
-        {
-        std::ofstream f(fixed_path);
-        f << R"({})";
-        }
+})",
+                                            R"({})");
         REQUIRE(cfg.load());
         scheduler.clear_windows();
         scheduler.add_window({8, 0});
@@ -64,10 +57,7 @@ struct Fixture {
     }
 
     ~Fixture() {
-        fs::remove(runtime_path);
-        fs::remove(fixed_path);
-        fs::remove(pending_path);
-        fs::remove(backup_path);
+        tb_test_support::cleanup_split_config_paths(paths);
     }
 };
 
@@ -159,7 +149,7 @@ TEST_CASE("ThingsBoardConfigManager: promote_pending_to_active applies next-task
     REQUIRE(f.manager->promote_pending_to_active());
     CHECK_FALSE(f.manager->has_pending_config());
     CHECK(f.manager->active_config().passes == Approx(2.0));
-    CHECK_FALSE(fs::exists(f.pending_path));
+    CHECK_FALSE(fs::exists(f.paths.pending_path));
 }
 
 TEST_CASE("ThingsBoardConfigManager: rejects passes=0.5", "[service][tb_config]") {

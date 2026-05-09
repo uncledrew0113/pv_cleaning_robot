@@ -48,6 +48,11 @@ public:
 
 private:
     static uint64_t now_ms();
+    CommandSnapshot make_snapshot(const std::string& name,
+                                  const std::string& request_id,
+                                  CommandPhase phase,
+                                  const std::string& reason = {}) const;
+    void finish_active(const std::string& id, CommandPhase phase, const std::string& reason);
 
     mutable std::mutex mtx_;
     uint64_t next_id_{1};

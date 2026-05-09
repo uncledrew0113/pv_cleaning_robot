@@ -106,6 +106,15 @@ bool erase_record_by_id(std::deque<DataCache::Record>& queue, int64_t id)
     return true;
 }
 
+bool parse_json_object_line(const std::string& line, rapidjson::Document* out)
+{
+    if (!out) {
+        return false;
+    }
+    out->Parse(line.c_str(), line.size());
+    return !out->HasParseError() && out->IsObject();
+}
+
 }  // namespace
 
 DataCache::DataCache(std::string file_path, size_t max_rows)
@@ -276,20 +285,9 @@ void DataCache::set_test_append_hook(AppendHook hook)
 bool DataCache::append_push_record_locked(const Record& record)
 {
     const auto line = build_push_line(record);
-    alignas(std::max_align_t) unsigned char pool_buffer[kJournalParsePoolBytes];
-    rapidjson::MemoryPoolAllocator<rapidjson::CrtAllocator> allocator(
-        pool_buffer, sizeof(pool_buffer));
-    rapidjson::Document document(&allocator);
-    document.Parse(line.c_str(), line.size());
-    if (document.HasParseError() || !document.IsObject()) return false;
-    if (test_append_hook_ && !test_append_hook_(document)) return false;
-
-    std::ofstream out(file_path_, std::ios::app);
-    if (!out.is_open()) return false;
-
-    out << line << '\n';
-    if (!out.good()) return false;
-
+    if (!append_journal_line_locked(line)) {
+        return false;
+    }
     ++journal_stats_.append_count;
     return true;
 }
@@ -297,22 +295,29 @@ bool DataCache::append_push_record_locked(const Record& record)
 bool DataCache::append_ack_record_locked(int64_t id)
 {
     const auto line = build_ack_line(id);
-    alignas(std::max_align_t) unsigned char pool_buffer[kJournalParsePoolBytes];
-    rapidjson::MemoryPoolAllocator<rapidjson::CrtAllocator> allocator(
-        pool_buffer, sizeof(pool_buffer));
-    rapidjson::Document document(&allocator);
-    document.Parse(line.c_str(), line.size());
-    if (document.HasParseError() || !document.IsObject()) return false;
-    if (test_append_hook_ && !test_append_hook_(document)) return false;
-
-    std::ofstream out(file_path_, std::ios::app);
-    if (!out.is_open()) return false;
-
-    out << line << '\n';
-    if (!out.good()) return false;
-
+    if (!append_journal_line_locked(line)) {
+        return false;
+    }
     ++journal_stats_.ack_count;
     return true;
+}
+
+bool DataCache::append_journal_line_locked(const std::string& line)
+{
+    rapidjson::Document document;
+    if (!parse_json_object_line(line, &document)) {
+        return false;
+    }
+    if (test_append_hook_ && !test_append_hook_(document)) {
+        return false;
+    }
+
+    std::ofstream out(file_path_, std::ios::app);
+    if (!out.is_open()) {
+        return false;
+    }
+    out << line << '\n';
+    return out.good();
 }
 
 void DataCache::maybe_compact_locked()

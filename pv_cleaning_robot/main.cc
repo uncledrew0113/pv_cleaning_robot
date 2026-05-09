@@ -55,7 +55,6 @@
 #include "pv_cleaning_robot/service/nav_service.h"
 #include "pv_cleaning_robot/service/scheduler_service.h"
 #include "pv_cleaning_robot/service/thingsboard_control_plane.h"
-#include "pv_cleaning_robot/service/thingsboard_config_manager.h"
 
 // App
 #include <atomic>
@@ -78,6 +77,105 @@ static std::atomic<bool> g_running{true};
 static void signal_handler(int /*sig*/) {
     g_running.store(false);
 }
+
+namespace {
+
+robot::app::ParkingSideFacts read_parking_side_facts(
+    robot::service::ParkingSide parking_side,
+    const std::shared_ptr<robot::device::LimitSwitch>& left_switch,
+    const std::shared_ptr<robot::device::LimitSwitch>& right_switch,
+    bool left_open_ok,
+    bool right_open_ok)
+{
+    const bool left_sensor_active = left_open_ok && !left_switch->read_current_level();
+    const bool right_sensor_active = right_open_ok && !right_switch->read_current_level();
+    return robot::app::ParkingSideRuntime::from_physical_limits(
+        parking_side, left_sensor_active, right_sensor_active);
+}
+
+void publish_startup_position_status(
+    const std::shared_ptr<robot::service::ThingsBoardControlPlane>& tb_control,
+    const std::shared_ptr<robot::app::RobotFsm>& fsm,
+    const std::shared_ptr<spdlog::logger>& log,
+    const robot::app::ParkingSideFacts& startup_position_facts)
+{
+    if (startup_position_facts.dual_endpoint_active) {
+        tb_control->publish_status_event("startup_position_invalid", false, "dual_endpoint_active");
+        log->warn("[Main] 启动位置异常：左右端点同时触发，禁止启动清扫");
+        return;
+    }
+    if (startup_position_facts.no_endpoint_active) {
+        tb_control->publish_status_event("startup_position_invalid",
+                                         false,
+                                         "robot_not_at_any_endpoint");
+        log->warn("[Main] 启动位置异常：当前不在任一端点，尝试返回停机位");
+        if (fsm->current_state() == "Idle") {
+            fsm->dispatch(robot::app::EvManualReturn{});
+        }
+        return;
+    }
+    if (!startup_position_facts.at_parking_side) {
+        tb_control->publish_status_event("startup_position_invalid",
+                                         false,
+                                         "robot_not_at_parking_side");
+        log->warn("[Main] 启动位置异常：当前不在停机位，禁止自动启动清扫");
+    }
+}
+
+void register_limit_settled_bridge(
+    robot::middleware::EventBus& event_bus,
+    const std::shared_ptr<robot::app::RobotFsm>& fsm,
+    const std::shared_ptr<spdlog::logger>& log,
+    const std::shared_ptr<robot::service::ThingsBoardControlPlane>& tb_control,
+    std::function<float()> current_battery_soc)
+{
+    // SafetyMonitor 只给出“哪一侧物理限位稳定了”，
+    // 这里再根据当前 active parking_side 翻译成业务事件，
+    // 这样停车位语义始终只在一处桥接。
+    event_bus.subscribe<robot::middleware::SafetyMonitor::LimitSettledEvent>(
+        [fsm, log, tb_control, current_battery_soc = std::move(current_battery_soc)](
+            const robot::middleware::SafetyMonitor::LimitSettledEvent& evt) {
+            const bool parking_left =
+                tb_control->active_config().parking_side == robot::service::ParkingSide::Left;
+            const bool parking_side_hit =
+                (parking_left && evt.side == robot::device::LimitSide::LEFT) ||
+                (!parking_left && evt.side == robot::device::LimitSide::RIGHT);
+
+            if (parking_side_hit) {
+                log->info("[Limit] 停机侧防抖完成，调度 EvParkingSideLimitSettled");
+                const bool should_charge =
+                    current_battery_soc() <
+                    static_cast<float>(tb_control->active_config().charge_start_soc);
+                fsm->dispatch(robot::app::EvParkingSideLimitSettled{should_charge});
+                return;
+            }
+
+            log->info("[Limit] 对侧防抖完成，调度 EvFarEndLimitSettled");
+            fsm->dispatch(robot::app::EvFarEndLimitSettled{});
+        });
+}
+
+void register_scheduler_start(
+    robot::service::SchedulerService& scheduler,
+    const std::shared_ptr<robot::app::RobotSupervisor>& supervisor,
+    const std::shared_ptr<spdlog::logger>& log,
+    std::function<robot::app::ParkingSideFacts()> current_start_parking_facts,
+    std::function<float()> current_battery_soc)
+{
+    scheduler.set_on_window_hit(
+        [supervisor,
+         log,
+         current_start_parking_facts = std::move(current_start_parking_facts),
+         current_battery_soc = std::move(current_battery_soc)]() {
+            const auto facts = current_start_parking_facts();
+            if (!supervisor->start_task(
+                    facts.at_parking_side, facts.is_valid_start_position(), current_battery_soc())) {
+                log->warn("[Main] 调度启动被拒绝");
+            }
+        });
+}
+
+}  // namespace
 
 int main() {
     // ── 1. 配置服务 ────────────────────────────────────────────────────
@@ -258,10 +356,8 @@ int main() {
     const auto configured_parking_side =
         configured_parking_side_text == "right" ? robot::service::ParkingSide::Right
                                                 : robot::service::ParkingSide::Left;
-    const bool left_sensor_active = left_open_ok && !left_switch->read_current_level();
-    const bool right_sensor_active = right_open_ok && !right_switch->read_current_level();
-    const auto startup_facts = robot::app::ParkingSideRuntime::from_physical_limits(
-        configured_parking_side, left_sensor_active, right_sensor_active);
+    const auto startup_facts = read_parking_side_facts(
+        configured_parking_side, left_switch, right_switch, left_open_ok, right_open_ok);
     if (!startup_facts.at_parking_side) {
         log->warn(
             "[Main] [自检警告] 当前未检测到停机位一侧限位触发，"
@@ -278,8 +374,8 @@ int main() {
         configured_parking_side_text,
         startup_facts.at_parking_side,
         startup_facts.at_far_end,
-        left_sensor_active,
-        right_sensor_active);
+        startup_facts.left_limit_active,
+        startup_facts.right_limit_active);
     if (!brush_motor->open())
         log->warn("[Main] 滚刷电机 RS485 初始化失败");
     if (bms->open() != robot::device::DeviceError::OK)
@@ -358,9 +454,6 @@ int main() {
     auto cloud = std::make_shared<robot::service::CloudService>(net_mgr, data_cache);
     auto tb_cfg =
         std::make_shared<robot::service::ThingsBoardConfigManager>(cfg, scheduler);
-    motion->set_parking_side_provider(
-        [tb_cfg]() { return tb_cfg->active_config().parking_side; });
-    motion->set_runtime_config_provider([tb_cfg]() { return tb_cfg->active_config(); });
     auto command_tracker = std::make_shared<robot::service::CommandTracker>();
 
     auto fault = std::make_shared<robot::service::FaultService>(event_bus);
@@ -376,20 +469,22 @@ int main() {
         tb_cfg,
         command_tracker,
         supervisor);
-    const auto physical_limit_facts_for = [&left_switch, &right_switch, &left_open_ok, &right_open_ok](
-                                              robot::service::ParkingSide parking_side) {
-        const bool left_sensor_active = left_open_ok && !left_switch->read_current_level();
-        const bool right_sensor_active = right_open_ok && !right_switch->read_current_level();
-        return robot::app::ParkingSideRuntime::from_physical_limits(
-            parking_side, left_sensor_active, right_sensor_active);
+    motion->set_parking_side_provider(
+        [tb_control]() { return tb_control->active_config().parking_side; });
+    motion->set_runtime_config_provider([tb_control]() { return tb_control->active_config(); });
+    const auto physical_limit_facts_for =
+        [&left_switch, &right_switch, &left_open_ok, &right_open_ok](
+            robot::service::ParkingSide parking_side) {
+            return read_parking_side_facts(
+                parking_side, left_switch, right_switch, left_open_ok, right_open_ok);
+        };
+    const auto current_active_parking_facts = [&tb_control, physical_limit_facts_for]() {
+        return physical_limit_facts_for(tb_control->active_config().parking_side);
     };
-    const auto current_active_parking_facts = [&tb_cfg, physical_limit_facts_for]() {
-        return physical_limit_facts_for(tb_cfg->active_config().parking_side);
-    };
-    const auto current_start_parking_facts = [&tb_cfg, physical_limit_facts_for]() {
-        const auto pending = tb_cfg->pending_config();
+    const auto current_start_parking_facts = [&tb_control, physical_limit_facts_for]() {
+        const auto pending = tb_control->pending_config();
         const auto parking_side =
-            pending ? pending->parking_side : tb_cfg->active_config().parking_side;
+            pending ? pending->parking_side : tb_control->active_config().parking_side;
         return physical_limit_facts_for(parking_side);
     };
     const auto current_battery_soc = [&bms]() {
@@ -432,58 +527,15 @@ int main() {
         log->info("[Main] 设备静态属性已发布至云端");
     }
 
-    const auto startup_position_facts = current_active_parking_facts();
-    if (startup_position_facts.dual_endpoint_active) {
-        tb_control->publish_status_event("startup_position_invalid", false, "dual_endpoint_active");
-        log->warn("[Main] 启动位置异常：左右端点同时触发，禁止启动清扫");
-    } else if (startup_position_facts.no_endpoint_active) {
-        tb_control->publish_status_event("startup_position_invalid",
-                                         false,
-                                         "robot_not_at_any_endpoint");
-        log->warn("[Main] 启动位置异常：当前不在任一端点，尝试返回停机位");
-        if (fsm->current_state() == "Idle") {
-            fsm->dispatch(robot::app::EvManualReturn{});
-        }
-    } else if (!startup_position_facts.at_parking_side) {
-        tb_control->publish_status_event("startup_position_invalid",
-                                         false,
-                                         "robot_not_at_parking_side");
-        log->warn("[Main] 启动位置异常：当前不在停机位，禁止自动启动清扫");
-    }
+    publish_startup_position_status(tb_control, fsm, log, current_active_parking_facts());
 
     // ── 限位开关防抖事件订阅：LimitSettledEvent → FSM ──────────────────
     // SafetyMonitor::monitor_loop (SCHED_FIFO 94) 在急停后延迟 180ms 发布此事件。
     // 回调在 monitor_loop 线程上执行，必须极短（不阻塞，不持锁调 I/O）。
-    event_bus.subscribe<robot::middleware::SafetyMonitor::LimitSettledEvent>(
-        [&fsm, &log, &tb_cfg, current_battery_soc](
-            const robot::middleware::SafetyMonitor::LimitSettledEvent& evt) {
-            const bool parking_left =
-                tb_cfg->active_config().parking_side == robot::service::ParkingSide::Left;
-            const bool parking_side_hit =
-                (parking_left && evt.side == robot::device::LimitSide::LEFT) ||
-                (!parking_left && evt.side == robot::device::LimitSide::RIGHT);
-
-            if (parking_side_hit) {
-                log->info("[Limit] 停机侧防抖完成，调度 EvParkingSideLimitSettled");
-                const bool should_charge =
-                    current_battery_soc() <
-                    static_cast<float>(tb_cfg->active_config().charge_start_soc);
-                fsm->dispatch(robot::app::EvParkingSideLimitSettled{should_charge});
-            } else {
-                log->info("[Limit] 对侧防抖完成，调度 EvFarEndLimitSettled");
-                fsm->dispatch(robot::app::EvFarEndLimitSettled{});
-            }
-        });
+    register_limit_settled_bridge(event_bus, fsm, log, tb_control, current_battery_soc);
 
     // ── 调度服务：定时触发清扫任务（读取 active runtime 的 scheduler.windows） ─────
-    scheduler.set_on_window_hit(
-        [current_start_parking_facts, current_battery_soc, &log, &supervisor]() {
-            const auto facts = current_start_parking_facts();
-            if (!supervisor->start_task(
-                    facts.at_parking_side, facts.is_valid_start_position(), current_battery_soc())) {
-                log->warn("[Main] 调度启动被拒绝");
-            }
-        });
+    register_scheduler_start(scheduler, supervisor, log, current_start_parking_facts, current_battery_soc);
 
     robot::app::FaultHandler fault_handler(
         motion, event_bus, [fsm](const robot::service::FaultService::FaultEvent& evt) {
@@ -613,7 +665,8 @@ int main() {
         }
         supervisor->tick_safety();
         if (current_state == "Charging" &&
-            current_battery_soc() >= static_cast<float>(tb_cfg->active_config().charge_stop_soc)) {
+            current_battery_soc() >=
+                static_cast<float>(tb_control->active_config().charge_stop_soc)) {
             fsm->dispatch(robot::app::EvChargeDone{});
         }
 

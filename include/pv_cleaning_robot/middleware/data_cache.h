@@ -1,7 +1,7 @@
 #pragma once
-#include <functional>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <mutex>
 #include <rapidjson/document.h>
 #include <string>
@@ -19,11 +19,10 @@ namespace robot::middleware {
 ///
 /// 线程安全：所有公开方法均通过 mtx_ 保护，可从多个线程并发调用。
 class DataCache {
-public:
-    static constexpr size_t kDefaultMaxRows = 500;  ///< 超出则丢弃最旧记录
+   public:
+    static constexpr size_t kDefaultMaxRows = 5000;  ///< 超出则丢弃最旧记录
 
-    explicit DataCache(std::string file_path,
-                       size_t max_rows = kDefaultMaxRows);
+    explicit DataCache(std::string file_path, size_t max_rows = kDefaultMaxRows);
     ~DataCache();
 
     /// 创建父目录；从已有 JSONL 文件加载未确认记录
@@ -32,14 +31,13 @@ public:
     void close() {}
 
     /// 存入一条遥测记录，同步刷盘
-    bool push(const std::string& topic, const std::string& payload,
-              uint64_t ts_ms = 0);
+    bool push(const std::string& topic, const std::string& payload, uint64_t ts_ms = 0);
 
     struct Record {
-        int64_t     id;
+        int64_t id;
         std::string topic;
         std::string payload;
-        uint64_t    ts_ms;
+        uint64_t ts_ms;
     };
 
     /// 取出最多 max_count 条最旧记录（不删除，等 confirm_sent 后才删除）
@@ -54,24 +52,25 @@ public:
     using AppendHook = std::function<bool(const rapidjson::Document&)>;
     void set_test_append_hook(AppendHook hook);
 
-private:
+   private:
     struct JournalStats {
         size_t append_count{0};
         size_t ack_count{0};
     };
 
+    bool append_journal_line_locked(const std::string& line);
     bool append_push_record_locked(const Record& record);
     bool append_ack_record_locked(int64_t id);
     void maybe_compact_locked();
     bool compact_to_snapshot_locked();
 
-    std::string        file_path_;
-    size_t             max_rows_;
-    int64_t            next_id_{1};
+    std::string file_path_;
+    size_t max_rows_;
+    int64_t next_id_{1};
     std::deque<Record> queue_;
-    JournalStats       journal_stats_{};
-    AppendHook         test_append_hook_;
+    JournalStats journal_stats_{};
+    AppendHook test_append_hook_;
     mutable std::mutex mtx_;
 };
 
-} // namespace robot::middleware
+}  // namespace robot::middleware

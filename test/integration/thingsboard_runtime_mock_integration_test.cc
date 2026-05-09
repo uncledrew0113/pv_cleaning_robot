@@ -28,7 +28,6 @@
 #include "pv_cleaning_robot/service/motion_service.h"
 #include "pv_cleaning_robot/service/nav_service.h"
 #include "pv_cleaning_robot/service/scheduler_service.h"
-#include "pv_cleaning_robot/service/thingsboard_config_manager.h"
 #include "pv_cleaning_robot/service/thingsboard_control_plane.h"
 #include "integration/thingsboard_test_support.h"
 
@@ -64,11 +63,8 @@ bool wait_until(Pred pred,
 
 struct RealThingsBoardRuntimeMockFixture {
     fs::path repo_root;
-    fs::path temp_runtime_path{"/tmp/tb_runtime_mock_config.runtime.json"};
-    fs::path temp_fixed_path{"/tmp/tb_runtime_mock_config.fixed.json"};
-    fs::path temp_pending_path{"/tmp/tb_runtime_mock_config.runtime.pending.json"};
-    fs::path temp_backup_path{"/tmp/tb_runtime_mock_config.runtime.backup.json"};
-    fs::path cache_path{"/tmp/tb_runtime_mock_cache.jsonl"};
+    tb_test_support::TempSplitConfigPaths paths{
+        tb_test_support::make_temp_split_config_paths("tb_runtime_mock_config")};
 
     robot::service::ConfigService cfg;
     robot::service::SchedulerService scheduler;
@@ -104,23 +100,13 @@ struct RealThingsBoardRuntimeMockFixture {
 
     explicit RealThingsBoardRuntimeMockFixture(const tb_test_support::RepoPaths& paths)
         : repo_root(paths.repo_root)
-        , cfg(temp_runtime_path.string(), temp_fixed_path.string())
+        , cfg(this->paths.runtime_path.string(), this->paths.fixed_path.string())
         , scheduler()
     {
-        fs::copy_file(
-            paths.runtime_config_path, temp_runtime_path, fs::copy_options::overwrite_existing);
-        if (!paths.fixed_config_path.empty()) {
-            fs::copy_file(
-                paths.fixed_config_path, temp_fixed_path, fs::copy_options::overwrite_existing);
-        } else {
-            fs::remove(temp_fixed_path);
-        }
-        fs::remove(temp_pending_path);
-        fs::remove(temp_backup_path);
-        fs::remove(cache_path);
+        tb_test_support::copy_repo_split_config(paths, this->paths);
 
         REQUIRE(cfg.load());
-        cache = std::make_shared<robot::middleware::DataCache>(cache_path.string());
+        cache = std::make_shared<robot::middleware::DataCache>(this->paths.cache_path.string());
         REQUIRE(cache->open());
 
         auto mqtt_cfg = tb_test_support::build_mqtt_config(cfg, repo_root, "_runtime_mock_itest");
@@ -177,11 +163,7 @@ struct RealThingsBoardRuntimeMockFixture {
         if (cache) {
             cache->close();
         }
-        fs::remove(temp_runtime_path);
-        fs::remove(temp_fixed_path);
-        fs::remove(temp_pending_path);
-        fs::remove(temp_backup_path);
-        fs::remove(cache_path);
+        tb_test_support::cleanup_split_config_paths(paths);
     }
 
     bool connect()

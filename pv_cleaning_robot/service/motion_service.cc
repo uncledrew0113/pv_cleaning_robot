@@ -50,6 +50,45 @@ void MotionService::sync_runtime_config() {
     cfg_.return_brush_rpm = runtime_cfg.return_brush_rpm;
 }
 
+bool MotionService::enable_speed_mode() {
+    // M1502E 硬件确认：ENABLE 帧（0x01）会覆盖 SPEED 模式位 → 必须先 ENABLE 再 SPEED。
+    if (group_->enable_all() != device::DeviceError::OK) {
+        return false;
+    }
+    return group_->set_mode_all(protocol::WalkMotorMode::SPEED) == device::DeviceError::OK;
+}
+
+void MotionService::sync_heading_pid_enabled() {
+    if (!cfg_.heading_pid_en) {
+        group_->enable_heading_control(false);
+        return;
+    }
+    group_->set_heading_pid_params(cfg_.pid);
+    group_->enable_heading_control(true);
+}
+
+bool MotionService::start_returning_impl(bool run_brush) {
+    sync_runtime_config();
+    group_->clear_override();
+
+    const int dir = task_direction_sign();
+    brush_->set_mode_speed();
+    if (run_brush) {
+        // 返程刷反向转，用 return_brush_rpm 单独表达返程刷速。
+        brush_->set_rpm(-cfg_.return_brush_rpm * dir);
+    } else {
+        brush_->stop();
+    }
+
+    sync_heading_pid_enabled();
+    if (!enable_speed_mode()) {
+        return false;
+    }
+
+    const float spd = cfg_.return_speed_rpm * static_cast<float>(dir);
+    return group_->set_speeds(-spd, -spd, +spd, +spd) == device::DeviceError::OK;
+}
+
 // ── 运动控制 ──────────────────────────────────────────────────────────────
 
 bool MotionService::start_cleaning() {
@@ -57,18 +96,12 @@ bool MotionService::start_cleaning() {
     // 解除可能由 SafetyMonitor::on_limit_trigger() 触发的 emergency_override 锁
     group_->clear_override();
 
-    // 先使能，再切换速度环模式
-    // M1502E 硬件确认：ENABLE 帧（0x01）会覆盖 SPEED 模式位 → 必须先 ENABLE 再 SPEED
-    if (group_->enable_all() != device::DeviceError::OK)
+    if (!enable_speed_mode()) {
         return false;
-    if (group_->set_mode_all(protocol::WalkMotorMode::SPEED) != device::DeviceError::OK)
-        return false;
-
-    // 如果 heading PID 使能，设置参数并启用（速率 PID，无需锁定航向目标）
-    if (cfg_.heading_pid_en) {
-        group_->set_heading_pid_params(cfg_.pid);
-        group_->enable_heading_control(true);
     }
+
+    // 清扫和返程都用“角速度收敛到 0”的同一套速率 PID，只是轮速方向不同。
+    sync_heading_pid_enabled();
 
     // 物理安装：LT/RT 正转=前进，LB/RB 因安装方向相反，负转=前进
     // 车辆前进：LT=+spd, RT=+spd, LB=-spd, RB=-spd
@@ -96,60 +129,12 @@ void MotionService::pause_task() {
 }
 
 bool MotionService::start_returning() {
-    sync_runtime_config();
-    // 解除可能由 SafetyMonitor 触发的 emergency_override 锁，确保心跳正常恢复
-    group_->clear_override();
-
-    // 返程滚刷反向运行（清洁板面残留，绝对值同 brush_rpm，方向取反）
-    const int dir = task_direction_sign();
-    brush_->set_mode_speed();
-    brush_->set_rpm(-cfg_.return_brush_rpm * dir);
-
-    // 返程保持航向速率 PID：目标角速度始终为 0，正返程完全对称，无需锁定航向目标。
-    //   轨道几何慢速 yaw 变化（omega_z < deadband）：死区过滤，不纠偏 → 不脱轨
-    //   突发偏转（出轨等异常）：omega_z 大 → PID 立即响应纠正 → 保证安全
-    if (cfg_.heading_pid_en) {
-        group_->enable_heading_control(true);  // 速率 PID，无需锁定航向目标
-    }
-
-    // 先使能，再切换速度环（M1502E：ENABLE 帧覆盖模式位，Q5 修复）
-    if (group_->enable_all() != device::DeviceError::OK)
-        return false;
-    if (group_->set_mode_all(protocol::WalkMotorMode::SPEED) != device::DeviceError::OK)
-        return false;
-
-    // 物理安装：LT/RT 负转=后退，LB/RB 安装相反正转=后退
-    // 车辆后退：LT=-spd, RT=-spd, LB=+spd, RB=+spd
-    const float spd = cfg_.return_speed_rpm * static_cast<float>(dir);
-    if (group_->set_speeds(-spd, -spd, +spd, +spd) != device::DeviceError::OK)
-        return false;
-
-    return true;
+    return start_returning_impl(true);
 }
 
 bool MotionService::start_returning_no_brush() {
-    sync_runtime_config();
-    // P1 故障路径：停刷再反向返回（保持航向 PID 防止返程漂移）
-    brush_->stop();
-    group_->clear_override();
-
-    // 保持航向速率 PID（速率 PID，无需锁定航向目标；
-    // 正返程完全对称，omega_z 死区过滤轨道几何漂移，突发偏转立即响应）
-    if (cfg_.heading_pid_en) {
-        group_->enable_heading_control(true);  // 速率 PID，无需锁定航向目标
-    }
-
-    // 先使能，再切换速度环（M1502E：ENABLE 帧覆盖模式位，Q5 修复）
-    if (group_->enable_all() != device::DeviceError::OK)
-        return false;
-    if (group_->set_mode_all(protocol::WalkMotorMode::SPEED) != device::DeviceError::OK)
-        return false;
-
-    const float spd = cfg_.return_speed_rpm * static_cast<float>(task_direction_sign());
-    if (group_->set_speeds(-spd, -spd, +spd, +spd) != device::DeviceError::OK)
-        return false;
-
-    return true;
+    // P1 故障返回只和正常返程差一个动作：停刷，不再反向继续扫。
+    return start_returning_impl(false);
 }
 
 void MotionService::emergency_stop() {

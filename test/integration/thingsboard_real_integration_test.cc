@@ -18,8 +18,7 @@
 #include "pv_cleaning_robot/service/cloud_service.h"
 #include "pv_cleaning_robot/service/config_service.h"
 #include "pv_cleaning_robot/service/scheduler_service.h"
-#include "pv_cleaning_robot/service/thingsboard_config_manager.h"
-#include "pv_cleaning_robot/service/thingsboard_event_payload_builder.h"
+#include "pv_cleaning_robot/service/thingsboard_control_plane.h"
 #include "integration/thingsboard_test_support.h"
 
 namespace fs = std::filesystem;
@@ -57,13 +56,6 @@ bool wait_until(Pred pred, std::chrono::seconds timeout)
     return pred();
 }
 
-fs::path pending_config_path(const fs::path& config_path)
-{
-    auto pending = config_path;
-    pending.replace_extension(".pending.json");
-    return pending;
-}
-
 SharedAttrTarget choose_legal_target(const std::optional<robot::service::TbRuntimeConfig>& current)
 {
     const SharedAttrTarget target_a{
@@ -83,9 +75,8 @@ SharedAttrTarget choose_legal_target(const std::optional<robot::service::TbRunti
 
 struct RealThingsBoardFixture {
     fs::path repo_root;
-    fs::path runtime_config_path;
-    fs::path fixed_config_path;
-    fs::path cache_path{"/tmp/tb_real_integration_cache.jsonl"};
+    tb_test_support::TempSplitConfigPaths paths{
+        tb_test_support::make_temp_split_config_paths("tb_real_integration")};
 
     robot::service::ConfigService cfg;
     robot::service::SchedulerService scheduler;
@@ -100,14 +91,12 @@ struct RealThingsBoardFixture {
 
     RealThingsBoardFixture(const tb_test_support::RepoPaths& paths)
         : repo_root(paths.repo_root)
-        , runtime_config_path(paths.runtime_config_path)
-        , fixed_config_path(paths.fixed_config_path)
-        , cfg(runtime_config_path.string(), fixed_config_path.string())
+        , cfg(this->paths.runtime_path.string(), this->paths.fixed_path.string())
         , scheduler()
     {
+        tb_test_support::copy_repo_split_config(paths, this->paths);
         REQUIRE(cfg.load());
         tb_cfg = std::make_unique<robot::service::ThingsBoardConfigManager>(cfg, scheduler);
-        fs::remove(cache_path);
         auto mqtt_cfg = tb_test_support::build_mqtt_config(cfg, repo_root, "_real_attr_itest");
         REQUIRE_FALSE(mqtt_cfg.broker_uri.empty());
         spdlog::info(
@@ -121,7 +110,7 @@ struct RealThingsBoardFixture {
         mqtt = std::make_shared<robot::middleware::MqttTransport>(mqtt_cfg);
         net = std::make_shared<robot::middleware::NetworkManager>(
             mqtt, nullptr, robot::middleware::NetworkManager::Mode::MQTT_ONLY);
-        cache = std::make_shared<robot::middleware::DataCache>(cache_path.string());
+        cache = std::make_shared<robot::middleware::DataCache>(this->paths.cache_path.string());
         REQUIRE(cache->open());
         cloud = std::make_shared<robot::service::CloudService>(net, cache);
         // 真实 shared attributes 联调测试需要在 connect() 前把下行回调接好，
@@ -149,7 +138,11 @@ struct RealThingsBoardFixture {
              "clean_speed_rpm",
              "return_speed_rpm",
              "brush_rpm",
+             "return_brush_rpm",
              "parking_side",
+             "start_battery_soc",
+             "charge_start_soc",
+             "charge_stop_soc",
              "schedules"});
     }
 
@@ -182,7 +175,7 @@ struct RealThingsBoardFixture {
         if (cache) {
             cache->close();
         }
-        fs::remove(cache_path);
+        tb_test_support::cleanup_split_config_paths(paths);
     }
 
     int shared_attr_updates() const
@@ -199,8 +192,8 @@ struct RealThingsBoardFixture {
 
 struct RawRpcSmokeFixture {
     fs::path repo_root;
-    fs::path runtime_config_path;
-    fs::path fixed_config_path;
+    tb_test_support::TempSplitConfigPaths paths{
+        tb_test_support::make_temp_split_config_paths("tb_raw_rpc_smoke")};
     robot::service::ConfigService cfg;
     std::shared_ptr<robot::middleware::MqttTransport> mqtt;
     std::shared_ptr<robot::middleware::NetworkManager> net;
@@ -211,10 +204,9 @@ struct RawRpcSmokeFixture {
 
     explicit RawRpcSmokeFixture(const tb_test_support::RepoPaths& paths)
         : repo_root(paths.repo_root)
-        , runtime_config_path(paths.runtime_config_path)
-        , fixed_config_path(paths.fixed_config_path)
-        , cfg(runtime_config_path.string(), fixed_config_path.string())
+        , cfg(this->paths.runtime_path.string(), this->paths.fixed_path.string())
     {
+        tb_test_support::copy_repo_split_config(paths, this->paths);
         REQUIRE(cfg.load());
         auto mqtt_cfg = tb_test_support::build_mqtt_config(cfg, repo_root, "_raw_rpc_itest");
         REQUIRE_FALSE(mqtt_cfg.broker_uri.empty());
@@ -246,6 +238,7 @@ struct RawRpcSmokeFixture {
         if (net) {
             net->disconnect();
         }
+        tb_test_support::cleanup_split_config_paths(paths);
     }
 
     bool connect() { return net->connect(); }
@@ -258,9 +251,8 @@ struct RawRpcSmokeFixture {
 
 struct CloudRpcSmokeFixture {
     fs::path repo_root;
-    fs::path runtime_config_path;
-    fs::path fixed_config_path;
-    fs::path cache_path{"/tmp/tb_cloud_rpc_smoke_cache.jsonl"};
+    tb_test_support::TempSplitConfigPaths paths{
+        tb_test_support::make_temp_split_config_paths("tb_cloud_rpc_smoke")};
     robot::service::ConfigService cfg;
     std::shared_ptr<robot::middleware::MqttTransport> mqtt;
     std::shared_ptr<robot::middleware::NetworkManager> net;
@@ -272,12 +264,10 @@ struct CloudRpcSmokeFixture {
 
     explicit CloudRpcSmokeFixture(const tb_test_support::RepoPaths& paths)
         : repo_root(paths.repo_root)
-        , runtime_config_path(paths.runtime_config_path)
-        , fixed_config_path(paths.fixed_config_path)
-        , cfg(runtime_config_path.string(), fixed_config_path.string())
+        , cfg(this->paths.runtime_path.string(), this->paths.fixed_path.string())
     {
+        tb_test_support::copy_repo_split_config(paths, this->paths);
         REQUIRE(cfg.load());
-        fs::remove(cache_path);
         auto mqtt_cfg = tb_test_support::build_mqtt_config(cfg, repo_root, "_cloud_rpc_itest");
         REQUIRE_FALSE(mqtt_cfg.broker_uri.empty());
         spdlog::info(
@@ -291,7 +281,7 @@ struct CloudRpcSmokeFixture {
         mqtt = std::make_shared<robot::middleware::MqttTransport>(mqtt_cfg);
         net = std::make_shared<robot::middleware::NetworkManager>(
             mqtt, nullptr, robot::middleware::NetworkManager::Mode::MQTT_ONLY);
-        cache = std::make_shared<robot::middleware::DataCache>(cache_path.string());
+        cache = std::make_shared<robot::middleware::DataCache>(this->paths.cache_path.string());
         REQUIRE(cache->open());
         cloud = std::make_shared<robot::service::CloudService>(net, cache);
         cloud->register_rpc("start", [this](const std::string& /*request_id*/,
@@ -312,7 +302,7 @@ struct CloudRpcSmokeFixture {
         if (cache) {
             cache->close();
         }
-        fs::remove(cache_path);
+        tb_test_support::cleanup_split_config_paths(paths);
     }
 
     bool connect() { return net->connect(); }
@@ -435,7 +425,7 @@ TEST_CASE("Real ThingsBoard shared attributes update local pending config",
     REQUIRE(f.connect_and_request_shared_snapshot());
     REQUIRE(f.wait_for_initial_snapshot());
 
-    const auto pending_cfg_path = pending_config_path(paths->runtime_config_path);
+    const auto pending_cfg_path = f.paths.pending_path;
     const auto before_pending = f.tb_cfg->pending_config();
     const int before_attr_count = f.shared_attr_updates();
     const auto target = choose_legal_target(before_pending);

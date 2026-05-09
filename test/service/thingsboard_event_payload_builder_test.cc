@@ -2,7 +2,7 @@
 
 #include <rapidjson/document.h>
 
-#include "pv_cleaning_robot/service/thingsboard_event_payload_builder.h"
+#include "pv_cleaning_robot/service/thingsboard_control_plane.h"
 
 namespace {
 

@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <stdexcept>
 
 #include <rapidjson/document.h>
 #include <rapidjson/stringbuffer.h>
@@ -45,6 +46,21 @@ std::string build_rpc_response(bool accepted, const char* reason)
     }
     writer.EndObject();
     return {buffer.GetString(), buffer.GetSize()};
+}
+
+template <size_t PoolBytes>
+rapidjson::Document parse_small_json_object(const std::string& payload,
+                                            const char* parse_error_message)
+{
+    alignas(std::max_align_t) unsigned char pool_buffer[PoolBytes];
+    rapidjson::MemoryPoolAllocator<rapidjson::CrtAllocator> allocator(
+        pool_buffer, sizeof(pool_buffer));
+    rapidjson::Document document(&allocator);
+    document.Parse(payload.c_str(), payload.size());
+    if (document.HasParseError() || !document.IsObject()) {
+        throw std::runtime_error(parse_error_message);
+    }
+    return document;
 }
 
 }  // namespace
@@ -172,14 +188,8 @@ void CloudService::on_shared_attributes_response_message(const std::string& payl
     if (!cb) return;
 
     try {
-        alignas(std::max_align_t) unsigned char pool_buffer[kSharedAttrsPoolBytes];
-        rapidjson::MemoryPoolAllocator<rapidjson::CrtAllocator> allocator(
-            pool_buffer, sizeof(pool_buffer));
-        rapidjson::Document document(&allocator);
-        document.Parse(payload.c_str(), payload.size());
-        if (document.HasParseError() || !document.IsObject()) {
-            throw std::runtime_error("invalid shared attributes response JSON");
-        }
+        auto document = parse_small_json_object<kSharedAttrsPoolBytes>(
+            payload, "invalid shared attributes response JSON");
 
         const auto shared_it = document.FindMember("shared");
         if (shared_it == document.MemberEnd() || !shared_it->value.IsObject()) {
@@ -209,14 +219,8 @@ void CloudService::on_shared_attributes_message(const std::string& payload)
     try {
         // shared attributes 是热路径入口之一。这里优先使用局部 pool，
         // 常见小包不再向通用 heap 反复申请碎片化的小块内存。
-        alignas(std::max_align_t) unsigned char pool_buffer[kSharedAttrsPoolBytes];
-        rapidjson::MemoryPoolAllocator<rapidjson::CrtAllocator> allocator(
-            pool_buffer, sizeof(pool_buffer));
-        rapidjson::Document document(&allocator);
-        document.Parse(payload.c_str(), payload.size());
-        if (document.HasParseError()) {
-            throw std::runtime_error("invalid JSON");
-        }
+        auto document =
+            parse_small_json_object<kSharedAttrsPoolBytes>(payload, "invalid JSON");
         cb(document);
     } catch (const std::exception& ex) {
         spdlog::warn("[CloudService] Failed to process shared attributes payload: {}", ex.what());

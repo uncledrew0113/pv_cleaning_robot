@@ -189,6 +189,8 @@ private:
     static std::vector<std::string> split_path(const std::string& path);
     static std::string derive_companion_path(const std::string& active_path, const char* suffix);
     static std::string derive_fixed_path(const std::string& runtime_path);
+    std::string backup_path() const;
+    static bool load_json_file_into(const std::string& path, rapidjson::Document* out);
     static bool write_json_file(const std::string& path, const rapidjson::Value& root);
     static std::optional<rapidjson::Document> read_json_file(const std::string& path);
     static rapidjson::Document clone_document(const rapidjson::Value& root);

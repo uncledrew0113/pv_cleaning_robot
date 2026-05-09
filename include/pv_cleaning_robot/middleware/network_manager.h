@@ -37,6 +37,9 @@ public:
     Mode mode() const { return mode_; }
 
 private:
+    bool uses_mqtt() const;
+    bool uses_lorawan() const;
+
     std::shared_ptr<INetworkTransport> mqtt_;
     std::shared_ptr<INetworkTransport> lorawan_;
     Mode mode_;

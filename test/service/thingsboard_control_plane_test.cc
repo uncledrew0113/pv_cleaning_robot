@@ -2,7 +2,6 @@
 
 #include <chrono>
 #include <filesystem>
-#include <fstream>
 #include <memory>
 #include <rapidjson/document.h>
 #include <string>
@@ -12,6 +11,7 @@
 
 #include "../mock/mock_can_bus.h"
 #include "../mock/mock_serial_port.h"
+#include "integration/thingsboard_test_support.h"
 #include "pv_cleaning_robot/app/robot_fsm.h"
 #include "pv_cleaning_robot/app/robot_supervisor.h"
 #include "pv_cleaning_robot/device/brush_motor.h"
@@ -26,7 +26,6 @@
 #include "pv_cleaning_robot/service/motion_service.h"
 #include "pv_cleaning_robot/service/nav_service.h"
 #include "pv_cleaning_robot/service/scheduler_service.h"
-#include "pv_cleaning_robot/service/thingsboard_config_manager.h"
 #include "pv_cleaning_robot/service/thingsboard_control_plane.h"
 
 using robot::middleware::DataCache;
@@ -94,18 +93,15 @@ struct MockTransport final : INetworkTransport {
 };
 
 struct Fixture {
-    std::string runtime_path{"/tmp/test_tb_control_plane.runtime.json"};
-    std::string fixed_path{"/tmp/test_tb_control_plane.fixed.json"};
-    std::string pending_path{"/tmp/test_tb_control_plane.runtime.pending.json"};
-    std::string backup_path{"/tmp/test_tb_control_plane.runtime.backup.json"};
-    std::string cache_path{"/tmp/test_tb_control_plane.cache.jsonl"};
+    tb_test_support::TempSplitConfigPaths paths{
+        tb_test_support::make_temp_split_config_paths("test_tb_control_plane")};
 
-    ConfigService cfg{runtime_path, fixed_path};
+    ConfigService cfg{paths.runtime_path.string(), paths.fixed_path.string()};
     SchedulerService scheduler;
     std::shared_ptr<MockTransport> mqtt{std::make_shared<MockTransport>()};
     std::shared_ptr<NetworkManager> net{
         std::make_shared<NetworkManager>(mqtt, nullptr, NetworkManager::Mode::MQTT_ONLY)};
-    std::shared_ptr<DataCache> cache{std::make_shared<DataCache>(cache_path)};
+    std::shared_ptr<DataCache> cache{std::make_shared<DataCache>(paths.cache_path.string())};
     std::shared_ptr<CloudService> cloud{std::make_shared<CloudService>(net, cache)};
     std::shared_ptr<ThingsBoardConfigManager> tb_cfg;
     std::shared_ptr<CommandTracker> command_tracker{std::make_shared<CommandTracker>()};
@@ -132,9 +128,8 @@ struct Fixture {
     bool reboot_requested{false};
 
     Fixture() {
-        {
-        std::ofstream f(runtime_path);
-        f << R"({
+        tb_test_support::write_split_config(paths,
+                                            R"({
   "robot": {
     "passes": 1.0,
     "clean_speed_rpm": 300.0,
@@ -150,11 +145,8 @@ struct Fixture {
       { "hour": 8, "minute": 0 }
     ]
   }
-})";
-        }
-        {
-        std::ofstream f(fixed_path);
-        f << R"({
+})",
+                                            R"({
   "device": {
     "software_version": "2.0.0",
     "hardware_version": "A1",
@@ -165,8 +157,7 @@ struct Fixture {
       "client_id": "pv_robot_test_001"
     }
   }
-})";
-        }
+})");
 
         REQUIRE(cfg.load());
         cache->open();
@@ -198,11 +189,7 @@ struct Fixture {
 
     ~Fixture() {
         cache->close();
-        fs::remove(runtime_path);
-        fs::remove(fixed_path);
-        fs::remove(pending_path);
-        fs::remove(backup_path);
-        fs::remove(cache_path);
+        tb_test_support::cleanup_split_config_paths(paths);
     }
 
     void register_handlers(bool position_valid = true,
@@ -270,7 +257,7 @@ TEST_CASE("ThingsBoardControlPlane requests current release shared attribute sna
     const auto& [topic, payload] = f.mqtt->published.back();
     CHECK(topic.find("v1/devices/me/attributes/request/") == 0);
     CHECK(payload ==
-          R"({"sharedKeys":"passes,clean_speed_rpm,return_speed_rpm,brush_rpm,parking_side,start_battery_soc,charge_start_soc,charge_stop_soc,schedules"})");
+          R"({"sharedKeys":"passes,clean_speed_rpm,return_speed_rpm,brush_rpm,return_brush_rpm,parking_side,start_battery_soc,charge_start_soc,charge_stop_soc,schedules"})");
 }
 
 TEST_CASE("ThingsBoardControlPlane start RPC launches a new task", "[service][tb_control_plane]") {

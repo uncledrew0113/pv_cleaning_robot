@@ -1,6 +1,6 @@
 #pragma once
 
-#include "pv_cleaning_robot/service/thingsboard_config_manager.h"
+#include "pv_cleaning_robot/service/thingsboard_control_plane.h"
 
 namespace robot::app {
 

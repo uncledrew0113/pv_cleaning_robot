@@ -48,12 +48,9 @@ set(COMMON_SRCS
   ${PROJ}/service/nav_service.cc
   ${PROJ}/service/motion_service.cc
   ${PROJ}/service/heading_pid_controller.cc
-  ${PROJ}/service/health_payload_builder.cc
   ${PROJ}/service/health_service.cc
-  ${PROJ}/service/thingsboard_event_payload_builder.cc
   ${PROJ}/service/cloud_service.cc
   ${PROJ}/service/thingsboard_control_plane.cc
-  ${PROJ}/service/thingsboard_config_manager.cc
 
   # App 层
   ${PROJ}/app/robot_fsm.cc

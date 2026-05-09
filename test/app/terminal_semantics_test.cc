@@ -1,7 +1,7 @@
 #include <catch2/catch.hpp>
 
 #include "pv_cleaning_robot/app/parking_side_runtime.h"
-#include "pv_cleaning_robot/service/thingsboard_config_manager.h"
+#include "pv_cleaning_robot/service/thingsboard_control_plane.h"
 
 using robot::service::ParkingSide;
 

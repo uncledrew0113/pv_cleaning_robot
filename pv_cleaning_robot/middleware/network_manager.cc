@@ -2,6 +2,16 @@
 
 namespace robot::middleware {
 
+bool NetworkManager::uses_mqtt() const
+{
+    return mode_ == Mode::MQTT_ONLY || mode_ == Mode::DUAL_PARALLEL;
+}
+
+bool NetworkManager::uses_lorawan() const
+{
+    return mode_ == Mode::LORAWAN_ONLY || mode_ == Mode::DUAL_PARALLEL;
+}
+
 NetworkManager::NetworkManager(std::shared_ptr<INetworkTransport> mqtt,
                                std::shared_ptr<INetworkTransport> lorawan,
                                Mode                               mode)
@@ -13,31 +23,23 @@ NetworkManager::NetworkManager(std::shared_ptr<INetworkTransport> mqtt,
 
 bool NetworkManager::connect()
 {
-    bool ok = true;
-    switch (mode_) {
-    case Mode::MQTT_ONLY:
-        ok = mqtt_ && mqtt_->connect();
-        break;
-    case Mode::LORAWAN_ONLY:
-        ok = lorawan_ && lorawan_->connect();
-        break;
-    case Mode::DUAL_PARALLEL:
-        // 两路均尝试连接，只要其中之一成功即可继续
-        {
-            bool m = mqtt_ && mqtt_->connect();
-            bool l = lorawan_ && lorawan_->connect();
-            ok = m || l;
-        }
-        break;
+    if (mode_ == Mode::DUAL_PARALLEL) {
+        // 两路都尝试，只要还有一路存活就允许上层继续走缓存/重连逻辑。
+        const bool mqtt_ok = mqtt_ && mqtt_->connect();
+        const bool lora_ok = lorawan_ && lorawan_->connect();
+        return mqtt_ok || lora_ok;
     }
-    return ok;
+    if (uses_mqtt()) {
+        return mqtt_ && mqtt_->connect();
+    }
+    return lorawan_ && lorawan_->connect();
 }
 
 void NetworkManager::disconnect()
 {
-    if (mqtt_   && (mode_ == Mode::MQTT_ONLY    || mode_ == Mode::DUAL_PARALLEL))
+    if (mqtt_ && uses_mqtt())
         mqtt_->disconnect();
-    if (lorawan_ && (mode_ == Mode::LORAWAN_ONLY || mode_ == Mode::DUAL_PARALLEL))
+    if (lorawan_ && uses_lorawan())
         lorawan_->disconnect();
 }
 
@@ -45,9 +47,9 @@ bool NetworkManager::publish(const std::string& topic,
                              const std::string& payload)
 {
     bool ok = false;
-    if ((mode_ == Mode::MQTT_ONLY || mode_ == Mode::DUAL_PARALLEL) && mqtt_)
+    if (uses_mqtt() && mqtt_)
         ok |= mqtt_->publish(topic, payload);
-    if ((mode_ == Mode::LORAWAN_ONLY || mode_ == Mode::DUAL_PARALLEL) && lorawan_)
+    if (uses_lorawan() && lorawan_)
         ok |= lorawan_->publish(topic, payload);
     return ok;
 }
@@ -57,25 +59,22 @@ bool NetworkManager::subscribe(const std::string& topic,
 {
     // MQTT 优先订阅下行；LoRaWAN 同步注册同一回调
     bool ok = false;
-    if ((mode_ == Mode::MQTT_ONLY || mode_ == Mode::DUAL_PARALLEL) && mqtt_)
+    if (uses_mqtt() && mqtt_)
         ok |= mqtt_->subscribe(topic, cb);
-    if ((mode_ == Mode::LORAWAN_ONLY || mode_ == Mode::DUAL_PARALLEL) && lorawan_)
+    if (uses_lorawan() && lorawan_)
         ok |= lorawan_->subscribe(topic, cb);
     return ok;
 }
 
 bool NetworkManager::is_connected() const
 {
-    switch (mode_) {
-    case Mode::MQTT_ONLY:
-        return mqtt_ && mqtt_->is_connected();
-    case Mode::LORAWAN_ONLY:
-        return lorawan_ && lorawan_->is_connected();
-    case Mode::DUAL_PARALLEL:
-        return (mqtt_ && mqtt_->is_connected()) ||
-               (lorawan_ && lorawan_->is_connected());
+    if (mode_ == Mode::DUAL_PARALLEL) {
+        return (mqtt_ && mqtt_->is_connected()) || (lorawan_ && lorawan_->is_connected());
     }
-    return false;
+    if (uses_mqtt()) {
+        return mqtt_ && mqtt_->is_connected();
+    }
+    return lorawan_ && lorawan_->is_connected();
 }
 
 } // namespace robot::middleware

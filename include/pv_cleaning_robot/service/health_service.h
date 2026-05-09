@@ -6,7 +6,6 @@
 #include "pv_cleaning_robot/device/gps_device.h"
 #include "pv_cleaning_robot/device/distance_sensor.h"
 #include "pv_cleaning_robot/service/cloud_service.h"
-#include "pv_cleaning_robot/service/health_payload_builder.h"
 #include "pv_cleaning_robot/middleware/thread_executor.h"
 #include <array>
 #include <memory>
@@ -17,6 +16,37 @@ class logger;
 }
 
 namespace robot::service {
+
+// Health payload formatting is only consumed by HealthService at runtime.
+// Keep the serialization contract next to the owner instead of splitting a
+// two-file helper that forces readers to jump across the service boundary.
+class HealthPayloadBuilder {
+public:
+    struct HealthView {
+        const char* ts_iso8601{""};
+        device::WalkMotorGroup::GroupStatus walk{};
+        device::BrushMotor::Status brush{};
+        device::BMS::BatteryData bms{};
+        device::ImuDevice::ImuData imu{};
+        device::GpsDevice::GpsData gps{};
+        const device::DistSensorData* dist{nullptr};
+    };
+
+    struct DiagnosticsView {
+        const char* ts_iso8601{""};
+        device::WalkMotorGroup::GroupDiagnostics walk{};
+        device::BrushMotor::Diagnostics brush{};
+        device::BMS::Diagnostics bms{};
+        device::ImuDevice::Diagnostics imu{};
+        device::GpsDevice::Diagnostics gps{};
+        const device::DistSensorData* dist{nullptr};
+    };
+
+    static size_t build_health(const HealthView& view, char* out, size_t cap) noexcept;
+    static size_t build_diagnostics(const DiagnosticsView& view,
+                                    char* out,
+                                    size_t cap) noexcept;
+};
 
 /// @brief 遥测上报服务（HEALTH / DIAGNOSTICS 双模式）
 ///
