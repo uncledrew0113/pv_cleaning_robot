@@ -37,8 +37,10 @@ class BrushMotor {
                float counts_per_rev,
                bool watchdog_enabled,
                float watchdog_timeout_s);
+    ~BrushMotor() noexcept;
 
     bool open();
+    void close();
 
     DeviceError set_mode_speed();
     DeviceError set_mode_torque();

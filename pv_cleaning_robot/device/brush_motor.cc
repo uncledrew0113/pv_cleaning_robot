@@ -104,6 +104,13 @@ BrushMotor::BrushMotor(std::shared_ptr<hal::ISerialPort> serial,
     , watchdog_timeout_(static_cast<int>(watchdog_timeout_s * 1000.0f))
     , last_feed_time_(std::chrono::steady_clock::now()) {}
 
+BrushMotor::~BrushMotor() noexcept {
+    try {
+        close();
+    } catch (...) {
+    }
+}
+
 /**
  * @brief 打开并初始化电机控制器
  *
@@ -137,6 +144,38 @@ bool BrushMotor::open() {
     const size_t len =
         protocol::encode_set_watchdog_enabled(axis_, watchdog_enabled_, cmd, sizeof(cmd));
     return len > 0 && write_ascii_locked(cmd, len) == DeviceError::OK;
+}
+
+void BrushMotor::close() {
+    std::lock_guard<hal::PiMutex> guard(mtx_);
+    if (!serial_ || !serial_->is_open()) {
+        diag_ = Diagnostics{};
+        active_control_ = false;
+        keepalive_required_ = false;
+        target_rpm_ = 0;
+        target_torque_nm_ = 0.0f;
+        update_running_locked();
+        return;
+    }
+
+    char cmd[kCmdCap];
+    size_t len = 0;
+    if (control_mode_ == ControlMode::TORQUE) {
+        len = protocol::encode_set_torque(axis_, 0.0f, cmd, sizeof(cmd));
+    } else {
+        len = protocol::encode_set_velocity(axis_, 0.0f, cmd, sizeof(cmd));
+    }
+    if (len > 0) {
+        static_cast<void>(write_ascii_locked(cmd, len));
+    }
+
+    diag_ = Diagnostics{};
+    active_control_ = false;
+    keepalive_required_ = false;
+    target_rpm_ = 0;
+    target_torque_nm_ = 0.0f;
+    update_running_locked();
+    serial_->close();
 }
 
 /**
