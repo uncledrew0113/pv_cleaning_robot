@@ -1,4 +1,5 @@
-#include "pv_cleaning_robot/device/gps_source.h"
+// @file gpsd_gps_source.cc
+// @brief GpsdGpsSource 实现：通过 TCP 连接 gpsd 并按行解析 JSON GPS 消息。
 
 #include <chrono>
 #include <cstring>
@@ -7,12 +8,14 @@
 #include <thread>
 #include <unistd.h>
 
+#include "pv_cleaning_robot/device/gps_source.h"
+
 namespace robot::device {
 
 namespace {
 
-void close_socket(int& fd)
-{
+/// 关闭套接字并将描述符置为 -1。
+void close_socket(int& fd) {
     if (fd >= 0) {
         ::shutdown(fd, SHUT_RDWR);
         ::close(fd);
@@ -29,19 +32,19 @@ GpsdGpsSource::GpsdGpsSource(GpsdSourceConfig cfg,
     : cfg_(std::move(cfg))
     , on_data_(std::move(on_data))
     , on_parse_error_(std::move(on_parse_error))
-    , on_message_(std::move(on_message))
-{
-}
+    , on_message_(std::move(on_message)) {}
 
-GpsdGpsSource::~GpsdGpsSource()
-{
+GpsdGpsSource::~GpsdGpsSource() {
     close();
 }
 
-bool GpsdGpsSource::open()
-{
-    if (running_.load()) return true;
-    if (!connect_socket()) return false;
+/// @brief 连接 gpsd 并启动后台读取线程。
+/// @brief 连接 gpsd 并启动后台数据读取线程。
+bool GpsdGpsSource::open() {
+    if (running_.load())
+        return true;
+    if (!connect_socket())
+        return false;
     if (!send_watch()) {
         close_socket(sock_fd_);
         return false;
@@ -52,35 +55,42 @@ bool GpsdGpsSource::open()
     return true;
 }
 
-void GpsdGpsSource::close()
-{
+/// @brief 关闭 gpsd 连接并停止后台线程。
+/// @brief 关闭 gpsd 连接并停止读取线程。
+void GpsdGpsSource::close() {
     running_.store(false);
     close_socket(sock_fd_);
-    if (read_thread_.joinable()) read_thread_.join();
+    if (read_thread_.joinable())
+        read_thread_.join();
 }
 
-DeviceError GpsdGpsSource::set_output_rate(int)
-{
+/// @brief gpsd 源不支持通过此接口调整输出频率。
+/// @brief gpsd 源不支持设置输出速率。
+DeviceError GpsdGpsSource::set_output_rate(int) {
     return DeviceError::NOT_SUPPORTED;
 }
 
-DeviceError GpsdGpsSource::hot_restart()
-{
+/// @brief gpsd 源不支持热重启。
+/// @brief gpsd 源不支持热重启。
+DeviceError GpsdGpsSource::hot_restart() {
     return DeviceError::NOT_SUPPORTED;
 }
 
-DeviceError GpsdGpsSource::cold_restart()
-{
+/// @brief gpsd 源不支持冷重启。
+/// @brief gpsd 源不支持冷重启。
+DeviceError GpsdGpsSource::cold_restart() {
     return DeviceError::NOT_SUPPORTED;
 }
 
-void GpsdGpsSource::ingest_json_line_for_test(std::string_view line)
-{
+/// @brief 单元测试接口：注入 gpsd JSON 行进行解析验证。
+/// @brief 测试接口：直接注入一行 JSON 数据进行解析。
+void GpsdGpsSource::ingest_json_line_for_test(std::string_view line) {
     handle_json_line(line);
 }
 
-bool GpsdGpsSource::connect_socket()
-{
+/// @brief 建立到 gpsd 的 TCP 连接。
+/// @brief 建立到 gpsd 的 TCP 连接。
+bool GpsdGpsSource::connect_socket() {
     close_socket(sock_fd_);
 
     addrinfo hints{};
@@ -94,7 +104,8 @@ bool GpsdGpsSource::connect_socket()
 
     for (addrinfo* it = results; it != nullptr; it = it->ai_next) {
         const int fd = ::socket(it->ai_family, it->ai_socktype, it->ai_protocol);
-        if (fd < 0) continue;
+        if (fd < 0)
+            continue;
 
         if (::connect(fd, it->ai_addr, it->ai_addrlen) == 0) {
             sock_fd_ = fd;
@@ -108,16 +119,19 @@ bool GpsdGpsSource::connect_socket()
     return false;
 }
 
-bool GpsdGpsSource::send_watch()
-{
-    if (sock_fd_ < 0) return false;
+/// @brief 发送 gpsd watch 命令，订阅 JSON 数据流。
+/// @brief 发送 gpsd watch 命令以订阅 JSON 输出。
+bool GpsdGpsSource::send_watch() {
+    if (sock_fd_ < 0)
+        return false;
     const auto size = cfg_.watch.size();
     const auto sent = ::send(sock_fd_, cfg_.watch.data(), size, MSG_NOSIGNAL);
     return sent == static_cast<ssize_t>(size);
 }
 
-void GpsdGpsSource::read_loop()
-{
+/// @brief 从 gpsd 套接字循环读取数据并逐行解析。
+/// @brief 循环读取 gpsd 输出并按行分发。
+void GpsdGpsSource::read_loop() {
     char buf[512];
 
     while (running_.load()) {
@@ -132,7 +146,8 @@ void GpsdGpsSource::read_loop()
         const int n = ::recv(sock_fd_, buf, sizeof(buf), 0);
         if (n <= 0) {
             close_socket(sock_fd_);
-            if (!running_.load()) break;
+            if (!running_.load())
+                break;
             std::this_thread::sleep_for(std::chrono::seconds(1));
             continue;
         }
@@ -145,7 +160,8 @@ void GpsdGpsSource::read_loop()
                     line.remove_suffix(1);
                 }
                 if (!line.empty()) {
-                    if (on_message_) on_message_();
+                    if (on_message_)
+                        on_message_();
                     handle_json_line(line);
                 }
                 rx_len_ = 0;
@@ -155,17 +171,20 @@ void GpsdGpsSource::read_loop()
                 rx_buf_[rx_len_++] = c;
             } else {
                 rx_len_ = 0;
-                if (on_parse_error_) on_parse_error_();
+                if (on_parse_error_)
+                    on_parse_error_();
             }
         }
     }
 }
 
-void GpsdGpsSource::handle_json_line(std::string_view line)
-{
+/// @brief 处理一行 gpsd JSON 数据并触发回调。
+/// @brief 处理一行 JSON 数据，并触发相应回调。
+void GpsdGpsSource::handle_json_line(std::string_view line) {
     protocol::GpsdJsonParseResult result{};
     if (!protocol::GpsdJsonParser::parse_line(line, data_, result)) {
-        if (on_parse_error_) on_parse_error_();
+        if (on_parse_error_)
+            on_parse_error_();
         return;
     }
 
