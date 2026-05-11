@@ -4,7 +4,7 @@
  * @LastEditors: UncleDrew
  * @LastEditTime: 2026-05-09 15:23:06
  * @FilePath: /pv_cleaning_robot/pv_cleaning_robot/service/motion_service.cc
- * @Description: 运动服务——集成 WalkMotorGroup + IMU 航向 PID + 边缘触发覆盖
+ * @Description: 运动服务——集成 WalkMotorGroup + IMU 姿态纠偏 + 边缘触发覆盖
  *
  * Copyright (c) 2026 by UncleDrew, All Rights Reserved.
  */
@@ -100,7 +100,7 @@ bool MotionService::start_cleaning() {
         return false;
     }
 
-    // 清扫和返程都用“角速度收敛到 0”的同一套速率 PID，只是轮速方向不同。
+    // 清扫和返程都使用同一套 IMU 姿态纠偏，只是轮速方向不同。
     sync_heading_pid_enabled();
 
     // 物理安装：LT/RT 正转=前进，LB/RB 因安装方向相反，负转=前进
@@ -187,11 +187,32 @@ bool MotionService::is_edge_override_active() const {
 // ── 周期心跳（50 ms，由 ThreadExecutor 调用）──────────────────────────────
 
 void MotionService::update() {
-    // 读取最新 IMU yaw（已由 ImuDevice 后台线程更新，无阻塞）
-    const float raw_yaw = imu_ ? imu_->get_latest().yaw_deg : 0.0f;
-    // EMA 低通滤波（α=0.8，τ≈100ms @50ms 周期），抑制 IMU 高频噪声对 PID 的扰动
-    // 首次调用硬初始化（直接赋值 raw_yaw），避免从 0 缓慢收敛引发 PID 初始抖动；
+    device::ImuDevice::ImuData imu_data{};
+    if (imu_) {
+        imu_data = imu_->get_latest();
+    }
+    const float raw_pitch = imu_data.pitch_deg;
+    const float raw_roll = imu_data.roll_deg;
+    const float raw_yaw = imu_data.yaw_deg;
+    const float raw_omega_z = imu_data.gyro[2] * (180.0f / 3.14159265f);
+
+    // EMA 低通滤波（α=0.8，τ≈100ms @50ms 周期），抑制 IMU 高频噪声对姿态纠偏的扰动。
+    // 首次调用硬初始化，避免从 0 缓慢收敛引发控制初始抖动；
     // 使用成员变量（非 static）解决多实例共享和 IMU 重启后的污染问题。
+    if (!filtered_pitch_inited_) {
+        filtered_pitch_ = raw_pitch;
+        filtered_pitch_inited_ = true;
+    } else {
+        filtered_pitch_ = 0.8f * filtered_pitch_ + 0.2f * raw_pitch;
+    }
+
+    if (!filtered_roll_inited_) {
+        filtered_roll_ = raw_roll;
+        filtered_roll_inited_ = true;
+    } else {
+        filtered_roll_ = 0.8f * filtered_roll_ + 0.2f * raw_roll;
+    }
+
     if (!filtered_yaw_inited_) {
         filtered_yaw_ = raw_yaw;
         filtered_yaw_inited_ = true;
@@ -199,8 +220,6 @@ void MotionService::update() {
         filtered_yaw_ = 0.8f * filtered_yaw_ + 0.2f * raw_yaw;
     }
 
-    // Z 轴角速度（rad/s → deg/s），EMA 低通滤波抑制噪声
-    const float raw_omega_z = imu_ ? (imu_->get_latest().gyro[2] * (180.0f / 3.14159265f)) : 0.0f;
     if (!filtered_omega_z_inited_) {
         filtered_omega_z_ = raw_omega_z;
         filtered_omega_z_inited_ = true;
@@ -208,12 +227,12 @@ void MotionService::update() {
         filtered_omega_z_ = 0.8f * filtered_omega_z_ + 0.2f * raw_omega_z;
     }
 
-    // 传入 yaw 和 omega_z，由 WalkMotorGroup::update() 完成：
+    // 传入过滤后的 pitch/roll/yaw/gyro_z，由 WalkMotorGroup::update() 完成：
     //   1. 更新 online 超时状态
     //   2. 排干命令队列（消费 set_speeds/clear_override 投递的 Cmd）
     //   3. override 激活时跳过重发（不干扰紧急停车帧）
-    //   4. 若 heading_ctrl_en_，计算 PID 差速修正并发帧
-    group_->update(filtered_yaw_, filtered_omega_z_);
+    //   4. 若 heading_ctrl_en_，计算姿态差速修正并发帧
+    group_->update(filtered_pitch_, filtered_roll_, filtered_yaw_, filtered_omega_z_);
 
     // 注意：brush_->update() 已移到 bms_exec 线程（SCHED_OTHER, 500ms）
     // 原因：Modbus RTU 读取寄存器需 5~10ms 阻塞 I/O，放在 walk_ctrl(FIFO 80, 20ms)

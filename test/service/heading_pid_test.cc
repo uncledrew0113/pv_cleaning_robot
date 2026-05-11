@@ -1,237 +1,163 @@
-/**
- * HeadingPidController 单元测试（速率 PID 版本）
- * [service][heading_pid]
- *
- * 测试策略：
- *   - 纯软件，无硬件依赖
- *   - 覆盖：使能/禁用、死区、方向约定（CCW/CW）、限幅、积分、reset() 等
- *   - 验证正返程对称性（相同 omega_z 输入得到相同 correction）
- */
 #include <catch2/catch.hpp>
+
 #include <cmath>
+#include <tuple>
+#include <vector>
 
 #include "pv_cleaning_robot/service/heading_pid_controller.h"
 
 using robot::service::HeadingPidController;
 
-// ── 辅助：kp-only 参数（ki=kd=0，deadband=0，便于精确验证）─────────────────────────
-static HeadingPidController::Params kp_only(float kp, float max_out = 100.0f) {
+namespace {
+
+HeadingPidController::Params test_params() {
     HeadingPidController::Params p;
-    p.kp = kp;
-    p.ki = 0.0f;
-    p.kd = 0.0f;
-    p.max_output = max_out;
-    p.integral_limit = 50.0f;
-    p.deadband_rate_dps = 0.0f;
+    p.pitch_alpha = 1.0f;
+    p.roll_alpha = 1.0f;
+    p.gyro_alpha = 1.0f;
+    p.pitch_drop_threshold = 0.10f;
+    p.roll_threshold = 0.50f;
+    p.learn_improve_eps = 0.02f;
+    p.best_decay_per_s = 0.0f;
+    p.freeze_gyro_z_threshold = 30.0f;
+    p.freeze_pitch_rate_threshold = 20.0f;
+    p.freeze_roll_rate_threshold = 20.0f;
+    p.max_output = 30.0f;
+    p.min_effective_output = 0.0f;
+    p.warmup_ms = 40;
+    p.hold_ms = 40;
+    p.freeze_release_ms = 60;
     return p;
 }
 
-// ── 基础行为 ──────────────────────────────────────────────────────────────────
+}  // namespace
 
-TEST_CASE("HeadingPidController: 未使能时 compute() 始终返回 0", "[service][heading_pid]") {
-    HeadingPidController pid;
-    REQUIRE(pid.compute(0.0f, 0.02f) == Approx(0.0f));
-    REQUIRE(pid.compute(10.0f, 0.02f) == Approx(0.0f));
-    REQUIRE(pid.compute(-10.0f, 0.02f) == Approx(0.0f));
-    REQUIRE(pid.is_enabled() == false);
+TEST_CASE("HeadingPidController: disabled controller outputs zero", "[service][heading_pid]") {
+    HeadingPidController ctrl(test_params());
+
+    REQUIRE(ctrl.compute(-34.8f, -2.0f, 0.0f, 0.02f) == Approx(0.0f));
 }
 
-TEST_CASE("HeadingPidController: 死区内返回 0", "[service][heading_pid]") {
-    HeadingPidController::Params p = kp_only(2.0f);
-    p.deadband_rate_dps = 2.0f;
-    HeadingPidController pid(p);
-    pid.enable(true);
-
-    // |omega_z| < deadband → 0
-    REQUIRE(pid.compute(1.5f, 0.02f) == Approx(0.0f));
-    REQUIRE(pid.compute(-1.5f, 0.02f) == Approx(0.0f));
-    // |omega_z| == deadband（≤ 判断）→ 0
-    REQUIRE(pid.compute(2.0f, 0.02f) == Approx(0.0f));
-    REQUIRE(pid.compute(-2.0f, 0.02f) == Approx(0.0f));
-}
-
-TEST_CASE("HeadingPidController: CCW旋转（omega_z>0）→ correction<0（CW纠偏）",
+TEST_CASE("HeadingPidController: warmup needs a stable window, not one long sample",
           "[service][heading_pid]") {
-    HeadingPidController pid(kp_only(2.0f));
-    pid.enable(true);
+    HeadingPidController ctrl(test_params());
+    ctrl.enable(true);
 
-    // omega_z = +10 deg/s (CCW) → error = -10 → correction = 2 * (-10) = -20
-    float c = pid.compute(10.0f, 0.0f);
-    REQUIRE(c < 0.0f);
-    REQUIRE(c == Approx(-20.0f).margin(0.01f));
+    REQUIRE(ctrl.compute(-34.8f, -2.0f, 0.0f, 0.10f) == Approx(0.0f));
+
+    const auto state = ctrl.debug_state();
+    REQUIRE(state.mode == HeadingPidController::Mode::UNINITIALIZED);
+    REQUIRE(state.pitch_abs_best == Approx(0.0f));
 }
 
-TEST_CASE("HeadingPidController: CW旋转（omega_z<0）→ correction>0（CCW纠偏）",
+TEST_CASE("HeadingPidController: learns local pitch best before tracking",
           "[service][heading_pid]") {
-    HeadingPidController pid(kp_only(2.0f));
-    pid.enable(true);
+    HeadingPidController ctrl(test_params());
+    ctrl.enable(true);
 
-    // omega_z = -10 deg/s (CW) → error = +10 → correction = 2 * 10 = +20
-    float c = pid.compute(-10.0f, 0.0f);
-    REQUIRE(c > 0.0f);
-    REQUIRE(c == Approx(20.0f).margin(0.01f));
+    for (int i = 0; i < 5; ++i) {
+        REQUIRE(ctrl.compute(-34.2f, -4.5f, 0.0f, 0.02f) == Approx(0.0f));
+    }
+
+    for (int i = 0; i < 5; ++i) {
+        REQUIRE(ctrl.compute(-34.8f, -2.0f, 0.0f, 0.02f) == Approx(0.0f));
+    }
+
+    const auto state = ctrl.debug_state();
+    REQUIRE(state.mode == HeadingPidController::Mode::TRACK);
+    REQUIRE(state.pitch_abs_best == Approx(34.8f).margin(0.05f));
+    REQUIRE(state.roll_at_best == Approx(-2.0f).margin(0.1f));
 }
 
-TEST_CASE("HeadingPidController: 输出限幅", "[service][heading_pid]") {
-    HeadingPidController pid(kp_only(10.0f, 30.0f));
-    pid.enable(true);
-
-    // omega_z = 100 → err = -100 → kp*err = -1000 → clamped to -30
-    REQUIRE(pid.compute(100.0f, 0.0f) == Approx(-30.0f).margin(0.01f));
-    // omega_z = -100 → err = +100 → kp*err = +1000 → clamped to +30
-    REQUIRE(pid.compute(-100.0f, 0.0f) == Approx(30.0f).margin(0.01f));
-}
-
-TEST_CASE("HeadingPidController: 正返程对称（相同 omega_z 给出相同 correction）",
+TEST_CASE("HeadingPidController: right-biased sample commands negative correction toward center",
           "[service][heading_pid]") {
-    // 正向和返程机器人面对相反方向，但 omega_z 的物理意义不变。
-    // 同一 omega_z 输入在两次独立 PID 实例上应产生相同的 correction。
-    HeadingPidController pid1(kp_only(2.0f));
-    HeadingPidController pid2(kp_only(2.0f));
-    pid1.enable(true);
-    pid2.enable(true);
+    HeadingPidController ctrl(test_params());
+    ctrl.enable(true);
 
-    float c1 = pid1.compute(5.0f, 0.02f);
-    float c2 = pid2.compute(5.0f, 0.02f);
-    REQUIRE(c1 == Approx(c2).margin(0.001f));
-    REQUIRE(c1 < 0.0f);  // omega_z > 0 → correction < 0
+    for (int i = 0; i < 10; ++i) {
+        ctrl.compute(-34.83f, -1.95f, 0.0f, 0.02f);
+    }
+
+    float correction = 0.0f;
+    for (int i = 0; i < 4; ++i) {
+        correction = ctrl.compute(-34.17f, -5.98f, 0.0f, 0.02f);
+    }
+
+    REQUIRE(correction < 0.0f);
 }
 
-// ── 积分行为 ──────────────────────────────────────────────────────────────────
+TEST_CASE("HeadingPidController: best reference waits for a new stable window after freeze",
+          "[service][heading_pid]") {
+    auto params = test_params();
+    params.warmup_ms = 80;
+    params.freeze_release_ms = 60;
 
-TEST_CASE("HeadingPidController: 积分累积", "[service][heading_pid]") {
-    HeadingPidController::Params p;
-    p.kp = 0.0f; p.ki = 1.0f; p.kd = 0.0f;
-    p.max_output = 1000.0f; p.integral_limit = 1000.0f;
-    p.deadband_rate_dps = 0.0f;
-    HeadingPidController pid(p);
-    pid.enable(true);
+    HeadingPidController ctrl(params);
+    ctrl.enable(true);
 
-    // omega_z = 5 → err = -5，dt=1s: integral += -5 per step
-    pid.compute(5.0f, 1.0f);  // integral = -5
-    pid.compute(5.0f, 1.0f);  // integral = -10
-    // dt=0, not increasing; output = ki * integral = 1 * (-10) = -10
-    float c = pid.compute(5.0f, 0.0f);
-    REQUIRE(c == Approx(-10.0f).margin(0.1f));
+    for (int i = 0; i < 12; ++i) {
+        ctrl.compute(-34.8f, -2.0f, 0.0f, 0.02f);
+    }
+
+    const auto learned = ctrl.debug_state();
+    REQUIRE(learned.mode == HeadingPidController::Mode::TRACK);
+    REQUIRE(learned.pitch_abs_best == Approx(34.8f).margin(0.05f));
+
+    REQUIRE(ctrl.compute(-34.5f, 0.0f, 80.0f, 0.02f) == Approx(0.0f));
+    REQUIRE(ctrl.debug_state().mode == HeadingPidController::Mode::FREEZE);
+
+    for (int i = 0; i < 3; ++i) {
+        REQUIRE(ctrl.compute(-35.2f, -1.0f, 0.0f, 0.02f) == Approx(0.0f));
+    }
+
+    const auto still_frozen = ctrl.debug_state();
+    REQUIRE(still_frozen.mode == HeadingPidController::Mode::TRACK);
+    REQUIRE(still_frozen.pitch_abs_best == Approx(34.8f).margin(0.05f));
+    REQUIRE(still_frozen.roll_at_best == Approx(-2.0f).margin(0.1f));
+
+    REQUIRE(ctrl.compute(-35.2f, -1.0f, 0.0f, 0.02f) == Approx(0.0f));
+    const auto refreshed = ctrl.debug_state();
+    REQUIRE(refreshed.pitch_abs_best == Approx(35.2f).margin(0.05f));
+    REQUIRE(refreshed.roll_at_best == Approx(-1.0f).margin(0.1f));
 }
 
-TEST_CASE("HeadingPidController: 积分限幅", "[service][heading_pid]") {
-    HeadingPidController::Params p;
-    p.kp = 0.0f; p.ki = 1.0f; p.kd = 0.0f;
-    p.max_output = 1000.0f; p.integral_limit = 10.0f;
-    p.deadband_rate_dps = 0.0f;
-    HeadingPidController pid(p);
-    pid.enable(true);
+TEST_CASE("HeadingPidController: disturbance enters freeze and suppresses output",
+          "[service][heading_pid]") {
+    HeadingPidController ctrl(test_params());
+    ctrl.enable(true);
 
-    // 连续多次积分，应被限幅到 -10（integral_limit）
-    for (int i = 0; i < 20; ++i)
-        pid.compute(5.0f, 1.0f);  // err = -5 per step
+    for (int i = 0; i < 10; ++i) {
+        ctrl.compute(-34.83f, -1.95f, 0.0f, 0.02f);
+    }
 
-    float c = pid.compute(5.0f, 0.0f);  // dt=0，不再增加
-    REQUIRE(c == Approx(-10.0f).margin(0.1f));
+    const float correction = ctrl.compute(-34.5f, 0.0f, 80.0f, 0.02f);
+    REQUIRE(correction == Approx(0.0f));
+    REQUIRE(ctrl.debug_state().mode == HeadingPidController::Mode::FREEZE);
 }
 
-TEST_CASE("HeadingPidController: 误差过零时清零积分", "[service][heading_pid]") {
-    HeadingPidController::Params p;
-    p.kp = 0.0f; p.ki = 1.0f; p.kd = 0.0f;
-    p.max_output = 1000.0f; p.integral_limit = 1000.0f;
-    p.deadband_rate_dps = 0.0f;
-    HeadingPidController pid(p);
-    pid.enable(true);
+TEST_CASE("HeadingPidController: replayed IMU sequence tracks a local pitch maximum",
+          "[service][heading_pid][replay]") {
+    HeadingPidController ctrl(test_params());
+    ctrl.enable(true);
 
-    // omega_z = +5 → err = -5，积分两次
-    pid.compute(5.0f, 1.0f);  // integral = -5
-    pid.compute(5.0f, 1.0f);  // integral = -10
+    const std::vector<std::tuple<float, float, float>> samples = {
+        {-34.17f, -5.98f, 7.81f},
+        {-34.22f, -5.67f, 7.42f},
+        {-34.50f, -3.00f, 1.58f},
+        {-34.83f, -1.95f, -0.49f},
+        {-34.74f, -1.16f, -1.12f},
+        {-34.66f, -0.73f, -3.59f},
+        {-34.54f, 0.65f, -6.23f},
+        {-34.58f, 1.44f, -7.36f},
+    };
 
-    // omega_z 反向 → err 符号翻转 → 触发积分清零
-    float c = pid.compute(-5.0f, 0.0f);  // err=+5, sign change → integral = 0
-    // correction = kp*err + ki*0 = 0 + 0 = 0（kp=0）
-    REQUIRE(c == Approx(0.0f).margin(0.01f));
-}
+    float correction = 0.0f;
+    for (const auto& [pitch, roll, gyro_z] : samples) {
+        correction = ctrl.compute(pitch, roll, gyro_z, 0.02f);
+    }
 
-TEST_CASE("HeadingPidController: 死区内积分不累积", "[service][heading_pid]") {
-    HeadingPidController::Params p;
-    p.kp = 0.0f; p.ki = 1.0f; p.kd = 0.0f;
-    p.max_output = 1000.0f; p.integral_limit = 1000.0f;
-    p.deadband_rate_dps = 2.0f;
-    HeadingPidController pid(p);
-    pid.enable(true);
-
-    // 在死区内积分不应累积
-    for (int i = 0; i < 10; ++i)
-        pid.compute(1.0f, 1.0f);  // |omega_z|=1 < deadband=2
-
-    // 退出死区（omega_z=5），dt=0 不再增加积分，correction=0（积分为0）
-    float c = pid.compute(5.0f, 0.0f);
-    REQUIRE(c == Approx(0.0f).margin(0.01f));
-}
-
-// ── 使能/禁用/复位 ────────────────────────────────────────────────────────────
-
-TEST_CASE("HeadingPidController: enable(false) 返回 0 并禁用", "[service][heading_pid]") {
-    HeadingPidController pid(kp_only(1.0f));
-    pid.enable(true);
-    pid.compute(10.0f, 0.02f);
-
-    pid.enable(false);
-    REQUIRE(pid.is_enabled() == false);
-    REQUIRE(pid.compute(10.0f, 0.02f) == Approx(0.0f));
-}
-
-TEST_CASE("HeadingPidController: enable(false) 后重新使能正常工作", "[service][heading_pid]") {
-    HeadingPidController pid(kp_only(2.0f));
-    pid.enable(true);
-    pid.compute(10.0f, 0.02f);
-    pid.enable(false);
-
-    pid.enable(true);
-    // omega_z = +5 → err = -5 → correction = 2 * (-5) = -10
-    float c = pid.compute(5.0f, 0.0f);
-    REQUIRE(c == Approx(-10.0f).margin(0.01f));
-}
-
-TEST_CASE("HeadingPidController: reset() 不改变使能状态", "[service][heading_pid]") {
-    HeadingPidController pid(kp_only(1.0f));
-    pid.enable(true);
-    pid.compute(5.0f, 0.02f);
-
-    pid.reset();
-    REQUIRE(pid.is_enabled() == true);
-}
-
-TEST_CASE("HeadingPidController: reset() 清零积分", "[service][heading_pid]") {
-    HeadingPidController::Params p;
-    p.kp = 0.0f; p.ki = 1.0f; p.kd = 0.0f;
-    p.max_output = 1000.0f; p.integral_limit = 1000.0f;
-    p.deadband_rate_dps = 0.0f;
-    HeadingPidController pid(p);
-    pid.enable(true);
-
-    pid.compute(5.0f, 1.0f);  // integral = -5
-
-    pid.reset();
-
-    // 积分清零后，dt=0 时 correction = ki*0 + kp*(-5) = 0（kp=0）
-    float c = pid.compute(5.0f, 0.0f);
-    REQUIRE(c == Approx(0.0f).margin(0.01f));
-}
-
-TEST_CASE("HeadingPidController: set_params 热更新不复位积分", "[service][heading_pid]") {
-    HeadingPidController::Params p;
-    p.kp = 0.0f; p.ki = 1.0f; p.kd = 0.0f;
-    p.max_output = 1000.0f; p.integral_limit = 1000.0f;
-    p.deadband_rate_dps = 0.0f;
-    HeadingPidController pid(p);
-    pid.enable(true);
-
-    pid.compute(5.0f, 1.0f);  // integral = -5
-
-    // 热更新 kp=2，积分不清零
-    HeadingPidController::Params p2 = p;
-    p2.kp = 2.0f;
-    pid.set_params(p2);
-
-    // dt=0: correction = kp*err + ki*integral = 2*(-5) + 1*(-5) = -15
-    float c = pid.compute(5.0f, 0.0f);
-    REQUIRE(c == Approx(-15.0f).margin(0.5f));
+    const auto state = ctrl.debug_state();
+    REQUIRE(state.pitch_abs_best >= Approx(34.7f));
+    REQUIRE(state.mode != HeadingPidController::Mode::UNINITIALIZED);
+    REQUIRE(std::isfinite(correction));
 }

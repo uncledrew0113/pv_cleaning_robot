@@ -162,10 +162,10 @@ std::string build_segment_summary_json(int seg,
 std::string build_final_summary_json(int total_segs,
                                      int total_records,
                                      float max_drift_all_deg,
-                                     float kp,
-                                     float ki,
-                                     float kd,
-                                     float deadband_rate_dps)
+                                     float pitch_drop_threshold,
+                                     float roll_threshold,
+                                     float freeze_gyro_z_threshold,
+                                     float max_output)
 {
     rapidjson::StringBuffer buffer;
     rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
@@ -178,21 +178,45 @@ std::string build_final_summary_json(int total_segs,
     writer.Int(total_records);
     writer.Key("max_drift_all_deg");
     writer.Double(max_drift_all_deg);
-    writer.Key("kp");
-    writer.Double(kp);
-    writer.Key("ki");
-    writer.Double(ki);
-    writer.Key("kd");
-    writer.Double(kd);
-    writer.Key("deadband_rate_dps");
-    writer.Double(deadband_rate_dps);
+    writer.Key("pitch_drop_threshold");
+    writer.Double(pitch_drop_threshold);
+    writer.Key("roll_threshold");
+    writer.Double(roll_threshold);
+    writer.Key("freeze_gyro_z_threshold");
+    writer.Double(freeze_gyro_z_threshold);
+    writer.Key("max_output");
+    writer.Double(max_output);
     writer.EndObject();
     return {buffer.GetString(), buffer.GetSize()};
+}
+
+struct ScopedActiveFixture {
+    explicit ScopedActiveFixture(hw::IGracefulShutdown* fixture) : fixture_(fixture) {
+        hw::HwExitGuard::instance().set_active(fixture_);
+    }
+
+    ~ScopedActiveFixture() {
+        hw::HwExitGuard::instance().clear_active(fixture_);
+    }
+
+   private:
+    hw::IGracefulShutdown* fixture_;
+};
+
+void fail_if_exit_requested(hw::FullSystemFixture& f) {
+    if (!hw::HwExitGuard::instance().exit_requested()) {
+        return;
+    }
+    f.shutdown();
+    FAIL("hardware test interrupted by signal");
 }
 
 void run_combined_system_test(hw::FullSystemFixture& f,
                               const char* tag,
                               bool expect_real_brush) {
+    hw::HwExitGuard::instance().install();
+    ScopedActiveFixture active_fixture(&f);
+
     const int passes_int = static_cast<int>(f.p.combined_passes);
     const double passes_half = f.p.combined_passes * 2.0;
     spdlog::warn("[{}] ====================================", tag);
@@ -217,6 +241,7 @@ void run_combined_system_test(hw::FullSystemFixture& f,
     spdlog::warn("[{}] ====================================", tag);
     (void)passes_int;
     REQUIRE(f.init(f.p.health_jsonl_path));
+    fail_if_exit_requested(f);
     REQUIRE(f.health != nullptr);
 
     std::atomic<bool> wd_timeout{false};
@@ -233,6 +258,7 @@ void run_combined_system_test(hw::FullSystemFixture& f,
     int brush_fault_samples = 0;
 
     auto poll_once = [&]() {
+        fail_if_exit_requested(f);
         f.bms->update();
         f.health->update();
         f.watchdog->heartbeat(wd_tid);
@@ -263,12 +289,14 @@ void run_combined_system_test(hw::FullSystemFixture& f,
         using clock = std::chrono::steady_clock;
         auto deadline = clock::now() + std::chrono::seconds(f.p.limit_timeout_sec);
         while (clock::now() < deadline) {
+            fail_if_exit_requested(f);
             std::string curr = f.fsm->current_state();
             if (curr != from)
                 return curr;
             poll_once();
             std::this_thread::sleep_for(5ms);
         }
+        fail_if_exit_requested(f);
         return from;
     };
 
@@ -355,10 +383,12 @@ void run_combined_system_test(hw::FullSystemFixture& f,
                 ++total_retained_lines;
                 auto j = parse_json_line(line);
                 REQUIRE(j.HasMember("ts"));
-                REQUIRE(j.HasMember("walk"));
-                REQUIRE(j.HasMember("bms"));
-                REQUIRE(j.HasMember("imu"));
-                CHECK(!std::string(j["ts"].GetString()).empty());
+                REQUIRE(j["ts"].IsUint64());
+                REQUIRE(j.HasMember("values"));
+                REQUIRE(j["values"].IsObject());
+                REQUIRE(j["values"].HasMember("lt_rpm"));
+                REQUIRE(j["values"].HasMember("bat_soc"));
+                REQUIRE(j["values"].HasMember("imu_p"));
             }
         }
 
@@ -890,6 +920,9 @@ TEST_CASE("System（真实硬件）N=1 完整任务链（真实限位触发）",
         f.wait_state("CleanReturn", std::chrono::milliseconds(f.p.limit_timeout_sec * 1000));
 
     {
+        if (!left_hit && hw::HwExitGuard::instance().exit_requested()) {
+            FAIL("hardware test interrupted by signal");
+        }
         INFO("左侧限位等待超时，请检查导轨/传感器接线");
         REQUIRE(left_hit);
     }
@@ -904,6 +937,9 @@ TEST_CASE("System（真实硬件）N=1 完整任务链（真实限位触发）",
         f.wait_state("Charging", std::chrono::milliseconds(f.p.limit_timeout_sec * 1000));
 
     {
+        if (!right_hit && hw::HwExitGuard::instance().exit_requested()) {
+            FAIL("hardware test interrupted by signal");
+        }
         INFO("右侧限位等待超时，请检查导轨/传感器接线");
         REQUIRE(right_hit);
     }
@@ -940,21 +976,23 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + 真实滚刷 + 全程�
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// [hw_system][pid_combined] — N 趟完整任务链 + 航向 PID + 全程 yaw 指标采集
+// [hw_system][pid_combined] — N 趟完整任务链 + 姿态纠偏 + 真实滚刷 + 全程 yaw 指标采集
 // ────────────────────────────────────────────────────────────────────────────
-TEST_CASE("System（真实硬件）N 趟完整任务链 + PID 控制 + yaw 指标采集",
+TEST_CASE("System（真实硬件）N 趟完整任务链 + PID 控制 + 真实滚刷 + yaw 指标采集",
           "[hw_system][pid_combined]") {
-    hw::FullSystemFixture f(true /* pid_on */);
+    hw::FullSystemFixture f(true /* pid_on */, true /* use_real_brush */);
+    hw::HwExitGuard::instance().install();
+    ScopedActiveFixture active_fixture(&f);
     const double passes_half = f.p.combined_passes * 2.0;
     spdlog::warn("[hw_system][pid_combined] ====================================");
     spdlog::warn("[hw_system][pid_combined] ⚠ 机器人将运动 {:.1f} 趟（{} 段）！",
                  f.p.combined_passes,
                  static_cast<int>(passes_half));
-    spdlog::warn("[hw_system][pid_combined] PID kp={:.2f} ki={:.3f} kd={:.3f} deadband={:.1f}°/s",
-                 f.p.pid.kp,
-                 f.p.pid.ki,
-                 f.p.pid.kd,
-                 f.p.pid.deadband_rate_dps);
+    spdlog::warn(
+        "[hw_system][pid_combined] attitude pitch_drop={:.2f} roll_threshold={:.2f} freeze_gyro={:.1f}°/s",
+        f.p.pid.pitch_drop_threshold,
+        f.p.pid.roll_threshold,
+        f.p.pid.freeze_gyro_z_threshold);
     spdlog::warn("[hw_system][pid_combined] 健康数据: {}", f.p.health_jsonl_path);
     spdlog::warn("[hw_system][pid_combined] PID 指标: {}", f.p.pid_jsonl_path);
     spdlog::warn("[hw_system][pid_combined] 最大漂移警告阈值: {:.1f}°", f.p.pid_max_drift_deg);
@@ -962,6 +1000,7 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + PID 控制 + yaw 指�
     spdlog::warn("[hw_system][pid_combined] ====================================");
 
     REQUIRE(f.init(f.p.health_jsonl_path));
+    fail_if_exit_requested(f);
     REQUIRE(f.health != nullptr);
 
     // 打开 pid_metrics.jsonl（测试结束不删除，供离线分析）
@@ -1012,6 +1051,7 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + PID 控制 + yaw 指�
 
     // 每次调用：刷新 BMS + 写健康 JSONL + 喂狗 + 写 pid_metrics JSONL
     auto poll_once = [&]() {
+        fail_if_exit_requested(f);
         f.bms->update();
         f.health->update();
         f.watchdog->heartbeat(wd_tid);
@@ -1056,12 +1096,14 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + PID 控制 + yaw 指�
     auto wait_transition = [&](const std::string& from) -> std::string {
         auto deadline = clock::now() + std::chrono::seconds(f.p.limit_timeout_sec);
         while (clock::now() < deadline) {
+            fail_if_exit_requested(f);
             std::string curr = f.fsm->current_state();
             if (curr != from)
                 return curr;
             poll_once();
             std::this_thread::sleep_for(5ms);
         }
+        fail_if_exit_requested(f);
         return from;  // 超时：状态未变
     };
 
@@ -1134,10 +1176,10 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + PID 控制 + yaw 指�
                    seg_idx,
                    total_health_records,
                    std::round(max_drift_all * 100.0f) / 100.0f,
-                   f.p.pid.kp,
-                   f.p.pid.ki,
-                   f.p.pid.kd,
-                   f.p.pid.deadband_rate_dps)
+                   f.p.pid.pitch_drop_threshold,
+                   f.p.pid.roll_threshold,
+                   f.p.pid.freeze_gyro_z_threshold,
+                   f.p.pid.max_output)
             << '\n';
     pid_ofs.close();
 

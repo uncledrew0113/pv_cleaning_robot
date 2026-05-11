@@ -68,6 +68,24 @@ bool RobotSupervisor::start_task(bool at_parking_side, bool position_valid, floa
     return fsm_->current_state() == "CleanFwd" || fsm_->current_state() == "CleanReturn";
 }
 
+bool RobotSupervisor::start_task_from_current_position(bool position_valid, float battery_soc) {
+    const auto state = fsm_->current_state();
+    if (!is_new_task_start_state(state) || !position_valid) {
+        return false;
+    }
+    const auto runtime_cfg = start_runtime_config();
+    if (battery_soc < static_cast<float>(runtime_cfg.start_battery_soc)) {
+        return false;
+    }
+    if (tb_cfg_->has_pending_config() && !tb_cfg_->promote_pending_to_active()) {
+        return false;
+    }
+    EvRpcStartTask start_evt;
+    start_evt.passes = static_cast<float>(tb_cfg_->active_config().passes);
+    fsm_->dispatch(start_evt);
+    return fsm_->current_state() == "CleanFwd" || fsm_->current_state() == "CleanReturn";
+}
+
 bool RobotSupervisor::stop_task() {
     const auto state = fsm_->current_state();
     if (!is_cleaning_state(state) && state != "Returning") {

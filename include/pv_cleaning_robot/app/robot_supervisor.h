@@ -25,6 +25,7 @@ public:
                     std::shared_ptr<service::NavService> nav);
 
     bool start_task(bool at_parking_side, bool position_valid, float battery_soc);
+    bool start_task_from_current_position(bool position_valid, float battery_soc);
     bool stop_task();
     bool return_task(bool at_parking_side);
     void tick_safety();

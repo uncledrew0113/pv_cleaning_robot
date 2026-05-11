@@ -58,11 +58,6 @@ static int16_t be16s(uint8_t hi, uint8_t lo) {
     return static_cast<int16_t>((static_cast<uint16_t>(hi) << 8) | lo);
 }
 
-/// 从 big-endian 两字节中恢复 uint16
-static uint16_t be16u(uint8_t hi, uint8_t lo) {
-    return static_cast<uint16_t>((static_cast<uint16_t>(hi) << 8) | lo);
-}
-
 /// 构造 M1502E_111 状态反馈帧（CAN ID = 0x96 + motor_id）
 static robot::hal::CanFrame make_status_frame(
     uint8_t motor_id,
@@ -357,24 +352,41 @@ TEST_CASE("设备层WalkMotorGroup - HeadingPidParams 是 HeadingPidController::
     SUCCEED("编译期类型别名验证通过");
 }
 
-TEST_CASE("设备层WalkMotorGroup - update() PID 使能时上下轨差速（omega_z=+10°/s CCW→上轨减速/下轨加速）",
+TEST_CASE("设备层WalkMotorGroup - update() uses pitch/roll correction when heading control is enabled",
           "[device][walk_motor_group]") {
     auto bus = std::make_shared<MockCanBus>();
     device::WalkMotorGroup group(bus, 1u);
     group.open();
 
-    // 建立基础匀速（前进 100 RPM），enqueue 到命令队列
+    device::WalkMotorGroup::HeadingPidParams params;
+    params.pitch_alpha = 1.0f;
+    params.roll_alpha = 1.0f;
+    params.gyro_alpha = 1.0f;
+    params.pitch_drop_threshold = 0.10f;
+    params.roll_threshold = 0.50f;
+    params.learn_improve_eps = 0.02f;
+    params.best_decay_per_s = 0.0f;
+    params.freeze_gyro_z_threshold = 30.0f;
+    params.freeze_pitch_rate_threshold = 20.0f;
+    params.freeze_roll_rate_threshold = 20.0f;
+    params.max_output = 30.0f;
+    params.min_effective_output = 0.0f;
+    params.warmup_ms = 40;
+    params.hold_ms = 40;
+    params.freeze_release_ms = 60;
+    group.set_heading_pid_params(params);
+
     group.set_speed_uniform(100.0f);
     group.enable_heading_control(true);
 
-    // 第一次 update：消费队列，建立 base_lt/rt=100，omega_z=0 无旋转 → 死区内无差速
-    group.update(0.0f, 0.0f);
+    for (int i = 0; i < 10; ++i) {
+        group.update(-34.83f, -1.95f, 0.0f, 0.0f);
+    }
     bus->sent_frames.clear();
 
-    // 第二次 update：omega_z=+10°/s（CCW，超出 deadband=2°/s）
-    // err = -10 → correction = kp * (-10) < 0
-    // 预期：上轨（LT=RT）均匀减速，下轨（LB=RB）均匀加速（物理速度更大）
-    group.update(10.0f, 10.0f);
+    for (int i = 0; i < 4; ++i) {
+        group.update(-34.17f, -5.98f, 0.0f, 0.0f);
+    }
 
     REQUIRE_FALSE(bus->sent_frames.empty());
     const auto& f = bus->sent_frames.back();
@@ -383,38 +395,39 @@ TEST_CASE("设备层WalkMotorGroup - update() PID 使能时上下轨差速（ome
     int16_t rt = be16s(f.data[2], f.data[3]);
     int16_t lb = be16s(f.data[4], f.data[5]);
     int16_t rb = be16s(f.data[6], f.data[7]);
-    // 上轨同速（lt==rt），下轨同速（lb==rb）
     REQUIRE(lt == rt);
     REQUIRE(lb == rb);
-    // 上轨减速（lt < base=10000）；下轨加速（|lb| > lt，即 lb < -lt）
-    REQUIRE(lt > 0);     // 前进方向，上轨仍为正
-    REQUIRE(lb < -lt);   // 下轨命令绝对值 > 上轨，物理速度更大
+    REQUIRE(lt < 10000);
+    REQUIRE(lb < -10000);
 
     group.close();
 }
 
-TEST_CASE("设备层WalkMotorGroup - update() PID 禁用时无差速（yaw=30°，LT==RT）",
+TEST_CASE("设备层WalkMotorGroup - update() keeps base speeds when heading control is disabled",
           "[device][walk_motor_group]") {
     auto bus = std::make_shared<MockCanBus>();
     device::WalkMotorGroup group(bus, 1u);
     group.open();
 
     group.set_speed_uniform(100.0f);
-    group.enable_heading_control(false);  // 明确禁用 PID（默认亦禁用）
+    group.enable_heading_control(false);
 
-    // 消费队列，建立 base_lt/rt=100，last_ctrl_frame_ 为匀速帧
-    group.update(0.0f, 0.0f);
+    group.update(-34.83f, -1.95f, 0.0f, 0.0f);
     bus->sent_frames.clear();
 
-    // omega_z=30°/s，但 PID 禁用 → last_ctrl_frame_ 原样重发，LT==RT
-    group.update(30.0f, 30.0f);
+    group.update(-34.17f, -5.98f, 0.0f, 0.0f);
 
     REQUIRE_FALSE(bus->sent_frames.empty());
     const auto& f = bus->sent_frames.back();
     REQUIRE(f.id == 0x032u);
     int16_t lt = be16s(f.data[0], f.data[1]);
     int16_t rt = be16s(f.data[2], f.data[3]);
-    REQUIRE(lt == rt);  // 无差速修正
+    int16_t lb = be16s(f.data[4], f.data[5]);
+    int16_t rb = be16s(f.data[6], f.data[7]);
+    REQUIRE(lt == 10000);
+    REQUIRE(rt == 10000);
+    REQUIRE(lb == -10000);
+    REQUIRE(rb == -10000);
 
     group.close();
 }

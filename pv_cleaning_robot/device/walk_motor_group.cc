@@ -41,8 +41,6 @@ WalkMotorGroup::WalkMotorGroup(std::shared_ptr<hal::ICanBus> can,
                                uint8_t termination_motor_id)
     : can_(std::move(can))
     , id_base_(id_base)
-    , ctrl_id_((id_base <= 4u) ? protocol::kWalkMotorCtrlIdGroup1
-                               : protocol::kWalkMotorCtrlIdGroup2)
     , comm_timeout_ms_(comm_timeout_ms)
     , termination_init_enabled_(termination_init_enabled)
     , termination_init_retry_count_(termination_init_retry_count)
@@ -60,6 +58,13 @@ WalkMotorGroup::~WalkMotorGroup() {
 // ── 生命周期 ─────────────────────────────────────────────────────────────────
 
 DeviceError WalkMotorGroup::open() {
+    if (id_base_ != 1u && id_base_ != 5u) {
+        spdlog::error("[WalkMotorGroup] invalid id_base={} (expected 1 or 5)", id_base_);
+        return DeviceError::NOT_OPEN;
+    }
+    closing_.store(false, std::memory_order_release);
+    override_active_.store(false, std::memory_order_release);
+    pending_clear_override_.store(false, std::memory_order_release);
     if (can_->is_open())
         return DeviceError::OK;
     if (!can_->open())
@@ -116,7 +121,8 @@ DeviceError WalkMotorGroup::open() {
         }
         if (!any_success) {
             spdlog::error(
-                "[WalkMotorGroup] termination init failed for motor_id={}, bus may rely on external termination",
+                "[WalkMotorGroup] termination init failed for motor_id={}, bus may rely on "
+                "external termination",
                 termination_motor_id_);
         }
     } else {
@@ -142,10 +148,50 @@ DeviceError WalkMotorGroup::open() {
 }
 
 void WalkMotorGroup::close() {
+    closing_.store(true, std::memory_order_release);
+    override_active_.store(true, std::memory_order_release);
+    pending_clear_override_.store(false, std::memory_order_release);
+
+    {
+        std::lock_guard<hal::PiMutex> lk(cmd_mtx_);
+        cmd_head_ = 0;
+        cmd_tail_ = 0;
+    }
+    {
+        std::lock_guard<hal::PiMutex> lk(mtx_);
+        pid_ctrl_.enable(false);
+        has_ctrl_frame_ = false;
+        last_ctrl_frame_ = {};
+        base_upper_lt_rpm_ = 0.0f;
+        base_upper_rt_rpm_ = 0.0f;
+    }
+
+    if (can_ && can_->is_open()) {
+        std::lock_guard<hal::PiMutex> send_lk(send_mtx_);
+        const auto account_tx = [this](bool ok) {
+            std::lock_guard<hal::PiMutex> lk(mtx_);
+            if (ok)
+                ++ctrl_frame_count_;
+            else
+                ++ctrl_err_count_;
+        };
+
+        account_tx(
+            can_->send(protocol::WalkMotorCanCodec::encode_group_speed(
+                id_base_, 0.0f, 0.0f, 0.0f, 0.0f)));
+
+        std::array<protocol::WalkMotorMode, 8> modes;
+        modes.fill(protocol::WalkMotorMode::ENABLE);
+        for (int i = 0; i < kWheelCount; ++i)
+            modes[static_cast<std::size_t>(id_base_ - 1u + static_cast<uint8_t>(i))] =
+                protocol::WalkMotorMode::DISABLE;
+        account_tx(can_->send(protocol::WalkMotorCanCodec::encode_set_mode_batch(modes)));
+    }
+
     running_.store(false);
     if (recv_thread_.joinable())
         recv_thread_.join();
-    if (can_->is_open())
+    if (can_ && can_->is_open())
         can_->close();
     last_update_time_ = {};  // close/open 重启时 dt_s 使用默认 20ms
 }
@@ -155,7 +201,14 @@ void WalkMotorGroup::close() {
 DeviceError WalkMotorGroup::send_ctrl(const hal::CanFrame& frame) {
     // 通用发帧（无 override 检查）：供配置命令路径调用
     // （enable_all / set_mode_all / set_feedback_mode_all 等）。
-    // PID 控制帧的 override 保护由 update() step4 内联的 send_mtx_ 负责。
+    // 统一复用 send_mtx_，确保配置帧、紧急覆盖帧和关停帧不会交错发送。
+    if (closing_.load(std::memory_order_acquire))
+        return DeviceError::NOT_OPEN;
+    if (!can_->is_open())
+        return DeviceError::NOT_OPEN;
+    std::lock_guard<hal::PiMutex> send_lk(send_mtx_);
+    if (closing_.load(std::memory_order_acquire))
+        return DeviceError::NOT_OPEN;
     if (!can_->is_open())
         return DeviceError::NOT_OPEN;
     if (can_->send(frame)) {
@@ -170,7 +223,11 @@ DeviceError WalkMotorGroup::send_ctrl(const hal::CanFrame& frame) {
 
 // ── 命令队列内部实现 ──────────────────────────────────────────────────────────
 
-void WalkMotorGroup::enqueue_cmd(const Cmd& cmd) {
+bool WalkMotorGroup::enqueue_cmd(const Cmd& cmd) {
+    if (closing_.load(std::memory_order_acquire)) {
+        spdlog::debug("[WalkMotorGroup] dropping command while closing");
+        return false;
+    }
     std::lock_guard<hal::PiMutex> lk(cmd_mtx_);
     int next_head = (cmd_head_ + 1) % kCmdQueueSize;
     if (next_head == cmd_tail_) {
@@ -180,6 +237,7 @@ void WalkMotorGroup::enqueue_cmd(const Cmd& cmd) {
     }
     cmd_buf_[static_cast<size_t>(cmd_head_)] = cmd;
     cmd_head_ = next_head;
+    return true;
 }
 
 // ── 模式控制 ─────────────────────────────────────────────────────────────────
@@ -228,26 +286,14 @@ DeviceError WalkMotorGroup::set_speeds(float lt, float rt, float lb, float rb) {
     Cmd cmd;
     cmd.type = Cmd::Type::SET_CTRL_FRAME;
     cmd.frame = protocol::WalkMotorCanCodec::encode_group_speed(id_base_, lt, rt, lb, rb);
-    cmd.base_lt_rpm = lt;
-    cmd.base_rt_rpm = rt;
+    cmd.base_upper_lt_rpm = lt;
+    cmd.base_upper_rt_rpm = rt;
     cmd.target_rpms = {lt, rt, lb, rb};
-    enqueue_cmd(cmd);
-    return DeviceError::OK;
+    return enqueue_cmd(cmd) ? DeviceError::OK : DeviceError::NOT_OPEN;
 }
 
 DeviceError WalkMotorGroup::set_speeds(const SpeedCmd& cmd) {
     return set_speeds(cmd.lt_rpm, cmd.rt_rpm, cmd.lb_rpm, cmd.rb_rpm);
-}
-
-DeviceError WalkMotorGroup::set_speeds_extra(float lt, float rt, float lb, float rb) {
-    if (override_active_.load(std::memory_order_acquire))
-        return DeviceError::OK;  // emergency override 激活期间静默丢弃
-    lt = clamp_rpm(lt);
-    rt = clamp_rpm(rt);
-    lb = clamp_rpm(lb);
-    rb = clamp_rpm(rb);
-
-    return send_ctrl(protocol::WalkMotorCanCodec::encode_group_speed(id_base_, lt, rt, lb, rb));
 }
 
 DeviceError WalkMotorGroup::set_speed_uniform(float rpm) {
@@ -260,25 +306,23 @@ DeviceError WalkMotorGroup::set_currents(float lt, float rt, float lb, float rb)
     Cmd cmd;
     cmd.type = Cmd::Type::SET_CTRL_FRAME;
     cmd.frame = protocol::WalkMotorCanCodec::encode_group_current(id_base_, lt, rt, lb, rb);
-    cmd.base_lt_rpm = 0.0f;
-    cmd.base_rt_rpm = 0.0f;
+    cmd.base_upper_lt_rpm = 0.0f;
+    cmd.base_upper_rt_rpm = 0.0f;
     cmd.target_rpms = {lt, rt, lb, rb};
-    enqueue_cmd(cmd);
-    return DeviceError::OK;
+    return enqueue_cmd(cmd) ? DeviceError::OK : DeviceError::NOT_OPEN;
 }
 
 DeviceError WalkMotorGroup::set_open_loops(int16_t lt, int16_t rt, int16_t lb, int16_t rb) {
     Cmd cmd;
     cmd.type = Cmd::Type::SET_CTRL_FRAME;
     cmd.frame = protocol::WalkMotorCanCodec::encode_group_open_loop(id_base_, lt, rt, lb, rb);
-    cmd.base_lt_rpm = 0.0f;
-    cmd.base_rt_rpm = 0.0f;
+    cmd.base_upper_lt_rpm = 0.0f;
+    cmd.base_upper_rt_rpm = 0.0f;
     cmd.target_rpms = {static_cast<float>(lt),
                        static_cast<float>(rt),
                        static_cast<float>(lb),
                        static_cast<float>(rb)};
-    enqueue_cmd(cmd);
-    return DeviceError::OK;
+    return enqueue_cmd(cmd) ? DeviceError::OK : DeviceError::NOT_OPEN;
 }
 
 DeviceError WalkMotorGroup::set_positions(float lt_deg, float rt_deg, float lb_deg, float rb_deg) {
@@ -291,11 +335,10 @@ DeviceError WalkMotorGroup::set_positions(float lt_deg, float rt_deg, float lb_d
     cmd.type = Cmd::Type::SET_CTRL_FRAME;
     cmd.frame = protocol::WalkMotorCanCodec::encode_group_position(
         id_base_, lt_deg, rt_deg, lb_deg, rb_deg);
-    cmd.base_lt_rpm = 0.0f;
-    cmd.base_rt_rpm = 0.0f;
+    cmd.base_upper_lt_rpm = 0.0f;
+    cmd.base_upper_rt_rpm = 0.0f;
     cmd.target_rpms = {lt_deg, rt_deg, lb_deg, rb_deg};
-    enqueue_cmd(cmd);
-    return DeviceError::OK;
+    return enqueue_cmd(cmd) ? DeviceError::OK : DeviceError::NOT_OPEN;
 }
 
 DeviceError WalkMotorGroup::set_feedback_mode_all(uint8_t period_ms) {
@@ -330,7 +373,7 @@ DeviceError WalkMotorGroup::query_firmware() {
     return send_ctrl(protocol::WalkMotorCanCodec::encode_query_firmware());
 }
 
-// ── 航向 PID 控制 ─────────────────────────────────────────────────────────────
+// ── 姿态纠偏控制 ─────────────────────────────────────────────────────────────
 
 void WalkMotorGroup::set_heading_pid_params(const HeadingPidParams& p) {
     std::lock_guard<hal::PiMutex> lk(mtx_);
@@ -345,6 +388,8 @@ void WalkMotorGroup::enable_heading_control(bool en) {
 // ── 边缘紧急覆盖 ──────────────────────────────────────────────────────────────
 
 DeviceError WalkMotorGroup::emergency_override(float reverse_rpm) {
+    if (closing_.load(std::memory_order_acquire))
+        return DeviceError::NOT_OPEN;
     // 防线一：立即置位（seq_cst），在持锁之前操作。
     // 即使后续等待 send_mtx_，update() 的 step3 无锁检查也能立即感知并提前退出，
     // 不必等到 send_mtx_ 释放后才被拦截。
@@ -428,12 +473,15 @@ WalkMotorGroup::GroupDiagnostics WalkMotorGroup::get_group_diagnostics() const {
 
 // ── 周期心跳 ─────────────────────────────────────────────────────────────────
 
-void WalkMotorGroup::update(float yaw_deg, float omega_z_dps) {
+void WalkMotorGroup::update(float pitch_deg, float roll_deg, float yaw_deg, float gyro_z_dps) {
+    if (closing_.load(std::memory_order_acquire))
+        return;
     if (!can_->is_open())
         return;
+    (void)yaw_deg;
     auto now = std::chrono::steady_clock::now();
 
-    // 计算距上次 update() 的实际时间（秒），用于 PID 微积分计算
+    // 计算距上次 update() 的实际时间（秒），用于姿态控制状态机时间窗
     // 使用实测时间而非硬编码常量，适应线程执行器周期变更
     float dt_s = 0.020f;  // 合理默认値（20ms），首次调用或异常大値时使用
     if (last_update_time_ != std::chrono::steady_clock::time_point{}) {
@@ -481,7 +529,7 @@ void WalkMotorGroup::update(float yaw_deg, float omega_z_dps) {
     }
 
     // ── 2. 排干命令队列（update() 是唯一消费者，walk_ctrl 线程）────────────────────
-    // SET_CTRL_FRAME: 更新控制帧 + PID 基础值，不触碰 override_active_
+    // SET_CTRL_FRAME: 更新控制帧 + 上边框组基础速度，不触碰 override_active_
     while (true) {
         Cmd c;
         {
@@ -495,8 +543,8 @@ void WalkMotorGroup::update(float yaw_deg, float omega_z_dps) {
         std::lock_guard<hal::PiMutex> lk(mtx_);
         last_ctrl_frame_ = c.frame;
         has_ctrl_frame_ = true;
-        base_lt_rpm_ = c.base_lt_rpm;
-        base_rt_rpm_ = c.base_rt_rpm;
+        base_upper_lt_rpm_ = c.base_upper_lt_rpm;
+        base_upper_rt_rpm_ = c.base_upper_rt_rpm;
         for (int i = 0; i < kWheelCount; ++i)
             diag_[i].target_value = c.target_rpms[static_cast<size_t>(i)];
     }
@@ -505,7 +553,7 @@ void WalkMotorGroup::update(float yaw_deg, float omega_z_dps) {
     if (override_active_.load(std::memory_order_acquire))
         return;
 
-    // ── 4. 计算 PID 差速（如果使能） ──
+    // ── 4. 计算姿态纠偏差速（如果使能） ──
     hal::CanFrame ctrl;
     bool has;
 
@@ -515,29 +563,27 @@ void WalkMotorGroup::update(float yaw_deg, float omega_z_dps) {
         has = has_ctrl_frame_;
 
         if (has && pid_ctrl_.is_enabled()) {
-            float correction = pid_ctrl_.compute(omega_z_dps, dt_s);
-            // 上下轨差速纠偏（omega_z 约定，upper = 上边框轨道 LT+RT，lower = 下边框轨道 LB+RB）：
-            //   correction > 0 → omega_z < 0（CW，yaw 减小）→ 上轨加速/下轨减速 → CCW 纠偏 ✓
-            //   correction < 0 → omega_z > 0（CCW，yaw 增大）→ 上轨减速/下轨加速 → CW 纠偏 ✓
-            //   正返程完全对称，无需区分处理。
-            // 注：同一轨道两轮必须同速（物理硬约束），因此 lt==rt、lb==rb；
-            //     lb 不等于 -lt：base 取反体现反向安装，correction 符号相同以实现上下差速。
-            float upper_spd = correction;  // 上轨修正量
-            float lower_spd = correction;  // 下轨修正量（与上轨同号才能产生差速，因 base 已取反）
-            float lt = clamp_rpm(base_lt_rpm_ + upper_spd);
-            float rt = clamp_rpm(base_rt_rpm_ + upper_spd);  // 与 lt 同向，非 - correction
-            float lb = clamp_rpm(-base_lt_rpm_ + lower_spd);  // 非 -lt：base 取反，correction 同号
-            float rb = clamp_rpm(-base_rt_rpm_ + lower_spd);  // 同理
+            const float correction = pid_ctrl_.compute(pitch_deg, roll_deg, gyro_z_dps, dt_s);
+            // 同一边框组内两轮必须同速；姿态纠偏依靠上下边框组形成差速。
+            // 底部轨道因安装反向，命令符号与顶部相反：
+            //   correction > 0 -> 上组物理速度增大、下组物理速度减小
+            //   correction < 0 -> 上组物理速度减小、下组物理速度增大
+            float upper_spd = correction;  // 上组修正量
+            float lower_spd = correction;  // 下组物理修正量（命令侧保持同号映射）
+            float lt = clamp_rpm(base_upper_lt_rpm_ + upper_spd);
+            float rt = clamp_rpm(base_upper_rt_rpm_ + upper_spd);
+            float lb = clamp_rpm(-base_upper_lt_rpm_ + lower_spd);
+            float rb = clamp_rpm(-base_upper_rt_rpm_ + lower_spd);
             ctrl = protocol::WalkMotorCanCodec::encode_group_speed(id_base_, lt, rt, lb, rb);
         }
     }
 
     if (has) {
-        // 防线二（仅 PID 路径）：持 send_mtx_ 后双重检查 override。
+        // 防线二（仅姿态纠偏路径）：持 send_mtx_ 后双重检查 override。
         // 处理 update 通过 step3 无锁检查后被 emergency 抢占的残余窗口：
         //   emergency: store(true) → lock(send_mtx_) → send(stop) → unlock [release]
         //   update:                                              lock(send_mtx_) [acquire]
-        //   happens-before 保证此处 load 必然读到 true → 丢弃 PID 帧。
+        //   happens-before 保证此处 load 必然读到 true → 丢弃纠偏帧。
         std::lock_guard<hal::PiMutex> lg(send_mtx_);
         if (!override_active_.load(std::memory_order_acquire)) {
             if (can_->send(ctrl)) {
@@ -589,8 +635,6 @@ void WalkMotorGroup::recv_loop() {
 
             const auto& s = *maybe;
             auto ts = std::chrono::steady_clock::now();
-            float log_rpm, log_torque, log_pos;
-            int log_fault, log_mode;
             {
                 std::lock_guard<hal::PiMutex> lk(mtx_);
                 auto& d = diag_[i];
@@ -602,15 +646,8 @@ void WalkMotorGroup::recv_loop() {
                 d.online = true;
                 ++d.feedback_frame_count;
                 last_fb_time_[i] = ts;
-                // 在锁内复制打印字段，避免锁外无保护读取（data race / UB）
-                log_rpm = d.speed_rpm;
-                log_torque = d.torque_a;
-                log_pos = d.position_deg;
-                log_fault = static_cast<int>(d.fault);
-                log_mode = static_cast<int>(d.mode);
             }
-            // spdlog::info("id:{} rpm:{} current:{} position_deg:{} fault:{} mode:{}",
-            //              i + 1, log_rpm, log_torque, log_pos, log_fault, log_mode);
+
             break;
         }
     }

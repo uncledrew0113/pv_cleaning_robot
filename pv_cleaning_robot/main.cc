@@ -323,7 +323,7 @@ int main() {
     if (!imu->open())
         log->warn("[Main] IMU 初始化失败");
     else {
-        // 主动配置 IMU 输出频率为 100Hz（RRATE=0x09），与 imu_read 线程和 PID 对齐。
+        // 主动配置 IMU 输出频率为 100Hz（RRATE=0x09），与 imu_read 线程和姿态纠偏周期对齐。
         // 不依赖硬件 EEPROM 保存值，确保上电后频率确定。
         if (imu->set_output_rate(100) != robot::device::DeviceError::OK)
             log->warn("[Main] IMU 频率配置失败，将使用硬件保存值");
@@ -439,13 +439,32 @@ int main() {
     motion_cfg.return_brush_rpm = cfg.get<int>("robot.return_brush_rpm", 1000);
     motion_cfg.edge_reverse_rpm = cfg.get<float>("robot.edge_reverse_rpm", 0.0f);
     motion_cfg.heading_pid_en = cfg.get<bool>("robot.heading_pid_en", false);
-    // PID 参数从 robot.pid.* 读取；未配置时使用头文件默认值（kp=1.5, ki=0.05, kd=0.3）
-    motion_cfg.pid.kp                    = cfg.get<float>("robot.pid.kp",                    1.5f);
-    motion_cfg.pid.ki                    = cfg.get<float>("robot.pid.ki",                    0.05f);
-    motion_cfg.pid.kd                    = cfg.get<float>("robot.pid.kd",                    0.3f);
-    motion_cfg.pid.max_output            = cfg.get<float>("robot.pid.max_output",            30.0f);
-    motion_cfg.pid.integral_limit        = cfg.get<float>("robot.pid.integral_limit",        5.0f);
-    motion_cfg.pid.deadband_rate_dps     = cfg.get<float>("robot.pid.deadband_rate_dps",     2.0f);
+    // 姿态纠偏参数从 robot.pid.* 读取；未配置时使用控制器头文件默认值。
+    motion_cfg.pid.pitch_alpha = cfg.get<float>("robot.pid.pitch_alpha", motion_cfg.pid.pitch_alpha);
+    motion_cfg.pid.roll_alpha = cfg.get<float>("robot.pid.roll_alpha", motion_cfg.pid.roll_alpha);
+    motion_cfg.pid.gyro_alpha = cfg.get<float>("robot.pid.gyro_alpha", motion_cfg.pid.gyro_alpha);
+    motion_cfg.pid.pitch_drop_threshold =
+        cfg.get<float>("robot.pid.pitch_drop_threshold", motion_cfg.pid.pitch_drop_threshold);
+    motion_cfg.pid.roll_threshold =
+        cfg.get<float>("robot.pid.roll_threshold", motion_cfg.pid.roll_threshold);
+    motion_cfg.pid.learn_improve_eps =
+        cfg.get<float>("robot.pid.learn_improve_eps", motion_cfg.pid.learn_improve_eps);
+    motion_cfg.pid.best_decay_per_s =
+        cfg.get<float>("robot.pid.best_decay_per_s", motion_cfg.pid.best_decay_per_s);
+    motion_cfg.pid.freeze_gyro_z_threshold =
+        cfg.get<float>("robot.pid.freeze_gyro_z_threshold", motion_cfg.pid.freeze_gyro_z_threshold);
+    motion_cfg.pid.freeze_pitch_rate_threshold = cfg.get<float>(
+        "robot.pid.freeze_pitch_rate_threshold", motion_cfg.pid.freeze_pitch_rate_threshold);
+    motion_cfg.pid.freeze_roll_rate_threshold =
+        cfg.get<float>("robot.pid.freeze_roll_rate_threshold",
+                       motion_cfg.pid.freeze_roll_rate_threshold);
+    motion_cfg.pid.max_output = cfg.get<float>("robot.pid.max_output", motion_cfg.pid.max_output);
+    motion_cfg.pid.min_effective_output =
+        cfg.get<float>("robot.pid.min_effective_output", motion_cfg.pid.min_effective_output);
+    motion_cfg.pid.warmup_ms = cfg.get<int>("robot.pid.warmup_ms", motion_cfg.pid.warmup_ms);
+    motion_cfg.pid.hold_ms = cfg.get<int>("robot.pid.hold_ms", motion_cfg.pid.hold_ms);
+    motion_cfg.pid.freeze_release_ms =
+        cfg.get<int>("robot.pid.freeze_release_ms", motion_cfg.pid.freeze_release_ms);
 
     auto motion = std::make_shared<robot::service::MotionService>(
         walk_group, brush_motor, imu, event_bus, motion_cfg);
@@ -597,7 +616,7 @@ int main() {
     //   CPU 0-3: bms + cloud + gps（LITTLE 核，低功耗后台）
     //
     // 行走控制线程：SCHED_FIFO 80, 20ms (50Hz)，绑定 CPU 5
-    // 50Hz PID 与 100Hz IMU 组合，采样/控制比 2:1，路align 速度 1.5m/s 下 20ms 塔偏跨度 ≤ 30mm
+    // 50Hz 姿态纠偏与 100Hz IMU 组合，采样/控制比 2:1，路align 速度 1.5m/s 下 20ms 塔偏跨度 ≤ 30mm
     robot::middleware::ThreadExecutor walk_exec({"walk_ctrl", 50, SCHED_FIFO, 80, 1 << 5});
     walk_exec.add_runnable(motion);
     // 心跳在 walk_ctrl 线程自身内汇报（超时 = 该线程死锁，而非主线程死锁）
@@ -682,7 +701,13 @@ int main() {
     safety_monitor.stop();
     watchdog.stop();
     motion->emergency_stop();
+    brush_motor->close();
     walk_group->close();
+    imu->close();
+    gps->close();
+    bms->close();
+    left_switch->close();
+    right_switch->close();
     net_mgr->disconnect();
     data_cache->close();
     log->info("[Main] 正常退出");

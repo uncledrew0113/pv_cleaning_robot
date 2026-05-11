@@ -94,6 +94,25 @@ TEST_CASE("FSM starts new task only from parking side with integer passes", "[ap
     }
 }
 
+TEST_CASE("FSM RPC override start can begin cleaning away from parking side", "[app][fsm]") {
+    FsmFixture f;
+    f.brush_serial->clear_tx();
+
+    EvRpcStartTask evt;
+    evt.passes = 1.0f;
+    f.fsm.dispatch(evt);
+    REQUIRE(f.fsm.current_state() == "CleanFwd");
+
+    f.brush_serial->clear_tx();
+    f.fsm.dispatch(EvFarEndLimitSettled{});
+    REQUIRE(f.fsm.current_state() == "CleanReturn");
+    REQUIRE(f.brush_serial->take_tx_text().find("v 0 -20.000 0\n") != std::string::npos);
+
+    f.fsm.dispatch(EvParkingSideLimitSettled{true});
+    REQUIRE(f.fsm.current_state() == "Charging");
+    REQUIRE(f.fsm.completed_passes() == 1);
+}
+
 TEST_CASE("FSM round trip transitions follow charge decision", "[app][fsm]") {
     FsmFixture f;
     f.fsm.dispatch(start_from_parking_side(1.0f));

@@ -153,6 +153,7 @@ add_executable(hw_tests
   integration/hardware/clean_cycle_hw_test.cc
   integration/hardware/system_hw_test.cc
   integration/hardware/distance_sensor_hw_test.cc
+  integration/hardware/hw_exit_guard.cc
 
   ${COMMON_SRCS}
   integration/hardware/brush_hw_test.cc

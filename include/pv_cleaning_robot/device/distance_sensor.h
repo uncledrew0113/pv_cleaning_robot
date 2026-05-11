@@ -60,9 +60,13 @@ class DistanceSensor {
 public:
     explicit DistanceSensor(std::shared_ptr<hal::IModbusMaster> modbus,
                             DistanceSensorConfig                 cfg = DistanceSensorConfig{});
+    ~DistanceSensor();
 
     /// @brief 打开底层 Modbus 连接（上电初始化时调用）
     bool open();
+
+    /// @brief 关闭底层 Modbus 连接（幂等；不包含停机语义）
+    void close();
 
     /// @brief 周期轮询（~100ms）：通过 FC=0x04 读取全部通道并解码
     void update();

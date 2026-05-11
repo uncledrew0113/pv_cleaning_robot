@@ -27,22 +27,14 @@ size_t encode_set_torque(uint8_t axis, float torque_nm, char* out, size_t cap) n
 size_t encode_watchdog_feed(uint8_t axis, char* out, size_t cap) noexcept;
 size_t encode_feedback_request(uint8_t axis, char* out, size_t cap) noexcept;
 size_t encode_clear_errors(char* out, size_t cap) noexcept;
+size_t encode_restart(char* out, size_t cap) noexcept;
 size_t encode_set_control_mode(uint8_t axis,
                                OdriveControlMode mode,
                                char* out,
                                size_t cap) noexcept;
-size_t encode_set_requested_state(uint8_t axis,
-                                  uint32_t state,
-                                  char* out,
-                                  size_t cap) noexcept;
-size_t encode_set_watchdog_enabled(uint8_t axis,
-                                   bool enabled,
-                                   char* out,
-                                   size_t cap) noexcept;
-size_t encode_set_watchdog_timeout(uint8_t axis,
-                                   float timeout_s,
-                                   char* out,
-                                   size_t cap) noexcept;
+size_t encode_set_requested_state(uint8_t axis, uint32_t state, char* out, size_t cap) noexcept;
+size_t encode_set_watchdog_enabled(uint8_t axis, bool enabled, char* out, size_t cap) noexcept;
+size_t encode_set_watchdog_timeout(uint8_t axis, float timeout_s, char* out, size_t cap) noexcept;
 size_t encode_read_property(OdriveReadProperty property,
                             uint8_t axis,
                             char* out,

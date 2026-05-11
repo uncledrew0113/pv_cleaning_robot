@@ -65,6 +65,7 @@
 
 // Mock（滚刷电机未安装）
 #include "integration/thingsboard_test_support.h"
+#include "integration/hardware/hw_exit_guard.h"
 #include "mock/mock_can_bus.h"
 #include "mock/mock_serial_port.h"
 #include "pv_cleaning_robot/service/config_service.h"
@@ -121,14 +122,23 @@ struct HwParams {
     std::string pid_jsonl_path = "/tmp/hw_pid_test_metrics.jsonl";  ///< PID 指标 JSONL 路径
     float pid_max_drift_deg = 15.0f;  ///< pid_combined: 全程最大 yaw 漂移警告阈值（°）
 
-    /// PID 参数，与 HeadingPidController::Params 字段一一对应
+    /// 姿态纠偏参数，与 HeadingPidController::Params 字段一一对应
     struct PidParams {
-        float kp{0.5f};
-        float ki{0.05f};
-        float kd{0.1f};
+        float pitch_alpha{0.2f};
+        float roll_alpha{0.2f};
+        float gyro_alpha{0.2f};
+        float pitch_drop_threshold{0.12f};
+        float roll_threshold{0.6f};
+        float learn_improve_eps{0.03f};
+        float best_decay_per_s{0.01f};
+        float freeze_gyro_z_threshold{30.0f};
+        float freeze_pitch_rate_threshold{20.0f};
+        float freeze_roll_rate_threshold{20.0f};
         float max_output{30.0f};
-        float integral_limit{20.0f};
-        float deadband_rate_dps{2.0f};
+        float min_effective_output{0.0f};
+        int warmup_ms{400};
+        int hold_ms{400};
+        int freeze_release_ms{300};
     } pid;
 };
 
@@ -214,12 +224,27 @@ inline HwParams load_hw_test_config() {
             "behavior.health_log_max_files", static_cast<int>(p.health_log_max_files)));
         p.pid_jsonl_path = cfg.get<std::string>("behavior.pid_jsonl_path", p.pid_jsonl_path);
         p.pid_max_drift_deg = cfg.get<float>("behavior.pid_max_drift_deg", p.pid_max_drift_deg);
-        p.pid.kp = cfg.get<float>("pid.kp", p.pid.kp);
-        p.pid.ki = cfg.get<float>("pid.ki", p.pid.ki);
-        p.pid.kd = cfg.get<float>("pid.kd", p.pid.kd);
+        p.pid.pitch_alpha = cfg.get<float>("pid.pitch_alpha", p.pid.pitch_alpha);
+        p.pid.roll_alpha = cfg.get<float>("pid.roll_alpha", p.pid.roll_alpha);
+        p.pid.gyro_alpha = cfg.get<float>("pid.gyro_alpha", p.pid.gyro_alpha);
+        p.pid.pitch_drop_threshold =
+            cfg.get<float>("pid.pitch_drop_threshold", p.pid.pitch_drop_threshold);
+        p.pid.roll_threshold = cfg.get<float>("pid.roll_threshold", p.pid.roll_threshold);
+        p.pid.learn_improve_eps =
+            cfg.get<float>("pid.learn_improve_eps", p.pid.learn_improve_eps);
+        p.pid.best_decay_per_s = cfg.get<float>("pid.best_decay_per_s", p.pid.best_decay_per_s);
+        p.pid.freeze_gyro_z_threshold =
+            cfg.get<float>("pid.freeze_gyro_z_threshold", p.pid.freeze_gyro_z_threshold);
+        p.pid.freeze_pitch_rate_threshold = cfg.get<float>(
+            "pid.freeze_pitch_rate_threshold", p.pid.freeze_pitch_rate_threshold);
+        p.pid.freeze_roll_rate_threshold =
+            cfg.get<float>("pid.freeze_roll_rate_threshold", p.pid.freeze_roll_rate_threshold);
         p.pid.max_output = cfg.get<float>("pid.max_output", p.pid.max_output);
-        p.pid.integral_limit = cfg.get<float>("pid.integral_limit", p.pid.integral_limit);
-        p.pid.deadband_rate_dps = cfg.get<float>("pid.deadband_rate_dps", p.pid.deadband_rate_dps);
+        p.pid.min_effective_output =
+            cfg.get<float>("pid.min_effective_output", p.pid.min_effective_output);
+        p.pid.warmup_ms = cfg.get<int>("pid.warmup_ms", p.pid.warmup_ms);
+        p.pid.hold_ms = cfg.get<int>("pid.hold_ms", p.pid.hold_ms);
+        p.pid.freeze_release_ms = cfg.get<int>("pid.freeze_release_ms", p.pid.freeze_release_ms);
         spdlog::debug("[hw_config] Loaded config: {}", path);
     } catch (const std::exception& e) {
         spdlog::warn("[hw_config] Exception loading config {}: {} — using built-in defaults",
@@ -286,7 +311,7 @@ struct DeviceFixture {
 };
 
 // ── FullSystemFixture：全层栈（集成测试使用）─────────────────────────────────
-struct FullSystemFixture : DeviceFixture {
+struct FullSystemFixture : DeviceFixture, IGracefulShutdown {
     robot::middleware::EventBus event_bus;
     bool use_real_brush_{false};
     std::shared_ptr<robot::driver::LibSerialPort> real_brush_serial;
@@ -355,13 +380,22 @@ struct FullSystemFixture : DeviceFixture {
             use_real_brush_ ? static_cast<int>(std::lround(p.brush_test_rpm)) : 0;
         motion_cfg.edge_reverse_rpm = 0.0f;
         motion_cfg.heading_pid_en = pid_enabled;
-        // 将配置文件中的 PID 参数传入（无论是否使能，均写入供 start_cleaning 时生效）
-        motion_cfg.pid.kp = p.pid.kp;
-        motion_cfg.pid.ki = p.pid.ki;
-        motion_cfg.pid.kd = p.pid.kd;
+        // 将配置文件中的姿态纠偏参数传入（无论是否使能，均写入供 start_cleaning 时生效）
+        motion_cfg.pid.pitch_alpha = p.pid.pitch_alpha;
+        motion_cfg.pid.roll_alpha = p.pid.roll_alpha;
+        motion_cfg.pid.gyro_alpha = p.pid.gyro_alpha;
+        motion_cfg.pid.pitch_drop_threshold = p.pid.pitch_drop_threshold;
+        motion_cfg.pid.roll_threshold = p.pid.roll_threshold;
+        motion_cfg.pid.learn_improve_eps = p.pid.learn_improve_eps;
+        motion_cfg.pid.best_decay_per_s = p.pid.best_decay_per_s;
+        motion_cfg.pid.freeze_gyro_z_threshold = p.pid.freeze_gyro_z_threshold;
+        motion_cfg.pid.freeze_pitch_rate_threshold = p.pid.freeze_pitch_rate_threshold;
+        motion_cfg.pid.freeze_roll_rate_threshold = p.pid.freeze_roll_rate_threshold;
         motion_cfg.pid.max_output = p.pid.max_output;
-        motion_cfg.pid.integral_limit = p.pid.integral_limit;
-        motion_cfg.pid.deadband_rate_dps = p.pid.deadband_rate_dps;
+        motion_cfg.pid.min_effective_output = p.pid.min_effective_output;
+        motion_cfg.pid.warmup_ms = p.pid.warmup_ms;
+        motion_cfg.pid.hold_ms = p.pid.hold_ms;
+        motion_cfg.pid.freeze_release_ms = p.pid.freeze_release_ms;
 
         motion =
             std::make_shared<service::MotionService>(walk_group, brush, imu, event_bus, motion_cfg);
@@ -442,7 +476,7 @@ struct FullSystemFixture : DeviceFixture {
 
         // HealthService 在硬件 open 之后构造，保证设备状态缓存已就绪
         if (!health_jsonl_path.empty()) {
-            std::filesystem::remove(health_jsonl_path);  // 清旧文件，open() 创建新文件
+            // std::filesystem::remove(health_jsonl_path);  // 保留旧 health 文件，不在测试前删除
 
             health = std::make_shared<robot::service::HealthService>(
                 walk_group,
@@ -468,6 +502,10 @@ struct FullSystemFixture : DeviceFixture {
                     std::chrono::milliseconds timeout = std::chrono::milliseconds(5000)) {
         auto deadline = std::chrono::steady_clock::now() + timeout;
         while (std::chrono::steady_clock::now() < deadline) {
+            if (HwExitGuard::instance().exit_requested()) {
+                shutdown();
+                return false;
+            }
             if (fsm->current_state() == expected)
                 return true;
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -477,12 +515,35 @@ struct FullSystemFixture : DeviceFixture {
         return false;
     }
 
-    ~FullSystemFixture() {
+    ~FullSystemFixture() override {
+        shutdown();
+    }
+
+    void shutdown() override {
+        bool expected = false;
+        if (!shutdown_called_.compare_exchange_strong(expected, true)) {
+            return;
+        }
+
         stop_loops_();
         if (safety)
             safety->stop();
         if (motion)
             motion->emergency_stop();
+        if (brush)
+            brush->close();
+        if (walk_group)
+            walk_group->close();
+        if (gps)
+            gps->close();
+        if (imu)
+            imu->close();
+        if (bms)
+            bms->close();
+        if (left_sw)
+            left_sw->close();
+        if (right_sw)
+            right_sw->close();
         if (watchdog)
             watchdog->stop();
     }
@@ -492,24 +553,25 @@ struct FullSystemFixture : DeviceFixture {
     std::thread nav_exec_thread_;
     std::thread brush_poll_thread_;
     std::atomic<bool> loops_running_{false};
+    std::atomic<bool> shutdown_called_{false};
 
     void start_loops_() {
         loops_running_.store(true);
         walk_ctrl_thread_ = std::thread([this] {
-            while (loops_running_.load()) {
+            while (loops_running_.load() && !HwExitGuard::instance().exit_requested()) {
                 motion->update();
                 std::this_thread::sleep_for(std::chrono::milliseconds(50));
             }
         });
         nav_exec_thread_ = std::thread([this] {
-            while (loops_running_.load()) {
+            while (loops_running_.load() && !HwExitGuard::instance().exit_requested()) {
                 nav->update();
                 std::this_thread::sleep_for(std::chrono::milliseconds(10));
             }
         });
         if (use_real_brush_) {
             brush_poll_thread_ = std::thread([this] {
-                while (loops_running_.load()) {
+                while (loops_running_.load() && !HwExitGuard::instance().exit_requested()) {
                     brush->update();
                     std::this_thread::sleep_for(std::chrono::milliseconds(200));
                 }
@@ -713,6 +775,10 @@ struct ThingsBoardRuntimeFixture : FullSystemFixture {
         std::chrono::milliseconds poll_period = std::chrono::milliseconds(500)) {
         const auto deadline = std::chrono::steady_clock::now() + timeout;
         while (std::chrono::steady_clock::now() < deadline) {
+            if (HwExitGuard::instance().exit_requested()) {
+                shutdown();
+                return false;
+            }
             const auto state = fsm->current_state();
             for (const auto& item : expected) {
                 if (state == item) {

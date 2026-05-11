@@ -100,6 +100,9 @@ class FixedJsonWriter {
     void append_uint(unsigned v) noexcept {
         append_format("%u", v);
     }
+    void append_uint64(uint64_t v) noexcept {
+        append_format("%llu", static_cast<unsigned long long>(v));
+    }
     void append_float(float v) noexcept {
         append_format("%.6f", static_cast<double>(v));
     }
@@ -156,51 +159,53 @@ const char* wheel_name(int idx) noexcept {
 size_t HealthPayloadBuilder::build_health(const HealthView& view, char* out, size_t cap) noexcept {
     FixedJsonWriter w(out, cap);
 
-    float avg_rpm = 0.0f;
-    float avg_torque = 0.0f;
-    bool any_fault = false;
-    for (const auto& wheel : view.walk.wheel) {
-        avg_rpm += wheel.speed_rpm;
-        avg_torque += wheel.torque_a;
-        any_fault |= (wheel.fault != protocol::WalkMotorFault::NONE);
-    }
-    avg_rpm /= static_cast<float>(device::WalkMotorGroup::kWheelCount);
-    avg_torque /= static_cast<float>(device::WalkMotorGroup::kWheelCount);
-
     w.append_raw("{\"ts\":");
-    w.append_quoted(view.ts_iso8601);
-    w.append_raw(",\"walk\":{\"rpm\":");
-    w.append_float(avg_rpm);
-    w.append_raw(",\"torque_a\":");
-    w.append_float(avg_torque);
-    w.append_raw(",\"fault\":");
-    w.append_bool(any_fault);
-    w.append_raw(",\"temp\":0.000000},\"brush\":{\"running\":");
+    w.append_uint64(view.ts_ms);
+    w.append_raw(",\"values\":{");
+    for (int i = 0; i < device::WalkMotorGroup::kWheelCount; ++i) {
+        if (i != 0) {
+            w.append_char(',');
+        }
+        const auto& wheel = view.walk.wheel[i];
+        w.append_raw("\"");
+        w.append_raw(wheel_name(i));
+        w.append_raw("_rpm\":");
+        w.append_float(wheel.speed_rpm);
+        w.append_raw(",\"");
+        w.append_raw(wheel_name(i));
+        w.append_raw("_cur\":");
+        w.append_float(wheel.torque_a);
+        w.append_raw(",\"");
+        w.append_raw(wheel_name(i));
+        w.append_raw("_err\":");
+        w.append_bool(wheel.fault != protocol::WalkMotorFault::NONE);
+    }
+    w.append_raw(",\"br_rpm\":");
+    w.append_int(view.brush.actual_rpm);
+    w.append_raw(",\"br_run\":");
     w.append_bool(view.brush.running);
-    w.append_raw(",\"fault\":");
+    w.append_raw(",\"br_err\":");
     w.append_bool(view.brush.fault);
-    w.append_raw("},\"battery\":{\"soc\":");
+    w.append_raw(",\"bat_soc\":");
     w.append_float(view.bms.soc_pct);
-    w.append_raw(",\"voltage\":");
+    w.append_raw(",\"bat_vol\":");
     w.append_float(view.bms.voltage_v);
-    w.append_raw(",\"charging\":");
+    w.append_raw(",\"bat_chg\":");
     w.append_bool(view.bms.charging);
-    w.append_raw(",\"alarm\":");
+    w.append_raw(",\"bat_alm\":");
     w.append_bool(view.bms.alarm_flags != 0u);
-    w.append_raw("},\"imu\":{\"pitch\":");
+    w.append_raw(",\"imu_p\":");
     w.append_float(view.imu.pitch_deg);
-    w.append_raw(",\"roll\":");
+    w.append_raw(",\"imu_r\":");
     w.append_float(view.imu.roll_deg);
-    w.append_raw(",\"valid\":");
-    w.append_bool(view.imu.valid);
-    w.append_raw("},\"gps\":{\"lat\":");
+    w.append_raw(",\"imu_y\":");
+    w.append_float(view.imu.yaw_deg);
+    w.append_raw(",\"gps_lat\":");
     w.append_double(view.gps.latitude);
-    w.append_raw(",\"lon\":");
+    w.append_raw(",\"gps_lon\":");
     w.append_double(view.gps.longitude);
-    w.append_raw(",\"fix\":");
+    w.append_raw(",\"gps_fix\":");
     w.append_int(view.gps.fix_quality);
-    w.append_raw(",\"valid\":");
-    w.append_bool(view.gps.valid);
     w.append_char('}');
     w.append_char('}');
     return w.size();
@@ -212,107 +217,116 @@ size_t HealthPayloadBuilder::build_diagnostics(const DiagnosticsView& view,
     FixedJsonWriter w(out, cap);
 
     w.append_raw("{\"ts\":");
-    w.append_quoted(view.ts_iso8601);
-    w.append_raw(",\"walk\":{");
+    w.append_uint64(view.ts_ms);
+    w.append_raw(",\"values\":{");
     for (int i = 0; i < device::WalkMotorGroup::kWheelCount; ++i) {
         if (i != 0) {
             w.append_char(',');
         }
         const auto& wheel = view.walk.wheel[i];
-        w.append_quoted(wheel_name(i));
-        w.append_raw(":{\"rpm\":");
+        w.append_raw("\"");
+        w.append_raw(wheel_name(i));
+        w.append_raw("_rpm\":");
         w.append_float(wheel.speed_rpm);
-        w.append_raw(",\"target\":");
+        w.append_raw(",\"");
+        w.append_raw(wheel_name(i));
+        w.append_raw("_tgt\":");
         w.append_float(wheel.target_value);
-        w.append_raw(",\"torque_a\":");
+        w.append_raw(",\"");
+        w.append_raw(wheel_name(i));
+        w.append_raw("_cur\":");
         w.append_float(wheel.torque_a);
-        w.append_raw(",\"can_err\":");
-        w.append_uint(wheel.can_err_count);
-        w.append_raw(",\"fault\":");
+        w.append_raw(",\"");
+        w.append_raw(wheel_name(i));
+        w.append_raw("_err\":");
         w.append_bool(wheel.fault != protocol::WalkMotorFault::NONE);
-        w.append_raw(",\"fault_code\":");
+        w.append_raw(",\"");
+        w.append_raw(wheel_name(i));
+        w.append_raw("_ec\":");
         w.append_int(static_cast<int>(wheel.fault));
-        w.append_raw(",\"online\":");
+        w.append_raw(",\"");
+        w.append_raw(wheel_name(i));
+        w.append_raw("_on\":");
         w.append_bool(wheel.online);
-        w.append_char('}');
+        w.append_raw(",\"");
+        w.append_raw(wheel_name(i));
+        w.append_raw("_ce\":");
+        w.append_uint(wheel.can_err_count);
     }
-    w.append_raw(",\"temp\":0.000000,\"ctrl_frames\":");
+    w.append_raw(",\"walk_cf\":");
     w.append_uint(view.walk.ctrl_frame_count);
-    w.append_raw(",\"ctrl_err\":");
+    w.append_raw(",\"walk_ce\":");
     w.append_uint(view.walk.ctrl_err_count);
-    w.append_raw("},\"brush\":{\"rpm\":");
+    w.append_raw(",\"br_rpm\":");
     w.append_int(view.brush.actual_rpm);
-    w.append_raw(",\"target\":");
+    w.append_raw(",\"br_tgt\":");
     w.append_int(view.brush.target_rpm);
-    w.append_raw(",\"current\":");
+    w.append_raw(",\"br_cur\":");
     w.append_float(view.brush.current_a);
-    w.append_raw(",\"voltage\":");
+    w.append_raw(",\"br_vol\":");
     w.append_float(view.brush.bus_voltage_v);
-    w.append_raw(",\"temp\":");
+    w.append_raw(",\"br_tmp\":");
     w.append_float(view.brush.temperature_c);
-    w.append_raw(",\"stalls\":");
+    w.append_raw(",\"br_stl\":");
     w.append_uint(view.brush.stall_count);
-    w.append_raw(",\"comm_err\":");
+    w.append_raw(",\"br_ce\":");
     w.append_uint(view.brush.comm_error_count);
-    w.append_raw("},\"bms\":{\"soc\":");
+    w.append_raw(",\"bat_soc\":");
     w.append_float(view.bms.soc_pct);
-    w.append_raw(",\"voltage\":");
+    w.append_raw(",\"bat_vol\":");
     w.append_float(view.bms.voltage_v);
-    w.append_raw(",\"current\":");
+    w.append_raw(",\"bat_cur\":");
     w.append_float(view.bms.current_a);
-    w.append_raw(",\"temp\":");
+    w.append_raw(",\"bat_tmp\":");
     w.append_float(view.bms.temperature_c);
-    w.append_raw(",\"cell_max\":");
+    w.append_raw(",\"bat_cmax\":");
     w.append_float(view.bms.cell_voltage_max_v);
-    w.append_raw(",\"cell_min\":");
+    w.append_raw(",\"bat_cmin\":");
     w.append_float(view.bms.cell_voltage_min_v);
-    w.append_raw(",\"remain_ah\":");
+    w.append_raw(",\"bat_rah\":");
     w.append_float(view.bms.remaining_capacity_ah);
-    w.append_raw(",\"cycles\":");
+    w.append_raw(",\"bat_cyc\":");
     w.append_uint(view.bms.cycle_count);
-    w.append_raw(",\"alarm\":");
+    w.append_raw(",\"bat_alm\":");
     w.append_uint(view.bms.alarm_flags);
-    w.append_raw("},\"imu\":{\"accel\":[");
-    for (int i = 0; i < 3; ++i) {
-        if (i != 0) {
-            w.append_char(',');
-        }
-        w.append_float(view.imu.accel[i]);
-    }
-    w.append_raw("],\"gyro\":[");
-    for (int i = 0; i < 3; ++i) {
-        if (i != 0) {
-            w.append_char(',');
-        }
-        w.append_float(view.imu.gyro[i]);
-    }
-    w.append_raw("],\"pitch\":");
+    w.append_raw(",\"imu_ax\":");
+    w.append_float(view.imu.accel[0]);
+    w.append_raw(",\"imu_ay\":");
+    w.append_float(view.imu.accel[1]);
+    w.append_raw(",\"imu_az\":");
+    w.append_float(view.imu.accel[2]);
+    w.append_raw(",\"imu_gx\":");
+    w.append_float(view.imu.gyro[0]);
+    w.append_raw(",\"imu_gy\":");
+    w.append_float(view.imu.gyro[1]);
+    w.append_raw(",\"imu_gz\":");
+    w.append_float(view.imu.gyro[2]);
+    w.append_raw(",\"imu_p\":");
     w.append_float(view.imu.pitch_deg);
-    w.append_raw(",\"roll\":");
+    w.append_raw(",\"imu_r\":");
     w.append_float(view.imu.roll_deg);
-    w.append_raw(",\"yaw\":");
+    w.append_raw(",\"imu_y\":");
     w.append_float(view.imu.yaw_deg);
-    w.append_raw(",\"frame_rate\":");
+    w.append_raw(",\"imu_fr\":");
     w.append_float(view.imu.frame_rate_hz);
-    w.append_raw(",\"parse_errors\":");
+    w.append_raw(",\"imu_pe\":");
     w.append_uint(view.imu.parse_error_count);
-    w.append_raw("},\"gps\":{\"lat\":");
+    w.append_raw(",\"gps_lat\":");
     w.append_double(view.gps.latitude);
-    w.append_raw(",\"lon\":");
+    w.append_raw(",\"gps_lon\":");
     w.append_double(view.gps.longitude);
-    w.append_raw(",\"alt\":");
+    w.append_raw(",\"gps_alt\":");
     w.append_float(view.gps.altitude_m);
-    w.append_raw(",\"speed\":");
+    w.append_raw(",\"gps_spd\":");
     w.append_float(view.gps.speed_m_s);
-    w.append_raw(",\"sats\":");
+    w.append_raw(",\"gps_sat\":");
     w.append_uint(view.gps.satellites_used);
-    w.append_raw(",\"hdop\":");
+    w.append_raw(",\"gps_hdp\":");
     w.append_float(view.gps.hdop);
-    w.append_raw(",\"fix\":");
+    w.append_raw(",\"gps_fix\":");
     w.append_int(view.gps.fix_quality);
-    w.append_raw(",\"sentences\":");
+    w.append_raw(",\"gps_sent\":");
     w.append_uint(view.gps.sentence_count);
-    w.append_char('}');
     w.append_char('}');
     return w.size();
 }
@@ -384,14 +398,13 @@ void HealthService::update() {
 }
 
 size_t HealthService::build_payload(char* out, size_t cap) const {
-    // ISO 8601 UTC 时间戳（build_payload 单线程调用，gmtime 无竞争）
-    auto tt = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-    char ts_buf[24];
-    std::strftime(ts_buf, sizeof(ts_buf), "%Y-%m-%dT%H:%M:%SZ", std::gmtime(&tt));
+    const auto now = std::chrono::system_clock::now();
+    const auto ts_ms = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count());
 
     if (mode_ == Mode::DIAGNOSTICS) {
         HealthPayloadBuilder::DiagnosticsView view{};
-        view.ts_iso8601 = ts_buf;
+        view.ts_ms = ts_ms;
         view.walk = walk_->get_group_diagnostics();
         view.brush = brush_->get_diagnostics();
         view.bms = bms_->get_diagnostics();
@@ -401,7 +414,7 @@ size_t HealthService::build_payload(char* out, size_t cap) const {
     }
 
     HealthPayloadBuilder::HealthView view{};
-    view.ts_iso8601 = ts_buf;
+    view.ts_ms = ts_ms;
     view.walk = walk_->get_group_status();
     view.brush = brush_->get_status();
     view.bms = bms_->get_data();

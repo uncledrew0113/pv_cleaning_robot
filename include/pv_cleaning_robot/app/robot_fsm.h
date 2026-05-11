@@ -34,6 +34,10 @@ struct EvScheduleStart {
     bool  at_far_end{false};       ///< 当前是否位于对侧端点
     float passes{1.0f};            ///< 本次任务趟数（首版仅支持整数趟）
 };
+/// 云端 RPC 特权启动：允许从非停机位直接开始完整清扫任务。
+struct EvRpcStartTask {
+    float passes{1.0f};  ///< 本次任务趟数（首版仅支持整数趟）
+};
 struct EvFarEndLimitSettled {};  ///< 对侧端点限位防抖完成（SafetyMonitor 延迟后发布）
 struct EvParkingSideLimitSettled  { bool should_charge{true}; };  ///< 停机位一侧限位防抖完成
 struct EvFaultP2           {};  ///< P2 故障（不转换状态，仅记录告警）
@@ -94,6 +98,10 @@ public:
                 state<StateIdle>            + event<EvScheduleStart>         = state<StateSelfCheck>,
                 state<StateStopped>         + event<EvScheduleStart>         = state<StateSelfCheck>,
                 state<StateCharging>        + event<EvScheduleStart>         = state<StateSelfCheck>,
+                // RPC 特权启动 → 自检（不要求当前位于停机位）
+                state<StateIdle>            + event<EvRpcStartTask>          = state<StateSelfCheck>,
+                state<StateStopped>         + event<EvRpcStartTask>          = state<StateSelfCheck>,
+                state<StateCharging>        + event<EvRpcStartTask>          = state<StateSelfCheck>,
                 // 自检结论
                 state<StateSelfCheck>       + event<EvSelfCheckOk>           = state<StateCleanFwd>,
                 state<StateSelfCheck>       + event<EvSelfCheckFail>         = state<StateIdle>,

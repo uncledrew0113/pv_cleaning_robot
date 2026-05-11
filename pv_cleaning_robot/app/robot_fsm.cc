@@ -103,6 +103,50 @@ void RobotFsm::dispatch<EvScheduleStart>(EvScheduleStart e) {
 }
 
 template <>
+void RobotFsm::dispatch<EvRpcStartTask>(EvRpcStartTask e) {
+    std::function<void()> action;
+    {
+        std::lock_guard<hal::PiMutex> lk(mtx_);
+        if (!sm_->process_event(e)) {
+            spdlog::warn("[FSM] 忽略 EvRpcStartTask (state={})", state_name_);
+            return;
+        }
+
+        const float rounded_passes = std::round(e.passes);
+        const bool passes_is_integer =
+            std::fabs(e.passes - rounded_passes) < 1e-4f && rounded_passes >= 1.0f;
+
+        if (!passes_is_integer) {
+            sm_->process_event(EvSelfCheckFail{});
+            state_name_ = "Idle";
+            spdlog::error("[FSM] → Idle（RPC start 失败：首版仅支持整数趟，拒绝 passes={:.1f}）",
+                          e.passes);
+            return;
+        }
+
+        target_passes_ = static_cast<int>(rounded_passes);
+        completed_passes_ = 0;
+
+        state_name_ = "SelfCheck";
+        spdlog::info("[FSM] → SelfCheck（RPC start，趟数={:.1f}，目标完整趟数={}）",
+                     e.passes,
+                     target_passes_);
+
+        going_forward_ = true;
+        if (!sm_->process_event(EvSelfCheckOk{})) {
+            spdlog::warn("[FSM] 忽略 RPC EvSelfCheckOk (state={})", state_name_);
+            sm_->process_event(EvSelfCheckFail{});
+            state_name_ = "Idle";
+            return;
+        }
+        state_name_ = "CleanFwd";
+        spdlog::info("[FSM] → CleanFwd（RPC 特权启动，从当前位置开始清扫）");
+        action = [this]() { motion_->start_cleaning(); };
+    }
+    if (action) action();
+}
+
+template <>
 void RobotFsm::dispatch<EvFarEndLimitSettled>(EvFarEndLimitSettled e) {
     std::function<void()> action;
     {

@@ -140,6 +140,13 @@ TEST_CASE("RobotSupervisor start requires parking side, valid position and enoug
     REQUIRE(f.fsm->current_state() == "CleanFwd");
 }
 
+TEST_CASE("RobotSupervisor rpc start can begin task away from parking side",
+          "[app][robot_supervisor]") {
+    SupervisorFixture f;
+    REQUIRE(f.supervisor->start_task_from_current_position(true, 60.0f));
+    REQUIRE(f.fsm->current_state() == "CleanFwd");
+}
+
 TEST_CASE("RobotSupervisor promotes pending config before task start", "[app][robot_supervisor]") {
     SupervisorFixture f;
     auto attrs = parse_json(R"({"passes":3.0})");

@@ -30,16 +30,15 @@ namespace robot::device {
 ///
 /// 新增功能：
 ///   - 通信超时下发：open() 时自动向电机写入 comm_timeout_ms 超时时间
-///   - 航向角 PID：set_heading_pid_params() 设置参数后，
-///     update(yaw_deg) 周期计算左右差速补偿，维持直线行驶
+///   - 姿态纠偏控制：set_heading_pid_params() 设置参数后，
+///     update(pitch_deg, roll_deg, yaw_deg, gyro_z_dps) 周期计算上下边框组速度补偿
 ///   - 边缘紧急覆盖：emergency_override() 立即发停车或反转帧，
 ///     并抑制 update() 心跳重发，直到 clear_override() 解除
-///   - 温度轮询：update() 每 kTempQueryIntervalMs 发一次 0x107 查询帧
 ///
 /// 使用步骤：
 ///   1. 构造时传入共享 CAN 总线实例和 id_base（默认 1）
 ///   2. open() → set_mode_all(SPEED) → set_speeds(...)
-///   3. 每 10 ms 调用 update(yaw_deg) 维持心跳+PID
+///   3. 每 10 ms 调用 update(...) 维持心跳+姿态纠偏
 class WalkMotorGroup {
    public:
     static constexpr int kWheelCount = 4;
@@ -74,7 +73,7 @@ class WalkMotorGroup {
         uint32_t ctrl_err_count = 0;    ///< 控制帧发送失败次数
     };
 
-    /// 航向 PID 参数（等价于 service::HeadingPidController::Params，向后兼容别名）
+    /// 姿态纠偏控制参数（沿用 service::HeadingPidController::Params 类型）
     using HeadingPidParams = service::HeadingPidController::Params;
 
     /// @param can      与4台电机共用的 CAN 总线实例
@@ -98,7 +97,7 @@ class WalkMotorGroup {
     /// 打开 CAN 总线，设置4路接收过滤器，启动单一后台接收线程；
     /// 若 comm_timeout_ms > 0，向每台电机写入通信超时
     DeviceError open();
-    /// 停止接收线程，关闭 CAN 总线
+    /// 先安全停机，再停接收线程，再关闭 CAN
     void close();
 
     // ── 模式控制 ──────────────────────────────────────────────────────────
@@ -128,7 +127,6 @@ class WalkMotorGroup {
     /// 速度环给定：一帧同步设定4台电机（-210 ~ +210 RPM）
     DeviceError set_speeds(float lt, float rt, float lb, float rb);
     DeviceError set_speeds(const SpeedCmd& cmd);
-    DeviceError set_speeds_extra(float lt, float rt, float lb, float rb);
     /// 全部相同速度（正=前进，负=后退）
     DeviceError set_speed_uniform(float rpm);
 
@@ -140,17 +138,17 @@ class WalkMotorGroup {
     /// 位置环给定：一帧同步设定4台电机（0 ~ 360°，絶对位置）
     DeviceError set_positions(float lt_deg, float rt_deg, float lb_deg, float rb_deg);
 
-    // ── 航向 PID 控制 ────────────────────────────────────────────────────
-    /// 设置航向 PID 参数（默认已有合理初值）
+    // ── 姿态纠偏控制 ────────────────────────────────────────────────────
+    /// 设置姿态纠偏参数（默认已有合理初值）
     void set_heading_pid_params(const HeadingPidParams& p);
-    /// 使能/禁用航向 PID（set_speeds 设定目标速度后，update(yaw, omega_z) 自动补偿差速）
+    /// 使能/禁用姿态纠偏（set_speeds 设定目标速度后，update(...) 自动补偿差速）
     void enable_heading_control(bool en);
 
     // ── 边缘紧急覆盖（优先级最高，立即生效）────────────────────────────
     /// 立即发送停止或反转帧，并暂停心跳重发直到 clear_override() + update()
     /// @param reverse_rpm  反转速度（>0 表示反转，0 表示原地停止）
     DeviceError emergency_override(float reverse_rpm = 0.0f);
-    /// 解除紧急覆盖，下次 update() 调用时生效（清除 has_ctrl_frame_ 并重置 PID）。
+    /// 解除紧急覆盖，下次 update() 调用时生效（清除 has_ctrl_frame_ 并重置姿态纠偏状态）。
     /// @note 调用本函数后须调用一次 update() 才能令 is_override_active() 返回 false；
     ///       这一设计保证 has_ctrl_frame_（旧速度帧）被原子清除后才恢复发帧，
     ///       避免解除急停后立即发送过期速度命令。
@@ -164,11 +162,15 @@ class WalkMotorGroup {
     GroupDiagnostics get_group_diagnostics() const;
 
     // ── 周期心跳（建议由控制线程调用，50 ms）─────────────────────────
-    /// 心跳帧重发 + PID 差速控制（由 walk_ctrl 线程每 20ms 调用一次）。
-    /// @param yaw_deg      当前 IMU 航向角（°），仅用于日志和诊断
-    /// @param omega_z_dps  当前 IMU Z 轴角速度（°/s），用于速率 PID 计算；
-    ///                     正值 = CCW（yaw 增大），负值 = CW（yaw 减小）
-    void update(float yaw_deg = 0.0f, float omega_z_dps = 0.0f);
+    /// 心跳帧重发 + 姿态纠偏（由 walk_ctrl 线程每 20ms 调用一次）。
+    /// @param pitch_deg    当前 IMU pitch（°）
+    /// @param roll_deg     当前 IMU roll（°）
+    /// @param yaw_deg      当前 IMU yaw（°），当前仅保留给诊断/上层兼容
+    /// @param gyro_z_dps   当前 IMU Z 轴角速度（°/s），用于冻结干扰检测
+    void update(float pitch_deg = 0.0f,
+                float roll_deg = 0.0f,
+                float yaw_deg = 0.0f,
+                float gyro_z_dps = 0.0f);
 
    private:
     // ── 命令队列（Command Queue）─────────────────────────────────────────
@@ -177,9 +179,10 @@ class WalkMotorGroup {
     /// 序列化所有控制帧状态变更，彻底消除多核竞态（Q7/Q8 修复）
     struct Cmd {
         enum class Type : uint8_t { SET_CTRL_FRAME } type{Type::SET_CTRL_FRAME};
-        hal::CanFrame frame{};    ///< 预编码 CAN 帧（SET_CTRL_FRAME 时有效）
-        float base_lt_rpm{0.0f};  ///< PID 基础速度（速度帧填，其余为 0）
-        float base_rt_rpm{0.0f};
+        hal::CanFrame frame{};  ///< 预编码 CAN 帧（SET_CTRL_FRAME 时有效）
+        // 姿态纠偏前的上边框组基础速度；下边框组命令由其镜像推导。
+        float base_upper_lt_rpm{0.0f};
+        float base_upper_rt_rpm{0.0f};
         std::array<float, 4> target_rpms{};  ///< diag[i].target_value 对应值
     };
     static constexpr int kCmdQueueSize = 8;  ///< 环形缓冲深度（正常最多 3 条/周期）
@@ -189,16 +192,16 @@ class WalkMotorGroup {
     hal::PiMutex cmd_mtx_;  ///< 独立于 mtx_，保护 cmd_buf_/cmd_head_/cmd_tail_
 
     std::shared_ptr<hal::ICanBus> can_;
-    uint8_t id_base_;           ///< 1 或 5
-    uint32_t ctrl_id_;          ///< 0x32 或 0x33
-    uint16_t comm_timeout_ms_;  ///< 开机写入电机的通信超时
-    bool termination_init_enabled_{true};      ///< open() 时是否自动发终端电阻初始化
-    uint8_t termination_init_retry_count_{3u}; ///< 终端电阻初始化发送次数
-    uint8_t termination_motor_id_{2u};         ///< 目标物理 motor_id
+    uint8_t id_base_;                           ///< 1 或 5
+    uint16_t comm_timeout_ms_;                  ///< 开机写入电机的通信超时
+    bool termination_init_enabled_{true};       ///< open() 时是否自动发终端电阻初始化
+    uint8_t termination_init_retry_count_{3u};  ///< 终端电阻初始化发送次数
+    uint8_t termination_motor_id_{2u};          ///< 目标物理 motor_id
     std::array<protocol::WalkMotorCanCodec, kWheelCount> codecs_;
 
     std::thread recv_thread_;
     std::atomic<bool> running_{false};
+    std::atomic<bool> closing_{false};
 
     mutable hal::PiMutex mtx_;
     std::array<WalkMotor::Diagnostics, kWheelCount> diag_{};
@@ -206,14 +209,15 @@ class WalkMotorGroup {
 
     hal::CanFrame last_ctrl_frame_{};
     bool has_ctrl_frame_{false};
-    float base_lt_rpm_{0.0f};  ///< PID 前基础左侧速度
-    float base_rt_rpm_{0.0f};  ///< PID 前基础右侧速度
+    // 上边框组左右基础速度；下边框组速度由反向安装关系镜像推导。
+    float base_upper_lt_rpm_{0.0f};
+    float base_upper_rt_rpm_{0.0f};
 
     // 带统计的发帧计数
     uint32_t ctrl_frame_count_{0};
     uint32_t ctrl_err_count_{0};
 
-    // ── 航向 PID 控制器 ─────────────────────────────────────────────────
+    // ── 姿态纠偏控制器 ─────────────────────────────────────────────────
     /// 在 mtx_ 锁保护下访问；不含硬件依赖，便于独立单元测试。
     service::HeadingPidController pid_ctrl_;
 
@@ -222,9 +226,9 @@ class WalkMotorGroup {
     /// CLEAR_OVERRIDE 原子标志：clear_override() 直写，update() step2 优先检查，
     /// 不占命令队列位置，任意满载下均不可丢失。
     std::atomic<bool> pending_clear_override_{false};
-    /// CAN TX 串行化锁：emergency_override() 与 update() PID 发帧路径共享。
+    /// CAN TX 串行化锁：emergency_override() 与 update() 姿态纠偏发帧路径共享。
     /// 保证 stop 帧永远是总线上最后一帧（两条防线之二，详见 CONCURRENCY.md）。
-    /// 注意：仅保护 update() PID 控制帧路径；
+    /// 注意：仅保护 update() 姿态纠偏控制帧路径；
     ///       配置帧（enable_all / set_mode_all 等）不经此锁，避免 start_returning()
     ///       在 CLEAR_OVERRIDE 入队但未消费期间错误丢帧。
     hal::PiMutex send_mtx_;
@@ -234,7 +238,7 @@ class WalkMotorGroup {
     static constexpr auto kOnlineTimeout = std::chrono::milliseconds(500);
 
     DeviceError send_ctrl(const hal::CanFrame& frame);
-    void enqueue_cmd(const Cmd& cmd);  ///< 投入环形缓冲，满时丢弃最旧并 warn
+    bool enqueue_cmd(const Cmd& cmd);  ///< 投入环形缓冲；关闭中拒绝入队，满时丢弃最旧并 warn
     void recv_loop();
 };
 

@@ -1,9 +1,9 @@
-#include "pv_cleaning_robot/protocol/odrive_ascii_protocol.h"
-
 #include <cerrno>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
+
+#include "pv_cleaning_robot/protocol/odrive_ascii_protocol.h"
 
 namespace robot::protocol {
 
@@ -84,6 +84,10 @@ size_t encode_clear_errors(char* out, size_t cap) noexcept {
     return encode_line(out, cap, "sc\n");
 }
 
+size_t encode_restart(char* out, size_t cap) noexcept {
+    return encode_line(out, cap, "sr\n");
+}
+
 size_t encode_set_control_mode(uint8_t axis,
                                OdriveControlMode mode,
                                char* out,
@@ -95,18 +99,12 @@ size_t encode_set_control_mode(uint8_t axis,
                        static_cast<unsigned>(mode));
 }
 
-size_t encode_set_requested_state(uint8_t axis,
-                                  uint32_t state,
-                                  char* out,
-                                  size_t cap) noexcept {
+size_t encode_set_requested_state(uint8_t axis, uint32_t state, char* out, size_t cap) noexcept {
     return encode_line(
         out, cap, "w axis%u.requested_state %u\n", static_cast<unsigned>(axis), state);
 }
 
-size_t encode_set_watchdog_enabled(uint8_t axis,
-                                   bool enabled,
-                                   char* out,
-                                   size_t cap) noexcept {
+size_t encode_set_watchdog_enabled(uint8_t axis, bool enabled, char* out, size_t cap) noexcept {
     return encode_line(out,
                        cap,
                        "w axis%u.config.enable_watchdog %u\n",
@@ -114,10 +112,7 @@ size_t encode_set_watchdog_enabled(uint8_t axis,
                        enabled ? 1u : 0u);
 }
 
-size_t encode_set_watchdog_timeout(uint8_t axis,
-                                   float timeout_s,
-                                   char* out,
-                                   size_t cap) noexcept {
+size_t encode_set_watchdog_timeout(uint8_t axis, float timeout_s, char* out, size_t cap) noexcept {
     return encode_line(out,
                        cap,
                        "w axis%u.config.watchdog_timeout %.3f\n",

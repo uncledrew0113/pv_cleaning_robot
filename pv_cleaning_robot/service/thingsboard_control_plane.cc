@@ -904,13 +904,12 @@ void ThingsBoardControlPlane::register_rpc_handlers(
                 at_parking_side,
                 battery_soc);
 
-            if (!supervisor_->start_task(at_parking_side, position_valid, battery_soc)) {
+            if (!supervisor_->start_task_from_current_position(position_valid, battery_soc)) {
                 const auto runtime_cfg = has_pending_config() ? *pending_config() : active_config();
                 const std::string reason =
                     (state != "Idle" && state != "Charging" && state != "Stopped")
                         ? "start_not_allowed_in_current_state"
                     : !position_valid  ? "robot_position_invalid"
-                    : !at_parking_side ? "robot_not_at_parking_side"
                     : battery_soc < static_cast<float>(runtime_cfg.start_battery_soc)
                         ? "battery_below_start_threshold"
                         : "promote_pending_config_failed";

@@ -24,10 +24,20 @@ DistanceSensor::DistanceSensor(std::shared_ptr<hal::IModbusMaster> modbus,
     diag_.channel_count = cfg_.channel_count;
 }
 
+DistanceSensor::~DistanceSensor() {
+    close();
+}
+
 bool DistanceSensor::open() {
     if (!modbus_) return false;
     if (modbus_->is_open()) return true;
     return modbus_->open();
+}
+
+void DistanceSensor::close() {
+    if (modbus_) {
+        modbus_->close();
+    }
 }
 
 void DistanceSensor::update() {

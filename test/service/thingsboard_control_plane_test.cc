@@ -271,13 +271,25 @@ TEST_CASE("ThingsBoardControlPlane start RPC launches a new task", "[service][tb
     CHECK(response["accepted"].GetBool() == true);
 }
 
+TEST_CASE("ThingsBoardControlPlane start RPC can launch away from parking side",
+          "[service][tb_control_plane]") {
+    Fixture f;
+    f.register_handlers(true, false, false, 80.0f);
+
+    f.mqtt->emit_rpc("43", R"({"method":"start","params":{}})");
+
+    CHECK(f.fsm->current_state() == "CleanFwd");
+    const auto response = f.last_published_json("rpc/response/43");
+    CHECK(response["accepted"].GetBool() == true);
+}
+
 TEST_CASE("ThingsBoardControlPlane start RPC rejects invalid position or low battery",
           "[service][tb_control_plane]") {
     SECTION("invalid position") {
         Fixture f;
         f.register_handlers(false, false, false, 80.0f);
-        f.mqtt->emit_rpc("43", R"({"method":"start","params":{}})");
-        const auto response = f.last_published_json("rpc/response/43");
+        f.mqtt->emit_rpc("44", R"({"method":"start","params":{}})");
+        const auto response = f.last_published_json("rpc/response/44");
         CHECK(response["accepted"].GetBool() == false);
         CHECK(std::string(response["reason"].GetString()) == "robot_position_invalid");
     }
@@ -285,8 +297,8 @@ TEST_CASE("ThingsBoardControlPlane start RPC rejects invalid position or low bat
     SECTION("battery below threshold") {
         Fixture f;
         f.register_handlers(true, true, false, 10.0f);
-        f.mqtt->emit_rpc("44", R"({"method":"start","params":{}})");
-        const auto response = f.last_published_json("rpc/response/44");
+        f.mqtt->emit_rpc("45", R"({"method":"start","params":{}})");
+        const auto response = f.last_published_json("rpc/response/45");
         CHECK(response["accepted"].GetBool() == false);
         CHECK(std::string(response["reason"].GetString()) == "battery_below_start_threshold");
     }

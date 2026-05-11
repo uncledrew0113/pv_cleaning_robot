@@ -7,6 +7,7 @@
 #include "pv_cleaning_robot/service/cloud_service.h"
 #include "pv_cleaning_robot/middleware/thread_executor.h"
 #include <array>
+#include <cstdint>
 #include <memory>
 #include <string>
 
@@ -22,7 +23,7 @@ namespace robot::service {
 class HealthPayloadBuilder {
 public:
     struct HealthView {
-        const char* ts_iso8601{""};
+        uint64_t ts_ms{0};
         device::WalkMotorGroup::GroupStatus walk{};
         device::BrushMotor::Status brush{};
         device::BMS::BatteryData bms{};
@@ -31,7 +32,7 @@ public:
     };
 
     struct DiagnosticsView {
-        const char* ts_iso8601{""};
+        uint64_t ts_ms{0};
         device::WalkMotorGroup::GroupDiagnostics walk{};
         device::BrushMotor::Diagnostics brush{};
         device::BMS::Diagnostics bms{};
