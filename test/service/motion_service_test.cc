@@ -253,6 +253,26 @@ TEST_CASE("MotionService emergency_stop idles brush", "[service][motion]") {
     REQUIRE_FALSE(f.can->sent_frames.empty());
 }
 
+TEST_CASE("MotionService emergency_stop clears walk target values to zero", "[service][motion]") {
+    MotionFixture f;
+    REQUIRE(f.motion.start_cleaning());
+    f.motion.update();
+
+    auto before = f.group->get_group_diagnostics();
+    REQUIRE(before.wheel[0].target_value != Approx(0.0f));
+    REQUIRE(before.wheel[1].target_value != Approx(0.0f));
+    REQUIRE(before.wheel[2].target_value != Approx(0.0f));
+    REQUIRE(before.wheel[3].target_value != Approx(0.0f));
+
+    f.motion.emergency_stop();
+
+    const auto after = f.group->get_group_diagnostics();
+    REQUIRE(after.wheel[0].target_value == Approx(0.0f));
+    REQUIRE(after.wheel[1].target_value == Approx(0.0f));
+    REQUIRE(after.wheel[2].target_value == Approx(0.0f));
+    REQUIRE(after.wheel[3].target_value == Approx(0.0f));
+}
+
 TEST_CASE("MotionService CAN send failure causes start_cleaning failure", "[service][motion]") {
     MotionFixture f;
     f.can->send_result = false;

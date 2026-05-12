@@ -29,6 +29,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <fstream>
+#include <mutex>
 #include <rapidjson/document.h>
 #include <rapidjson/stringbuffer.h>
 #include <rapidjson/writer.h>
@@ -108,11 +109,143 @@ void remove_rotated_health_logs(const std::string& base_path)
     }
 }
 
+const char* pid_mode_name(robot::service::HeadingPidController::Mode mode)
+{
+    using Mode = robot::service::HeadingPidController::Mode;
+    switch (mode) {
+        case Mode::UNINITIALIZED:
+            return "UNINITIALIZED";
+        case Mode::LEARN:
+            return "LEARN";
+        case Mode::TRACK:
+            return "TRACK";
+        case Mode::FREEZE:
+            return "FREEZE";
+    }
+    return "UNKNOWN";
+}
+
+float clamp_pid_target(float v)
+{
+    return std::max(-210.0f, std::min(210.0f, v));
+}
+
+bool open_pid_metrics_file(const std::filesystem::path& path, std::ofstream* out)
+{
+    if (!out) {
+        return false;
+    }
+
+    const auto parent = path.parent_path();
+    if (!parent.empty()) {
+        std::error_code ec;
+        std::filesystem::create_directories(parent, ec);
+        if (ec) {
+            spdlog::error("[hw_system][pid_combined] 创建 PID 指标目录失败: path={} err={}",
+                          parent.string(),
+                          ec.message());
+            return false;
+        }
+    }
+
+    out->open(path, std::ios::trunc);
+    if (!out->is_open()) {
+        spdlog::error("[hw_system][pid_combined] 打开 PID 指标文件失败: path={}", path.string());
+        return false;
+    }
+
+    out->setf(std::ios::unitbuf);
+    return true;
+}
+
+robot::service::HeadingPidController::Params make_pid_probe_params(const hw::HwParams::PidParams& pid)
+{
+    robot::service::HeadingPidController::Params params;
+    params.pitch_alpha = pid.pitch_alpha;
+    params.roll_alpha = pid.roll_alpha;
+    params.gyro_alpha = pid.gyro_alpha;
+    params.pitch_drop_threshold = pid.pitch_drop_threshold;
+    params.roll_threshold = pid.roll_threshold;
+    params.learn_improve_eps = pid.learn_improve_eps;
+    params.best_decay_per_s = pid.best_decay_per_s;
+    params.freeze_gyro_z_threshold = pid.freeze_gyro_z_threshold;
+    params.freeze_pitch_rate_threshold = pid.freeze_pitch_rate_threshold;
+    params.freeze_roll_rate_threshold = pid.freeze_roll_rate_threshold;
+    params.max_output = pid.max_output;
+    params.min_effective_output = pid.min_effective_output;
+    params.warmup_ms = pid.warmup_ms;
+    params.hold_ms = pid.hold_ms;
+    params.freeze_release_ms = pid.freeze_release_ms;
+    return params;
+}
+
+struct MotionPidProbeFilters {
+    float filtered_pitch{0.0f};
+    bool filtered_pitch_inited{false};
+    float filtered_roll{0.0f};
+    bool filtered_roll_inited{false};
+    float filtered_omega_z{0.0f};
+    bool filtered_omega_z_inited{false};
+
+    void update(const robot::device::ImuDevice::ImuData& imu)
+    {
+        const float raw_pitch = imu.pitch_deg;
+        const float raw_roll = imu.roll_deg;
+        const float raw_omega_z = imu.gyro[2] * (180.0f / 3.14159265f);
+
+        if (!filtered_pitch_inited) {
+            filtered_pitch = raw_pitch;
+            filtered_pitch_inited = true;
+        } else {
+            filtered_pitch = 0.8f * filtered_pitch + 0.2f * raw_pitch;
+        }
+
+        if (!filtered_roll_inited) {
+            filtered_roll = raw_roll;
+            filtered_roll_inited = true;
+        } else {
+            filtered_roll = 0.8f * filtered_roll + 0.2f * raw_roll;
+        }
+
+        if (!filtered_omega_z_inited) {
+            filtered_omega_z = raw_omega_z;
+            filtered_omega_z_inited = true;
+        } else {
+            filtered_omega_z = 0.8f * filtered_omega_z + 0.2f * raw_omega_z;
+        }
+    }
+};
+
+struct PidProbeSnapshot {
+    robot::service::HeadingPidController::DebugState pid{};
+    float correction{0.0f};
+    float lt_target{0.0f};
+    float rt_target{0.0f};
+    float lb_target{0.0f};
+    float rb_target{0.0f};
+};
+
+struct ProbeThreadGuard {
+    std::atomic<bool>* stop{nullptr};
+    std::thread* thread{nullptr};
+
+    ~ProbeThreadGuard()
+    {
+        if (stop) {
+            stop->store(true, std::memory_order_relaxed);
+        }
+        if (thread && thread->joinable()) {
+            thread->join();
+        }
+    }
+};
+
 std::string build_pid_sample_json(int64_t ts_ms,
                                   int seg,
                                   const std::string& state,
                                   float yaw,
-                                  float omega_z)
+                                  float omega_z,
+                                  const PidProbeSnapshot& pid_probe)
 {
     rapidjson::StringBuffer buffer;
     rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
@@ -127,6 +260,32 @@ std::string build_pid_sample_json(int64_t ts_ms,
     writer.Double(yaw);
     writer.Key("omega_z");
     writer.Double(omega_z);
+    writer.Key("pid_mode");
+    writer.String(pid_mode_name(pid_probe.pid.mode));
+    writer.Key("pid_filtered_pitch");
+    writer.Double(pid_probe.pid.filtered_pitch);
+    writer.Key("pid_filtered_roll");
+    writer.Double(pid_probe.pid.filtered_roll);
+    writer.Key("pid_filtered_gyro_z");
+    writer.Double(pid_probe.pid.filtered_gyro_z);
+    writer.Key("pid_pitch_best");
+    writer.Double(pid_probe.pid.pitch_abs_best);
+    writer.Key("pid_roll_best");
+    writer.Double(pid_probe.pid.roll_at_best);
+    writer.Key("pid_pitch_drop");
+    writer.Double(pid_probe.pid.pitch_drop);
+    writer.Key("pid_roll_delta");
+    writer.Double(pid_probe.pid.roll_delta);
+    writer.Key("pid_correction");
+    writer.Double(pid_probe.correction);
+    writer.Key("lt_tgt_final");
+    writer.Double(pid_probe.lt_target);
+    writer.Key("rt_tgt_final");
+    writer.Double(pid_probe.rt_target);
+    writer.Key("lb_tgt_final");
+    writer.Double(pid_probe.lb_target);
+    writer.Key("rb_tgt_final");
+    writer.Double(pid_probe.rb_target);
     writer.EndObject();
     return {buffer.GetString(), buffer.GetSize()};
 }
@@ -164,7 +323,6 @@ std::string build_final_summary_json(int total_segs,
                                      float max_drift_all_deg,
                                      float pitch_drop_threshold,
                                      float roll_threshold,
-                                     float freeze_gyro_z_threshold,
                                      float max_output)
 {
     rapidjson::StringBuffer buffer;
@@ -182,8 +340,6 @@ std::string build_final_summary_json(int total_segs,
     writer.Double(pitch_drop_threshold);
     writer.Key("roll_threshold");
     writer.Double(roll_threshold);
-    writer.Key("freeze_gyro_z_threshold");
-    writer.Double(freeze_gyro_z_threshold);
     writer.Key("max_output");
     writer.Double(max_output);
     writer.EndObject();
@@ -988,11 +1144,9 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + PID 控制 + 真实滚
     spdlog::warn("[hw_system][pid_combined] ⚠ 机器人将运动 {:.1f} 趟（{} 段）！",
                  f.p.combined_passes,
                  static_cast<int>(passes_half));
-    spdlog::warn(
-        "[hw_system][pid_combined] attitude pitch_drop={:.2f} roll_threshold={:.2f} freeze_gyro={:.1f}°/s",
-        f.p.pid.pitch_drop_threshold,
-        f.p.pid.roll_threshold,
-        f.p.pid.freeze_gyro_z_threshold);
+    spdlog::warn("[hw_system][pid_combined] attitude pitch_drop={:.2f} roll_threshold={:.2f}",
+                 f.p.pid.pitch_drop_threshold,
+                 f.p.pid.roll_threshold);
     spdlog::warn("[hw_system][pid_combined] 健康数据: {}", f.p.health_jsonl_path);
     spdlog::warn("[hw_system][pid_combined] PID 指标: {}", f.p.pid_jsonl_path);
     spdlog::warn("[hw_system][pid_combined] 最大漂移警告阈值: {:.1f}°", f.p.pid_max_drift_deg);
@@ -1004,8 +1158,8 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + PID 控制 + 真实滚
     REQUIRE(f.health != nullptr);
 
     // 打开 pid_metrics.jsonl（测试结束不删除，供离线分析）
-    std::ofstream pid_ofs(f.p.pid_jsonl_path, std::ios::trunc);
-    REQUIRE(pid_ofs.is_open());
+    std::ofstream pid_ofs;
+    REQUIRE(open_pid_metrics_file(f.p.pid_jsonl_path, &pid_ofs));
 
     // 看门狗（超时 = 每段最大秒数 × 2）
     std::atomic<bool> wd_timeout{false};
@@ -1033,7 +1187,6 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + PID 控制 + 真实滚
     spdlog::info("[hw_system][pid_combined] target_yaw={:.2f}°", target_yaw);
 
     using clock = std::chrono::steady_clock;
-    const auto t_test_start = clock::now();
     int total_health_records = 0;
     float max_drift_all = 0.0f;  // 全程最大 yaw 漂移（绝对值）
 
@@ -1048,14 +1201,72 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + PID 控制 + 真实滚
 
     // 当前段号（写入每条 JSONL 记录）
     int cur_seg = 0;
+    auto last_pid_sample_at = clock::time_point{};
+    constexpr auto kPidSampleInterval = 500ms;
+    auto last_health_update_at = clock::time_point{};
+    constexpr auto kHealthUpdateInterval = 2000ms;
+
+    std::mutex pid_probe_mu;
+    PidProbeSnapshot pid_probe_snapshot;
+    std::atomic<bool> pid_probe_stop{false};
+    robot::service::HeadingPidController pid_probe_ctrl(make_pid_probe_params(f.p.pid));
+    pid_probe_ctrl.enable(true);
+
+    std::thread pid_probe_thread([&]() {
+        MotionPidProbeFilters probe_filters;
+        auto last_tick = clock::now();
+
+        while (!pid_probe_stop.load(std::memory_order_relaxed)) {
+            const auto now = clock::now();
+            float dt_s = std::chrono::duration<float>(now - last_tick).count();
+            if (dt_s < 0.0f) {
+                dt_s = 0.0f;
+            }
+            last_tick = now;
+
+            const auto imu = f.imu->get_latest();
+            probe_filters.update(imu);
+
+            PidProbeSnapshot snap;
+            snap.correction = pid_probe_ctrl.compute(probe_filters.filtered_pitch,
+                                                     probe_filters.filtered_roll,
+                                                     probe_filters.filtered_omega_z,
+                                                     dt_s);
+            snap.pid = pid_probe_ctrl.debug_state();
+
+            const auto gd = f.walk_group->get_group_diagnostics();
+            const std::string state = f.fsm->current_state();
+            const bool moving = (state == "CleanFwd" || state == "CleanReturn");
+            const float applied_correction = moving ? snap.correction : 0.0f;
+
+            snap.lt_target = clamp_pid_target(gd.wheel[0].target_value + applied_correction);
+            snap.rt_target = clamp_pid_target(gd.wheel[1].target_value + applied_correction);
+            snap.lb_target = clamp_pid_target(gd.wheel[2].target_value + applied_correction);
+            snap.rb_target = clamp_pid_target(gd.wheel[3].target_value + applied_correction);
+
+            {
+                std::lock_guard<std::mutex> lock(pid_probe_mu);
+                pid_probe_snapshot = snap;
+            }
+
+            std::this_thread::sleep_until(now + 50ms);
+        }
+    });
+    ProbeThreadGuard pid_probe_guard{&pid_probe_stop, &pid_probe_thread};
 
     // 每次调用：刷新 BMS + 写健康 JSONL + 喂狗 + 写 pid_metrics JSONL
     auto poll_once = [&]() {
         fail_if_exit_requested(f);
-        f.bms->update();
-        f.health->update();
         f.watchdog->heartbeat(wd_tid);
-        ++total_health_records;
+
+        const auto now = clock::now();
+        if (last_health_update_at == clock::time_point{} ||
+            now - last_health_update_at >= kHealthUpdateInterval) {
+            // 临时停用 BMS 轮询，避免串口阻塞影响 PID 采样频率。
+            f.health->update();
+            last_health_update_at = clock::now();
+            ++total_health_records;
+        }
 
         auto gd = f.walk_group->get_group_diagnostics();
         auto imu = f.imu->get_latest();
@@ -1066,21 +1277,36 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + PID 控制 + 真实滚
         if (drift > max_drift_all)
             max_drift_all = drift;
 
-        const int64_t ts_ms =
-            std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - t_test_start)
-                .count();
+        if (last_pid_sample_at != clock::time_point{} &&
+            now - last_pid_sample_at < kPidSampleInterval) {
+            return;  // 只节流 PID 采样（健康采集独立周期）
+        }
+        last_pid_sample_at = now;
+
+        const int64_t ts_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                  std::chrono::system_clock::now().time_since_epoch())
+                                  .count();
+
+        PidProbeSnapshot pid_probe;
+        {
+            std::lock_guard<std::mutex> lock(pid_probe_mu);
+            pid_probe = pid_probe_snapshot;
+        }
 
         pid_ofs << build_pid_sample_json(
                        ts_ms,
                        cur_seg,
                        f.fsm->current_state(),
                        std::round(yaw * 100.0f) / 100.0f,
-                       std::round(omega_z_dps * 100.0f) / 100.0f)
+                       std::round(omega_z_dps * 100.0f) / 100.0f,
+                       pid_probe)
                 << '\n';
 
         spdlog::info(
             "[hw_system][pid_combined] #{} seg={} yaw={:.2f}° omega_z={:.2f}°/s "
-            "LT={:.1f} RT={:.1f} LB={:.1f} RB={:.1f}rpm state={}",
+            "LT={:.1f} RT={:.1f} LB={:.1f} RB={:.1f}rpm state={} "
+            "pid_mode={} corr={:.2f} pitch_drop={:.3f} roll_delta={:.3f} "
+            "final_tgt=[{:.1f},{:.1f},{:.1f},{:.1f}]",
             total_health_records,
             cur_seg,
             yaw,
@@ -1089,7 +1315,15 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + PID 控制 + 真实滚
             gd.wheel[1].speed_rpm,
             gd.wheel[2].speed_rpm,
             gd.wheel[3].speed_rpm,
-            f.fsm->current_state());
+            f.fsm->current_state(),
+            pid_mode_name(pid_probe.pid.mode),
+            pid_probe.correction,
+            pid_probe.pid.pitch_drop,
+            pid_probe.pid.roll_delta,
+            pid_probe.lt_target,
+            pid_probe.rt_target,
+            pid_probe.lb_target,
+            pid_probe.rb_target);
     };
 
     // 等待 FSM 从 from 状态切换到其他状态（每段独立超时）
@@ -1178,7 +1412,6 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + PID 控制 + 真实滚
                    std::round(max_drift_all * 100.0f) / 100.0f,
                    f.p.pid.pitch_drop_threshold,
                    f.p.pid.roll_threshold,
-                   f.p.pid.freeze_gyro_z_threshold,
                    f.p.pid.max_output)
             << '\n';
     pid_ofs.close();

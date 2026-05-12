@@ -26,6 +26,10 @@ void ThreadExecutor::add_runnable(std::shared_ptr<IRunnable> runnable)
 
 bool ThreadExecutor::start()
 {
+    {
+        std::lock_guard<std::mutex> lk(sleep_mtx_);
+        wake_requested_ = false;
+    }
     running_.store(true);
     thread_ = std::thread(&ThreadExecutor::loop, this);
     return true;
@@ -34,6 +38,11 @@ bool ThreadExecutor::start()
 void ThreadExecutor::stop()
 {
     running_.store(false);
+    {
+        std::lock_guard<std::mutex> lk(sleep_mtx_);
+        wake_requested_ = true;
+    }
+    sleep_cv_.notify_all();
     if (thread_.joinable()) thread_.join();
 }
 
@@ -41,6 +50,11 @@ void ThreadExecutor::set_period_ms(int period_ms)
 {
     if (period_ms <= 0) return;
     period_ms_.store(period_ms);
+    {
+        std::lock_guard<std::mutex> lk(sleep_mtx_);
+        wake_requested_ = true;
+    }
+    sleep_cv_.notify_all();
 }
 
 void ThreadExecutor::loop()
@@ -87,7 +101,18 @@ void ThreadExecutor::loop()
         if (next_wake < Clock::now()) {
             next_wake = Clock::now() + std::chrono::milliseconds(period_ms);
         }
-        std::this_thread::sleep_until(next_wake);
+        std::unique_lock<std::mutex> lk(sleep_mtx_);
+        const bool interrupted =
+            sleep_cv_.wait_until(lk, next_wake, [this]() {
+                return !running_.load() || wake_requested_;
+            });
+        if (!running_.load()) {
+            break;
+        }
+        if (interrupted) {
+            wake_requested_ = false;
+            next_wake = Clock::now();
+        }
     }
 }
 

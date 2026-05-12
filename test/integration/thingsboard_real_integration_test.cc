@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -17,6 +18,7 @@
 #include "pv_cleaning_robot/middleware/network_manager.h"
 #include "pv_cleaning_robot/service/cloud_service.h"
 #include "pv_cleaning_robot/service/config_service.h"
+#include "pv_cleaning_robot/service/health_service.h"
 #include "pv_cleaning_robot/service/scheduler_service.h"
 #include "pv_cleaning_robot/service/thingsboard_control_plane.h"
 #include "integration/thingsboard_test_support.h"
@@ -41,6 +43,109 @@ bool real_tb_test_enabled()
     const std::string env_value(value);
     return !(env_value.empty() || env_value == "0" || env_value == "false" ||
              env_value == "FALSE");
+}
+
+void override_diagnostics_mode(const tb_test_support::TempSplitConfigPaths& paths,
+                               const char* mode)
+{
+    REQUIRE(mode != nullptr);
+
+    std::ifstream in(paths.fixed_path);
+    REQUIRE(in.is_open());
+    const std::string original((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    REQUIRE_FALSE(original.empty());
+
+    const auto diagnostics_pos = original.find("\"diagnostics\"");
+    REQUIRE(diagnostics_pos != std::string::npos);
+
+    const auto mode_key_pos = original.find("\"mode\"", diagnostics_pos);
+    REQUIRE(mode_key_pos != std::string::npos);
+
+    const auto colon_pos = original.find(':', mode_key_pos);
+    REQUIRE(colon_pos != std::string::npos);
+
+    const auto value_begin = original.find('"', colon_pos + 1);
+    REQUIRE(value_begin != std::string::npos);
+
+    const auto value_end = original.find('"', value_begin + 1);
+    REQUIRE(value_end != std::string::npos);
+
+    std::string updated = original;
+    updated.replace(value_begin + 1, value_end - value_begin - 1, mode);
+    tb_test_support::write_text_file(paths.fixed_path, updated);
+}
+
+std::string build_sample_health_payload()
+{
+    std::array<char, 4096> out{};
+    robot::service::HealthPayloadBuilder::HealthView view{};
+    view.ts_ms = 1778481758995ULL;
+    view.walk.wheel[0].torque_a = -0.0141f;
+    view.walk.wheel[0].fault = robot::protocol::WalkMotorFault::OVER_VOLTAGE;
+    view.walk.wheel[1].torque_a = -0.008057f;
+    view.walk.wheel[1].fault = robot::protocol::WalkMotorFault::OVER_VOLTAGE;
+    view.walk.wheel[2].torque_a = 0.024171f;
+    view.walk.wheel[2].fault = robot::protocol::WalkMotorFault::OVER_VOLTAGE;
+    view.walk.wheel[3].torque_a = 0.0141f;
+    view.walk.wheel[3].fault = robot::protocol::WalkMotorFault::OVER_VOLTAGE;
+    view.imu.pitch_deg = -4.350586f;
+    view.imu.roll_deg = -1.049194f;
+    view.imu.yaw_deg = 2.971802f;
+    view.gps.latitude = 24.683938;
+    view.gps.longitude = 118.220434;
+    view.gps.fix_quality = 2;
+
+    const size_t len =
+        robot::service::HealthPayloadBuilder::build_health(view, out.data(), out.size());
+    REQUIRE(len > 0u);
+    return std::string(out.data(), len);
+}
+
+std::string build_sample_diagnostics_payload()
+{
+    std::array<char, 8192> out{};
+    robot::service::HealthPayloadBuilder::DiagnosticsView view{};
+    view.ts_ms = 1778481758995ULL;
+
+    view.walk.wheel[0].torque_a = -0.0141f;
+    view.walk.wheel[0].fault = robot::protocol::WalkMotorFault::OVER_VOLTAGE;
+    view.walk.wheel[0].online = true;
+    view.walk.wheel[1].torque_a = -0.008057f;
+    view.walk.wheel[1].fault = robot::protocol::WalkMotorFault::OVER_VOLTAGE;
+    view.walk.wheel[1].online = true;
+    view.walk.wheel[2].torque_a = 0.024171f;
+    view.walk.wheel[2].fault = robot::protocol::WalkMotorFault::OVER_VOLTAGE;
+    view.walk.wheel[2].online = true;
+    view.walk.wheel[3].torque_a = 0.0141f;
+    view.walk.wheel[3].fault = robot::protocol::WalkMotorFault::OVER_VOLTAGE;
+    view.walk.wheel[3].online = true;
+
+    view.walk.ctrl_frame_count = 4u;
+    view.brush.current_a = 0.100231f;
+    view.brush.bus_voltage_v = 26.543409f;
+    view.brush.temperature_c = 40.910069f;
+    view.imu.accel[0] = 0.746484f;
+    view.imu.accel[1] = -0.138770f;
+    view.imu.accel[2] = 9.790430f;
+    view.imu.gyro[0] = -0.001065f;
+    view.imu.gyro[1] = -0.004261f;
+    view.imu.pitch_deg = -4.350586f;
+    view.imu.roll_deg = -1.049194f;
+    view.imu.yaw_deg = 2.971802f;
+    view.imu.frame_rate_hz = 81.947891f;
+    view.gps.latitude = 24.683938;
+    view.gps.longitude = 118.220434;
+    view.gps.altitude_m = 122.331001f;
+    view.gps.speed_m_s = 0.280000f;
+    view.gps.satellites_used = 1u;
+    view.gps.hdop = 3.920000f;
+    view.gps.fix_quality = 2;
+    view.gps.sentence_count = 81u;
+
+    const size_t len =
+        robot::service::HealthPayloadBuilder::build_diagnostics(view, out.data(), out.size());
+    REQUIRE(len > 0u);
+    return std::string(out.data(), len);
 }
 
 template <typename Pred>
@@ -89,15 +194,20 @@ struct RealThingsBoardFixture {
     mutable std::mutex shared_attr_result_mtx;
     std::optional<robot::service::SharedAttrApplyResult> last_shared_attr_result;
 
-    RealThingsBoardFixture(const tb_test_support::RepoPaths& paths)
+    RealThingsBoardFixture(const tb_test_support::RepoPaths& paths,
+                           const char* client_id_suffix = "_real_attr_itest",
+                           const char* diagnostics_mode_override = nullptr)
         : repo_root(paths.repo_root)
         , cfg(this->paths.runtime_path.string(), this->paths.fixed_path.string())
         , scheduler()
     {
         tb_test_support::copy_repo_split_config(paths, this->paths);
+        if (diagnostics_mode_override != nullptr) {
+            override_diagnostics_mode(this->paths, diagnostics_mode_override);
+        }
         REQUIRE(cfg.load());
         tb_cfg = std::make_unique<robot::service::ThingsBoardConfigManager>(cfg, scheduler);
-        auto mqtt_cfg = tb_test_support::build_mqtt_config(cfg, repo_root, "_real_attr_itest");
+        auto mqtt_cfg = tb_test_support::build_mqtt_config(cfg, repo_root, client_id_suffix);
         REQUIRE_FALSE(mqtt_cfg.broker_uri.empty());
         spdlog::info(
             "[TB real test] broker='{}' tls_enabled={} ca='{}' cert='{}' key='{}' skip_server_name_check={}",
@@ -327,6 +437,238 @@ TEST_CASE("Real ThingsBoard mutual TLS connection", "[integration][thingsboard][
     RealThingsBoardFixture f(*paths);
 
     REQUIRE(f.connect_and_request_shared_snapshot());
+    CHECK(f.net->is_connected());
+}
+
+TEST_CASE("Real ThingsBoard production health stays connected while development diagnostics disconnects",
+          "[integration][thingsboard][real][mqtt_stability][health_service_mode]") {
+    if (!real_tb_test_enabled()) {
+        SUCCEED("Set TB_REAL_TEST=1 to enable real ThingsBoard health mode stability test");
+        return;
+    }
+
+    const auto paths = tb_test_support::find_repo_paths();
+    REQUIRE(paths.has_value());
+
+    SECTION("production health stays connected after first telemetry publish") {
+        RealThingsBoardFixture f(*paths, "_health_mode_prod_itest", "production");
+        REQUIRE(f.connect_and_request_shared_snapshot());
+        REQUIRE(f.net->is_connected());
+
+        const auto payload = build_sample_health_payload();
+        REQUIRE(f.cloud->publish_telemetry(payload));
+
+        const auto hold_time = std::chrono::seconds(10);
+        const auto sample_period = std::chrono::milliseconds(200);
+        const auto start = std::chrono::steady_clock::now();
+        const auto deadline = start + hold_time;
+
+        while (std::chrono::steady_clock::now() < deadline) {
+            INFO("mode=production elapsed_ms="
+                 << std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - start)
+                        .count());
+            REQUIRE(f.net->is_connected());
+            std::this_thread::sleep_for(sample_period);
+        }
+    }
+
+    SECTION("development diagnostics disconnects after first telemetry publish") {
+        RealThingsBoardFixture f(*paths, "_health_mode_diag_itest", "development");
+        REQUIRE(f.connect_and_request_shared_snapshot());
+        REQUIRE(f.net->is_connected());
+
+        const auto payload = build_sample_diagnostics_payload();
+        REQUIRE(f.cloud->publish_telemetry(payload));
+
+        const auto timeout = std::chrono::seconds(10);
+        const auto sample_period = std::chrono::milliseconds(200);
+        const auto start = std::chrono::steady_clock::now();
+        const auto deadline = start + timeout;
+
+        bool disconnected = false;
+        while (std::chrono::steady_clock::now() < deadline) {
+            if (!f.net->is_connected()) {
+                disconnected = true;
+                break;
+            }
+            std::this_thread::sleep_for(sample_period);
+        }
+
+        INFO("mode=development elapsed_ms="
+             << std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - start)
+                    .count());
+        REQUIRE(disconnected);
+    }
+}
+
+TEST_CASE("Real ThingsBoard connection stays stable for 60 seconds",
+          "[integration][thingsboard][real][mqtt_stability]") {
+    if (!real_tb_test_enabled()) {
+        SUCCEED("Set TB_REAL_TEST=1 to enable real ThingsBoard stability test");
+        return;
+    }
+
+    const auto paths = tb_test_support::find_repo_paths();
+    REQUIRE(paths.has_value());
+    spdlog::info("[TB stability test] using runtime config: {}",
+                 paths->runtime_config_path.string());
+    RealThingsBoardFixture f(*paths);
+
+    REQUIRE(f.connect_and_request_shared_snapshot());
+    REQUIRE(f.net->is_connected());
+
+    const auto hold_time = std::chrono::seconds(60);
+    const auto sample_period = std::chrono::milliseconds(200);
+    const auto start = std::chrono::steady_clock::now();
+    const auto deadline = start + hold_time;
+
+    size_t sample_count = 0;
+    while (std::chrono::steady_clock::now() < deadline) {
+        INFO("elapsed_ms="
+             << std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - start)
+                    .count()
+             << " sample_count=" << sample_count);
+        REQUIRE(f.net->is_connected());
+        std::this_thread::sleep_for(sample_period);
+        ++sample_count;
+    }
+
+    CHECK(f.net->is_connected());
+}
+
+TEST_CASE("Real ThingsBoard stays stable when shared attributes callback publishes telemetry",
+          "[integration][thingsboard][real][mqtt_stability][attr_callback_publish]") {
+    if (!real_tb_test_enabled()) {
+        SUCCEED("Set TB_REAL_TEST=1 to enable real ThingsBoard callback-publish stability test");
+        return;
+    }
+
+    const auto paths = tb_test_support::find_repo_paths();
+    REQUIRE(paths.has_value());
+    spdlog::info("[TB callback-publish stability test] using runtime config: {}",
+                 paths->runtime_config_path.string());
+    RealThingsBoardFixture f(*paths);
+
+    f.cloud->subscribe_shared_attributes([&f](const rapidjson::Document& attrs) {
+        const auto result = f.tb_cfg->apply_shared_attributes(attrs);
+        {
+            std::lock_guard<std::mutex> lk(f.shared_attr_result_mtx);
+            f.last_shared_attr_result = result;
+        }
+        f.shared_attr_count.fetch_add(1, std::memory_order_relaxed);
+
+        std::array<char, 1024> payload{};
+        const auto reason = result.reason.empty() ? "ok" : result.reason.c_str();
+        const size_t len = robot::service::ThingsBoardJsonCodec::build_status_event(
+            {"shared_attr_update", result.accepted, reason}, payload.data(), payload.size());
+        if (len == 0u) {
+            spdlog::error("[TB callback-publish stability test] failed to build status event");
+            return;
+        }
+        const bool ok = f.cloud->publish_telemetry(std::string(payload.data(), len));
+        spdlog::info(
+            "[TB callback-publish stability test] published shared_attr_update from callback: ok={}",
+            ok);
+    });
+
+    REQUIRE(f.net->connect());
+    REQUIRE(f.net->is_connected());
+
+    const std::string software_version = f.cfg.get<std::string>("device.software_version", "");
+    const std::string hardware_version = f.cfg.get<std::string>("device.hardware_version", "");
+    const std::string device_model = f.cfg.get<std::string>("device.model", "");
+    const std::string device_id = f.cfg.get<std::string>("network.mqtt.client_id", "pv_robot_001");
+
+    std::array<char, 1024> startup_attr_buf{};
+    const auto startup_attr_len = robot::service::ThingsBoardJsonCodec::build_startup_attributes(
+        {
+            software_version.c_str(),
+            hardware_version.c_str(),
+            device_model.c_str(),
+            device_id.c_str(),
+        },
+        startup_attr_buf.data(),
+        startup_attr_buf.size());
+    REQUIRE(startup_attr_len > 0u);
+    REQUIRE(f.cloud->publish_attributes(std::string(startup_attr_buf.data(), startup_attr_len)));
+
+    std::atomic<bool> stop_publishers{false};
+    std::atomic<uint32_t> publisher_ticks{0};
+    std::thread concurrent_publisher([&]() {
+        while (!stop_publishers.load(std::memory_order_relaxed)) {
+            robot::app::RobotRuntimeSnapshot snap;
+            snap.device_state = "Idle";
+            snap.task_state = "IdleTask";
+            snap.active_config = f.tb_cfg->active_config();
+            snap.active_config_version = publisher_ticks.fetch_add(1, std::memory_order_relaxed) + 1;
+
+            std::array<char, 4096> telemetry_buf{};
+            const auto telemetry_len = robot::service::ThingsBoardJsonCodec::build_business_telemetry(
+                snap, telemetry_buf.data(), telemetry_buf.size());
+            if (telemetry_len > 0u) {
+                f.cloud->publish_telemetry(std::string(telemetry_buf.data(), telemetry_len));
+            }
+
+            std::array<char, 1024> event_buf{};
+            const auto event_len = robot::service::ThingsBoardJsonCodec::build_status_event(
+                {"startup_position_invalid", false, "robot_not_at_any_endpoint"},
+                event_buf.data(),
+                event_buf.size());
+            if (event_len > 0u) {
+                f.cloud->publish_telemetry(std::string(event_buf.data(), event_len));
+            }
+
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+    });
+    const auto stop_and_join_publishers = [&]() {
+        stop_publishers.store(true, std::memory_order_relaxed);
+        if (concurrent_publisher.joinable()) {
+            concurrent_publisher.join();
+        }
+    };
+
+    const std::vector<std::string> shared_keys{
+        "passes",
+        "clean_speed_rpm",
+        "return_speed_rpm",
+        "brush_rpm",
+        "return_brush_rpm",
+        "parking_side",
+        "start_battery_soc",
+        "charge_start_soc",
+        "charge_stop_soc",
+        "schedules",
+    };
+    REQUIRE(f.cloud->request_shared_attributes_snapshot(shared_keys));
+    REQUIRE(f.wait_for_initial_snapshot());
+
+    const auto hold_time = std::chrono::seconds(60);
+    const auto sample_period = std::chrono::milliseconds(200);
+    const auto start = std::chrono::steady_clock::now();
+    const auto deadline = start + hold_time;
+
+    size_t sample_count = 0;
+    while (std::chrono::steady_clock::now() < deadline) {
+        INFO("elapsed_ms="
+             << std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - start)
+                    .count()
+             << " sample_count=" << sample_count
+             << " shared_attr_updates=" << f.shared_attr_updates()
+             << " publisher_ticks=" << publisher_ticks.load(std::memory_order_relaxed));
+        if (!f.net->is_connected()) {
+            stop_and_join_publishers();
+        }
+        REQUIRE(f.net->is_connected());
+        std::this_thread::sleep_for(sample_period);
+        ++sample_count;
+    }
+
+    stop_and_join_publishers();
     CHECK(f.net->is_connected());
 }
 

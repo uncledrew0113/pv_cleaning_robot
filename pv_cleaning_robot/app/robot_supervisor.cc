@@ -28,8 +28,7 @@ bool RobotSupervisor::is_return_allowed_state(const std::string& state) {
 }
 
 bool RobotSupervisor::can_trigger_spin_free_fault(const std::string& state) {
-    return state != "Idle" && state != "Charging" && state != "Fault" &&
-           state != "Stopped";
+    return is_cleaning_state(state) || state == "Returning";
 }
 
 RobotSupervisor::RobotSupervisor(std::shared_ptr<RobotFsm> fsm,
@@ -91,6 +90,7 @@ bool RobotSupervisor::stop_task() {
     if (!is_cleaning_state(state) && state != "Returning") {
         return false;
     }
+    nav_->clear_spin_detection();
     fsm_->dispatch(EvStopTask{});
     return fsm_->current_state() == "Stopped";
 }
@@ -100,6 +100,7 @@ bool RobotSupervisor::return_task(bool at_parking_side) {
     if (at_parking_side || !is_return_allowed_state(state)) {
         return false;
     }
+    nav_->clear_spin_detection();
     fsm_->dispatch(EvManualReturn{});
     return fsm_->current_state() == "Returning";
 }

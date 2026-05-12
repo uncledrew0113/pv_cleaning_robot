@@ -1,11 +1,12 @@
 #pragma once
 #include <atomic>
+#include <condition_variable>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
-#include <atomic>
 
 namespace robot::middleware {
 
@@ -63,7 +64,10 @@ private:
     std::vector<std::shared_ptr<IRunnable>> runnables_;
     std::atomic<bool> running_{false};
     std::atomic<int> period_ms_;
-    std::thread       thread_;
+    std::thread thread_;
+    mutable std::mutex sleep_mtx_;
+    std::condition_variable sleep_cv_;
+    bool wake_requested_{false};
 };
 
 /// @brief Lambda 适配器（将 std::function<void()> 包装为 IRunnable）

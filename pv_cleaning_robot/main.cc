@@ -11,12 +11,11 @@
  *   6. 进入主循环（轮询 FSM 状态与调度服务）
  *   7. 捕获 SIGINT/SIGTERM，优雅关闭
  */
+#include <cmath>
+#include <linux/reboot.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
 #include <unistd.h>
-
-#include <cmath>
-#include <linux/reboot.h>
 
 #include "pv_cleaning_robot/middleware/logger.h"
 #include "pv_cleaning_robot/service/config_service.h"
@@ -57,9 +56,9 @@
 #include "pv_cleaning_robot/service/thingsboard_control_plane.h"
 
 // App
+#include <algorithm>
 #include <atomic>
 #include <csignal>
-#include <algorithm>
 #include <memory>
 #include <spdlog/spdlog.h>
 #include <string>
@@ -85,8 +84,7 @@ robot::app::ParkingSideFacts read_parking_side_facts(
     const std::shared_ptr<robot::device::LimitSwitch>& left_switch,
     const std::shared_ptr<robot::device::LimitSwitch>& right_switch,
     bool left_open_ok,
-    bool right_open_ok)
-{
+    bool right_open_ok) {
     const bool left_sensor_active = left_open_ok && !left_switch->read_current_level();
     const bool right_sensor_active = right_open_ok && !right_switch->read_current_level();
     return robot::app::ParkingSideRuntime::from_physical_limits(
@@ -97,17 +95,15 @@ void publish_startup_position_status(
     const std::shared_ptr<robot::service::ThingsBoardControlPlane>& tb_control,
     const std::shared_ptr<robot::app::RobotFsm>& fsm,
     const std::shared_ptr<spdlog::logger>& log,
-    const robot::app::ParkingSideFacts& startup_position_facts)
-{
+    const robot::app::ParkingSideFacts& startup_position_facts) {
     if (startup_position_facts.dual_endpoint_active) {
         tb_control->publish_status_event("startup_position_invalid", false, "dual_endpoint_active");
         log->warn("[Main] 启动位置异常：左右端点同时触发，禁止启动清扫");
         return;
     }
     if (startup_position_facts.no_endpoint_active) {
-        tb_control->publish_status_event("startup_position_invalid",
-                                         false,
-                                         "robot_not_at_any_endpoint");
+        tb_control->publish_status_event(
+            "startup_position_invalid", false, "robot_not_at_any_endpoint");
         log->warn("[Main] 启动位置异常：当前不在任一端点，尝试返回停机位");
         if (fsm->current_state() == "Idle") {
             fsm->dispatch(robot::app::EvManualReturn{});
@@ -115,9 +111,8 @@ void publish_startup_position_status(
         return;
     }
     if (!startup_position_facts.at_parking_side) {
-        tb_control->publish_status_event("startup_position_invalid",
-                                         false,
-                                         "robot_not_at_parking_side");
+        tb_control->publish_status_event(
+            "startup_position_invalid", false, "robot_not_at_parking_side");
         log->warn("[Main] 启动位置异常：当前不在停机位，禁止自动启动清扫");
     }
 }
@@ -127,8 +122,7 @@ void register_limit_settled_bridge(
     const std::shared_ptr<robot::app::RobotFsm>& fsm,
     const std::shared_ptr<spdlog::logger>& log,
     const std::shared_ptr<robot::service::ThingsBoardControlPlane>& tb_control,
-    std::function<float()> current_battery_soc)
-{
+    std::function<float()> current_battery_soc) {
     // SafetyMonitor 只给出“哪一侧物理限位稳定了”，
     // 这里再根据当前 active parking_side 翻译成业务事件，
     // 这样停车位语义始终只在一处桥接。
@@ -160,19 +154,18 @@ void register_scheduler_start(
     const std::shared_ptr<robot::app::RobotSupervisor>& supervisor,
     const std::shared_ptr<spdlog::logger>& log,
     std::function<robot::app::ParkingSideFacts()> current_start_parking_facts,
-    std::function<float()> current_battery_soc)
-{
-    scheduler.set_on_window_hit(
-        [supervisor,
-         log,
-         current_start_parking_facts = std::move(current_start_parking_facts),
-         current_battery_soc = std::move(current_battery_soc)]() {
-            const auto facts = current_start_parking_facts();
-            if (!supervisor->start_task(
-                    facts.at_parking_side, facts.is_valid_start_position(), current_battery_soc())) {
-                log->warn("[Main] 调度启动被拒绝");
-            }
-        });
+    std::function<float()> current_battery_soc) {
+    scheduler.set_on_window_hit([supervisor,
+                                 log,
+                                 current_start_parking_facts =
+                                     std::move(current_start_parking_facts),
+                                 current_battery_soc = std::move(current_battery_soc)]() {
+        const auto facts = current_start_parking_facts();
+        if (!supervisor->start_task(
+                facts.at_parking_side, facts.is_valid_start_position(), current_battery_soc())) {
+            log->warn("[Main] 调度启动被拒绝");
+        }
+    });
 }
 
 }  // namespace
@@ -181,18 +174,19 @@ int main() {
     // ── 1. 配置服务 ────────────────────────────────────────────────────
     // 优先尝试 split 配置文件；ConfigService::get() 会先读 runtime，再回退到 fixed。
     auto cfg_ptr = std::make_unique<robot::service::ConfigService>(
-        "/opt/robot/config/config.runtime.json",
-        "/opt/robot/config/config.fixed.json");
+        "/opt/robot/config/config.runtime.json", "/opt/robot/config/config.fixed.json");
     if (!cfg_ptr->load()) {
-        cfg_ptr = std::make_unique<robot::service::ConfigService>(
-            "config/config.runtime.json",
-            "config/config.fixed.json");
+        cfg_ptr = std::make_unique<robot::service::ConfigService>("config/config.runtime.json",
+                                                                  "config/config.fixed.json");
         if (!cfg_ptr->load()) {
-            cfg_ptr = std::make_unique<robot::service::ConfigService>("/opt/robot/config/config.json");
+            cfg_ptr =
+                std::make_unique<robot::service::ConfigService>("/opt/robot/config/config.json");
             if (!cfg_ptr->load()) {
                 cfg_ptr = std::make_unique<robot::service::ConfigService>("config/config.json");
                 if (!cfg_ptr->load()) {
-                    fprintf(stderr, "[FATAL] 无法加载 config.runtime.json/config.fixed.json 或旧 config.json\n");
+                    fprintf(stderr,
+                            "[FATAL] 无法加载 config.runtime.json/config.fixed.json 或旧 "
+                            "config.json\n");
                     return 1;
                 }
             }
@@ -260,10 +254,8 @@ int main() {
 
     auto bms = std::make_shared<robot::device::BMS>(
         bms_serial,
-        cfg.get<float>("robot.charge_stop_soc",
-                       cfg.get<float>("robot.battery_full_soc", 95.0f)),
-        cfg.get<float>("robot.charge_start_soc",
-                       cfg.get<float>("robot.battery_low_soc", 15.0f)));
+        cfg.get<float>("robot.charge_stop_soc", cfg.get<float>("robot.battery_full_soc", 95.0f)),
+        cfg.get<float>("robot.charge_start_soc", cfg.get<float>("robot.battery_low_soc", 15.0f)));
 
     // ── 7. UART 驱动 ──────────────────────────────────────────────────
     auto imu_serial = std::make_shared<robot::driver::LibSerialPort>(
@@ -289,8 +281,7 @@ int main() {
             cfg.get<std::string>("gps.serial.port",
                                  cfg.get<std::string>("serial.gps.port", "/dev/ttyS2")),
             robot::hal::UartConfig{
-                cfg.get<int>("gps.serial.baudrate",
-                             cfg.get<int>("serial.gps.baudrate", 9600))});
+                cfg.get<int>("gps.serial.baudrate", cfg.get<int>("serial.gps.baudrate", 9600))});
         gps = std::make_shared<robot::device::GpsDevice>(gps_serial);
     }
 
@@ -351,11 +342,10 @@ int main() {
 
     // ── 上电自检：确认设备在当前配置的停机位，且对侧无遮挡 ───────────────────────
     // left_limit 实际对应左侧传感器，right_limit 实际对应右侧传感器。
-    const auto configured_parking_side_text =
-        cfg.get<std::string>("robot.parking_side", "left");
-    const auto configured_parking_side =
-        configured_parking_side_text == "right" ? robot::service::ParkingSide::Right
-                                                : robot::service::ParkingSide::Left;
+    const auto configured_parking_side_text = cfg.get<std::string>("robot.parking_side", "left");
+    const auto configured_parking_side = configured_parking_side_text == "right"
+                                             ? robot::service::ParkingSide::Right
+                                             : robot::service::ParkingSide::Left;
     const auto startup_facts = read_parking_side_facts(
         configured_parking_side, left_switch, right_switch, left_open_ok, right_open_ok);
     if (!startup_facts.at_parking_side) {
@@ -370,7 +360,8 @@ int main() {
             "可能有遮挡或传感器异常，请检查环境");
     }
     log->info(
-        "[Main] 上电自检：parking_side={} at_parking_side={} at_far_end={} (left_sensor={} right_sensor={})",
+        "[Main] 上电自检：parking_side={} at_parking_side={} at_far_end={} (left_sensor={} "
+        "right_sensor={})",
         configured_parking_side_text,
         startup_facts.at_parking_side,
         startup_facts.at_far_end,
@@ -440,7 +431,8 @@ int main() {
     motion_cfg.edge_reverse_rpm = cfg.get<float>("robot.edge_reverse_rpm", 0.0f);
     motion_cfg.heading_pid_en = cfg.get<bool>("robot.heading_pid_en", false);
     // 姿态纠偏参数从 robot.pid.* 读取；未配置时使用控制器头文件默认值。
-    motion_cfg.pid.pitch_alpha = cfg.get<float>("robot.pid.pitch_alpha", motion_cfg.pid.pitch_alpha);
+    motion_cfg.pid.pitch_alpha =
+        cfg.get<float>("robot.pid.pitch_alpha", motion_cfg.pid.pitch_alpha);
     motion_cfg.pid.roll_alpha = cfg.get<float>("robot.pid.roll_alpha", motion_cfg.pid.roll_alpha);
     motion_cfg.pid.gyro_alpha = cfg.get<float>("robot.pid.gyro_alpha", motion_cfg.pid.gyro_alpha);
     motion_cfg.pid.pitch_drop_threshold =
@@ -455,9 +447,8 @@ int main() {
         cfg.get<float>("robot.pid.freeze_gyro_z_threshold", motion_cfg.pid.freeze_gyro_z_threshold);
     motion_cfg.pid.freeze_pitch_rate_threshold = cfg.get<float>(
         "robot.pid.freeze_pitch_rate_threshold", motion_cfg.pid.freeze_pitch_rate_threshold);
-    motion_cfg.pid.freeze_roll_rate_threshold =
-        cfg.get<float>("robot.pid.freeze_roll_rate_threshold",
-                       motion_cfg.pid.freeze_roll_rate_threshold);
+    motion_cfg.pid.freeze_roll_rate_threshold = cfg.get<float>(
+        "robot.pid.freeze_roll_rate_threshold", motion_cfg.pid.freeze_roll_rate_threshold);
     motion_cfg.pid.max_output = cfg.get<float>("robot.pid.max_output", motion_cfg.pid.max_output);
     motion_cfg.pid.min_effective_output =
         cfg.get<float>("robot.pid.min_effective_output", motion_cfg.pid.min_effective_output);
@@ -471,8 +462,7 @@ int main() {
     auto nav = std::make_shared<robot::service::NavService>(walk_group, imu, gps);
     robot::service::SchedulerService scheduler;
     auto cloud = std::make_shared<robot::service::CloudService>(net_mgr, data_cache);
-    auto tb_cfg =
-        std::make_shared<robot::service::ThingsBoardConfigManager>(cfg, scheduler);
+    auto tb_cfg = std::make_shared<robot::service::ThingsBoardConfigManager>(cfg, scheduler);
     auto command_tracker = std::make_shared<robot::service::CommandTracker>();
 
     auto fault = std::make_shared<robot::service::FaultService>(event_bus);
@@ -483,11 +473,7 @@ int main() {
     auto supervisor =
         std::make_shared<robot::app::RobotSupervisor>(fsm, tb_cfg, command_tracker, fault, nav);
     auto tb_control = std::make_shared<robot::service::ThingsBoardControlPlane>(
-        cfg,
-        cloud,
-        tb_cfg,
-        command_tracker,
-        supervisor);
+        cfg, cloud, tb_cfg, command_tracker, supervisor);
     motion->set_parking_side_provider(
         [tb_control]() { return tb_control->active_config().parking_side; });
     motion->set_runtime_config_provider([tb_control]() { return tb_control->active_config(); });
@@ -506,21 +492,15 @@ int main() {
             pending ? pending->parking_side : tb_control->active_config().parking_side;
         return physical_limit_facts_for(parking_side);
     };
-    const auto current_battery_soc = [&bms]() {
-        return bms->get_data().soc_pct;
-    };
+    const auto current_battery_soc = [&bms]() { return bms->get_data().soc_pct; };
     tb_control->subscribe_shared_attributes();
     // 在 connect() 前完成 shared attributes / RPC 注册，避免首个云端下行消息丢失。
     tb_control->register_rpc_handlers(
         [current_start_parking_facts]() {
             return current_start_parking_facts().is_valid_start_position();
         },
-        [current_start_parking_facts]() {
-            return current_start_parking_facts().at_parking_side;
-        },
-        [current_active_parking_facts]() {
-            return current_active_parking_facts().at_parking_side;
-        },
+        [current_start_parking_facts]() { return current_start_parking_facts().at_parking_side; },
+        [current_active_parking_facts]() { return current_active_parking_facts().at_parking_side; },
         current_battery_soc,
         [&log]() {
             log->warn("[Main] 收到 reset RPC，准备重启设备");
@@ -554,7 +534,8 @@ int main() {
     register_limit_settled_bridge(event_bus, fsm, log, tb_control, current_battery_soc);
 
     // ── 调度服务：定时触发清扫任务（读取 active runtime 的 scheduler.windows） ─────
-    register_scheduler_start(scheduler, supervisor, log, current_start_parking_facts, current_battery_soc);
+    register_scheduler_start(
+        scheduler, supervisor, log, current_start_parking_facts, current_battery_soc);
 
     robot::app::FaultHandler fault_handler(
         motion, event_bus, [fsm](const robot::service::FaultService::FaultEvent& evt) {
@@ -584,10 +565,9 @@ int main() {
     // local_log_path 非空时额外把每帧 JSON payload 以 JSONL 追加到本地文件，
     // 离线调试阶段可直接 cat/grep 查看，完全独立于 MQTT/LoRaWAN。
     std::string local_tel_path = cfg.get<std::string>(
-        "diagnostics.local_log_path",
-        cfg.get<std::string>("diagnostics.local_path", ""));
-    const size_t local_log_max_bytes = static_cast<size_t>(std::max(
-        1, cfg.get<int>("diagnostics.local_log_max_bytes", 10 * 1024 * 1024)));
+        "diagnostics.local_log_path", cfg.get<std::string>("diagnostics.local_path", ""));
+    const size_t local_log_max_bytes = static_cast<size_t>(
+        std::max(1, cfg.get<int>("diagnostics.local_log_max_bytes", 10 * 1024 * 1024)));
     const size_t local_log_max_files =
         static_cast<size_t>(std::max(1, cfg.get<int>("diagnostics.local_log_max_files", 3)));
     auto reporter = std::make_shared<robot::service::HealthService>(
@@ -647,17 +627,16 @@ int main() {
 
     // 云端上报线程：绑定 LITTLE 核 CPU 0-3（低功耗后台）
     int report_period = cfg.get<int>("diagnostics.publish_interval_ms", 1000);
-    const int active_report_period = std::max(
-        1, cfg.get<int>("diagnostics.publish_interval_active_ms", report_period));
+    const int active_report_period =
+        std::max(1, cfg.get<int>("diagnostics.publish_interval_active_ms", report_period));
     const int idle_report_period =
         std::max(1, cfg.get<int>("diagnostics.publish_interval_idle_ms", 300000));
     robot::middleware::ThreadExecutor cloud_exec({"cloud", report_period, SCHED_OTHER, 0, 0x0F});
     cloud_exec.add_runnable(reporter);
-    cloud_exec.add_runnable(std::make_shared<robot::middleware::RunnableAdapter>([tb_control]() {
-        tb_control->publish_business_telemetry();
-    }));
+    cloud_exec.add_runnable(std::make_shared<robot::middleware::RunnableAdapter>(
+        [tb_control]() { tb_control->publish_business_telemetry(); }));
     cloud_exec.add_runnable(cloud);
-    int cloud_wd = watchdog.register_thread("cloud", 5000);
+    int cloud_wd = watchdog.register_thread("cloud", 310000);
     cloud_exec.add_runnable(std::make_shared<robot::middleware::RunnableAdapter>(
         [&watchdog, cloud_wd]() { watchdog.heartbeat(cloud_wd); }));
 

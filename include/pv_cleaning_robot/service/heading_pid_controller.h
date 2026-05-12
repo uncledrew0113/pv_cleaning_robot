@@ -56,6 +56,9 @@ class HeadingPidController {
         float filtered_gyro_z{0.0f};     ///< 滤波后的陀螺仪 Z 轴角速度
         float pitch_abs_best{0.0f};      ///< 当前最佳俯仰绝对值参考
         float roll_at_best{0.0f};        ///< 当前最佳横滚参考值
+        float pitch_drop{0.0f};          ///< 当前俯仰跌落量（best - current_abs）
+        float roll_delta{0.0f};          ///< 当前横滚偏差（current - best_ref）
+        float last_correction{0.0f};     ///< 上一次输出的修正量
     };
 
     HeadingPidController() = default;
@@ -89,6 +92,7 @@ class HeadingPidController {
     static float clamp(float v, float lo, float hi);
     static float clamp_alpha(float alpha);
     static float low_pass(float previous, float sample, float alpha);
+    void refresh_debug_terms();
 
     void reset_stability_window();
     void mark_stable_sample(float dt_ms);
@@ -108,6 +112,9 @@ class HeadingPidController {
     float filtered_gyro_z_{0.0f};
     float pitch_abs_best_{0.0f};
     float roll_at_best_{0.0f};
+    float last_pitch_drop_{0.0f};
+    float last_roll_delta_{0.0f};
+    float last_correction_{0.0f};
 
     float stable_ms_acc_{0.0f};
     float learn_ms_acc_{0.0f};

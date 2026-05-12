@@ -127,6 +127,15 @@ rapidjson::Document parse_json(const char* text) {
     return doc;
 }
 
+void induce_spin_free(const SupervisorFixture& f) {
+    REQUIRE(f.group->set_speed_uniform(50.0f) == robot::device::DeviceError::OK);
+    f.group->update();
+    for (int i = 0; i < 50; ++i) {
+        f.nav->update();
+    }
+    REQUIRE(f.nav->get_pose().spin_free_detected);
+}
+
 }  // namespace
 
 TEST_CASE("RobotSupervisor start requires parking side, valid position and enough battery",
@@ -208,6 +217,16 @@ TEST_CASE("RobotSupervisor stop only works from running states", "[app][robot_su
     REQUIRE(f.fsm->current_state() == "Stopped");
 }
 
+TEST_CASE("RobotSupervisor stop clears stale spin-free detection", "[app][robot_supervisor]") {
+    SupervisorFixture f;
+    f.fsm->dispatch(EvScheduleStart{true, false, 1.0f});
+    induce_spin_free(f);
+
+    REQUIRE(f.supervisor->stop_task());
+    REQUIRE(f.fsm->current_state() == "Stopped");
+    REQUIRE_FALSE(f.nav->get_pose().spin_free_detected);
+}
+
 TEST_CASE("RobotSupervisor return works from idle, stopped, and cleaning when away from parking side",
           "[app][robot_supervisor]") {
     SECTION("from Idle") {
@@ -220,8 +239,12 @@ TEST_CASE("RobotSupervisor return works from idle, stopped, and cleaning when aw
         SupervisorFixture f;
         f.fsm->dispatch(EvScheduleStart{true, false, 1.0f});
         f.fsm->dispatch(EvStopTask{});
+        induce_spin_free(f);
         REQUIRE(f.supervisor->return_task(false));
         REQUIRE(f.fsm->current_state() == "Returning");
+        REQUIRE_FALSE(f.nav->get_pose().spin_free_detected);
+        f.supervisor->tick_safety();
+        REQUIRE(f.fault_events.empty());
     }
 
     SECTION("reject when already at parking side") {
@@ -247,6 +270,33 @@ TEST_CASE("RobotSupervisor tick_safety reports P0 on spin-free detection", "[app
     REQUIRE(f.fault_events[0].code == 0x0002);
     REQUIRE(f.fault_events[0].level == FaultService::FaultEvent::Level::P0);
     REQUIRE_FALSE(f.nav->get_pose().spin_free_detected);
+}
+
+TEST_CASE("RobotSupervisor tick_safety ignores spin-free detection outside moving states",
+          "[app][robot_supervisor]") {
+    SupervisorFixture f;
+    REQUIRE(f.group->set_speed_uniform(50.0f) == robot::device::DeviceError::OK);
+    f.group->update();
+    for (int i = 0; i < 50; ++i) {
+        f.nav->update();
+    }
+    REQUIRE(f.nav->get_pose().spin_free_detected);
+
+    SECTION("Idle") {
+        REQUIRE(f.fsm->current_state() == "Idle");
+        f.supervisor->tick_safety();
+        REQUIRE(f.fault_events.empty());
+        REQUIRE(f.nav->get_pose().spin_free_detected);
+    }
+
+    SECTION("Stopped") {
+        f.fsm->dispatch(EvScheduleStart{true, false, 1.0f});
+        f.fsm->dispatch(EvStopTask{});
+        REQUIRE(f.fsm->current_state() == "Stopped");
+        f.supervisor->tick_safety();
+        REQUIRE(f.fault_events.empty());
+        REQUIRE(f.nav->get_pose().spin_free_detected);
+    }
 }
 
 TEST_CASE("RobotSupervisor snapshot reflects runtime state and command visibility",

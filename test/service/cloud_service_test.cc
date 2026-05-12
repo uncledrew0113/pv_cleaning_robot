@@ -81,6 +81,32 @@ TEST_CASE("CloudService shared attributes ignore messages before callback regist
     REQUIRE(call_count == 1);
 }
 
+TEST_CASE("CloudService exact shared attributes route preserves string and int fields",
+          "[service][cloud]") {
+    auto mqtt = std::make_shared<MockTransport>();
+    auto net = std::make_shared<NetworkManager>(mqtt, nullptr, NetworkManager::Mode::MQTT_ONLY);
+    auto cache = std::make_shared<DataCache>("/tmp/cloud_service_attr_exact_test.jsonl");
+    CloudService cloud(net, cache);
+
+    int call_count = 0;
+    cloud.subscribe_shared_attributes([&](const rapidjson::Document& attrs) {
+        REQUIRE(attrs.IsObject());
+        const auto brush_it = attrs.FindMember("brush_rpm");
+        const auto side_it = attrs.FindMember("parking_side");
+        REQUIRE(brush_it != attrs.MemberEnd());
+        REQUIRE(side_it != attrs.MemberEnd());
+        REQUIRE(brush_it->value.IsInt());
+        REQUIRE(brush_it->value.GetInt() == 30);
+        REQUIRE(side_it->value.IsString());
+        REQUIRE(std::string(side_it->value.GetString()) == "right");
+        ++call_count;
+    });
+
+    mqtt->emit_attributes(R"({"brush_rpm":30,"parking_side":"right"})");
+
+    REQUIRE(call_count == 1);
+}
+
 TEST_CASE("CloudService RPC parsing preserves params JSON string for handler",
           "[service][cloud]") {
     auto mqtt = std::make_shared<MockTransport>();

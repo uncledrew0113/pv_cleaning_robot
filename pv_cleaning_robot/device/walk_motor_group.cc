@@ -420,6 +420,10 @@ DeviceError WalkMotorGroup::emergency_override(float reverse_rpm) {
         std::lock_guard<hal::PiMutex> lg(send_mtx_);
         ret = can_->send(frame) ? DeviceError::OK : DeviceError::COMM_TIMEOUT;
         std::lock_guard<hal::PiMutex> lk(mtx_);
+        diag_[0].target_value = lt;
+        diag_[1].target_value = rt;
+        diag_[2].target_value = lb;
+        diag_[3].target_value = rb;
         if (ret == DeviceError::OK)
             ++ctrl_frame_count_;
         else

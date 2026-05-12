@@ -96,6 +96,7 @@ add_executable(unit_tests
   middleware/network_manager_test.cc
   middleware/mqtt_transport_test.cc
   middleware/safety_monitor_test.cc
+  middleware/thread_executor_test.cc
 
   # 服务层
   service/cloud_service_test.cc

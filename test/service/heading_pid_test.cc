@@ -84,6 +84,7 @@ TEST_CASE("HeadingPidController: right-biased sample commands negative correctio
     }
 
     REQUIRE(correction < 0.0f);
+
 }
 
 TEST_CASE("HeadingPidController: best reference waits for a new stable window after freeze",

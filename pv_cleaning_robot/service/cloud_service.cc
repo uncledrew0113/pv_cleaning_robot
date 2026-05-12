@@ -14,7 +14,6 @@
 namespace robot::service {
 namespace {
 
-constexpr size_t kSharedAttrsPoolBytes = 4096;
 constexpr size_t kRpcPoolBytes = 4096;
 std::atomic<uint64_t> g_attr_request_id{1};
 
@@ -48,14 +47,10 @@ std::string build_rpc_response(bool accepted, const char* reason)
     return {buffer.GetString(), buffer.GetSize()};
 }
 
-template <size_t PoolBytes>
 rapidjson::Document parse_small_json_object(const std::string& payload,
                                             const char* parse_error_message)
 {
-    alignas(std::max_align_t) unsigned char pool_buffer[PoolBytes];
-    rapidjson::MemoryPoolAllocator<rapidjson::CrtAllocator> allocator(
-        pool_buffer, sizeof(pool_buffer));
-    rapidjson::Document document(&allocator);
+    rapidjson::Document document;
     document.Parse(payload.c_str(), payload.size());
     if (document.HasParseError() || !document.IsObject()) {
         throw std::runtime_error(parse_error_message);
@@ -188,7 +183,7 @@ void CloudService::on_shared_attributes_response_message(const std::string& payl
     if (!cb) return;
 
     try {
-        auto document = parse_small_json_object<kSharedAttrsPoolBytes>(
+        auto document = parse_small_json_object(
             payload, "invalid shared attributes response JSON");
 
         const auto shared_it = document.FindMember("shared");
@@ -217,10 +212,7 @@ void CloudService::on_shared_attributes_message(const std::string& payload)
     if (!cb) return;
 
     try {
-        // shared attributes 是热路径入口之一。这里优先使用局部 pool，
-        // 常见小包不再向通用 heap 反复申请碎片化的小块内存。
-        auto document =
-            parse_small_json_object<kSharedAttrsPoolBytes>(payload, "invalid JSON");
+        auto document = parse_small_json_object(payload, "invalid JSON");
         cb(document);
     } catch (const std::exception& ex) {
         spdlog::warn("[CloudService] Failed to process shared attributes payload: {}", ex.what());

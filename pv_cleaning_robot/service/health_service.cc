@@ -328,6 +328,7 @@ size_t HealthPayloadBuilder::build_diagnostics(const DiagnosticsView& view,
     w.append_raw(",\"gps_sent\":");
     w.append_uint(view.gps.sentence_count);
     w.append_char('}');
+    w.append_char('}');
     return w.size();
 }
 
