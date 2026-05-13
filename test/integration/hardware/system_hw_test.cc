@@ -12,6 +12,7 @@
  *   [hw_system][health_real_data]   — HealthService 用真实传感器数据落盘 JSONL
  *   [hw_system][safety_idle]        — SafetyMonitor 启动后不误触发限位回调
  *   [hw_system][motion_then_stop]   — 运动 1s 后急停，验证电机停止且 override 激活
+ *   [hw_system][lower_pitch_peak]   — 上轮停止，下轮正反扫动寻找 pitch 最大点
  *   [hw_system][watchdog_heartbeat] — WatchdogMgr 正常心跳不触发超时
  *   [hw_system][combined]           — N 趟完整任务链 + 全程持续采集健康数据
  *   [hw_system][pid_combined]       — N 趟完整任务链 + PID 控制 + yaw 指标采集到 pid_metrics.jsonl
@@ -21,9 +22,10 @@
  *   ./hw_tests "[hw_system]"
  *   ./hw_tests "[hw_system][health_real_data]"
  *   ./hw_tests "[hw_system][pid_combined]"
+ *   ./hw_tests "[hw_system][lower_pitch_peak]"
  */
-#include <atomic>
 #include <algorithm>
+#include <atomic>
 #include <catch2/catch.hpp>
 #include <chrono>
 #include <cmath>
@@ -36,34 +38,34 @@
 #include <spdlog/spdlog.h>
 #include <string>
 #include <thread>
+#include <utility>
 
 #include "hw_config.h"
+#include "pv_cleaning_robot/service/heading_corrector.h"
 
 using namespace std::chrono_literals;
 
 namespace {
 
-bool real_tb_test_enabled()
-{
+bool real_tb_test_enabled() {
     const char* value = std::getenv("TB_REAL_TEST");
     if (!value) {
         return false;
     }
     const std::string env_value(value);
-    return !(env_value.empty() || env_value == "0" || env_value == "false" ||
-             env_value == "FALSE");
+    return !(env_value.empty() || env_value == "0" || env_value == "false" || env_value == "FALSE");
 }
 
-rapidjson::Document parse_json_line(const std::string& line)
-{
+rapidjson::Document parse_json_line(const std::string& line) {
     rapidjson::Document doc;
     doc.Parse(line.c_str(), line.size());
     REQUIRE_FALSE(doc.HasParseError());
     return doc;
 }
 
-robot::app::EvScheduleStart make_schedule_start(bool at_parking_side, bool at_far_end, float passes)
-{
+robot::app::EvScheduleStart make_schedule_start(bool at_parking_side,
+                                                bool at_far_end,
+                                                float passes) {
     robot::app::EvScheduleStart evt;
     evt.at_parking_side = at_parking_side;
     evt.at_far_end = at_far_end;
@@ -71,13 +73,11 @@ robot::app::EvScheduleStart make_schedule_start(bool at_parking_side, bool at_fa
     return evt;
 }
 
-robot::app::EvScheduleStart start_from_parking_side(float passes)
-{
+robot::app::EvScheduleStart start_from_parking_side(float passes) {
     return make_schedule_start(true, false, passes);
 }
 
-std::vector<std::filesystem::path> collect_rotated_health_logs(const std::string& base_path)
-{
+std::vector<std::filesystem::path> collect_rotated_health_logs(const std::string& base_path) {
     std::vector<std::filesystem::path> paths;
     const auto base = std::filesystem::path(base_path);
     const auto dir = base.parent_path().empty() ? std::filesystem::path(".") : base.parent_path();
@@ -101,17 +101,15 @@ std::vector<std::filesystem::path> collect_rotated_health_logs(const std::string
     return paths;
 }
 
-void remove_rotated_health_logs(const std::string& base_path)
-{
+void remove_rotated_health_logs(const std::string& base_path) {
     for (const auto& path : collect_rotated_health_logs(base_path)) {
         std::error_code ec;
         std::filesystem::remove(path, ec);
     }
 }
 
-const char* pid_mode_name(robot::service::HeadingPidController::Mode mode)
-{
-    using Mode = robot::service::HeadingPidController::Mode;
+const char* pid_mode_name(robot::service::HeadingCorrector::Mode mode) {
+    using Mode = robot::service::HeadingCorrector::Mode;
     switch (mode) {
         case Mode::UNINITIALIZED:
             return "UNINITIALIZED";
@@ -125,13 +123,7 @@ const char* pid_mode_name(robot::service::HeadingPidController::Mode mode)
     return "UNKNOWN";
 }
 
-float clamp_pid_target(float v)
-{
-    return std::max(-210.0f, std::min(210.0f, v));
-}
-
-bool open_pid_metrics_file(const std::filesystem::path& path, std::ofstream* out)
-{
+bool open_pid_metrics_file(const std::filesystem::path& path, std::ofstream* out) {
     if (!out) {
         return false;
     }
@@ -158,66 +150,8 @@ bool open_pid_metrics_file(const std::filesystem::path& path, std::ofstream* out
     return true;
 }
 
-robot::service::HeadingPidController::Params make_pid_probe_params(const hw::HwParams::PidParams& pid)
-{
-    robot::service::HeadingPidController::Params params;
-    params.pitch_alpha = pid.pitch_alpha;
-    params.roll_alpha = pid.roll_alpha;
-    params.gyro_alpha = pid.gyro_alpha;
-    params.pitch_drop_threshold = pid.pitch_drop_threshold;
-    params.roll_threshold = pid.roll_threshold;
-    params.learn_improve_eps = pid.learn_improve_eps;
-    params.best_decay_per_s = pid.best_decay_per_s;
-    params.freeze_gyro_z_threshold = pid.freeze_gyro_z_threshold;
-    params.freeze_pitch_rate_threshold = pid.freeze_pitch_rate_threshold;
-    params.freeze_roll_rate_threshold = pid.freeze_roll_rate_threshold;
-    params.max_output = pid.max_output;
-    params.min_effective_output = pid.min_effective_output;
-    params.warmup_ms = pid.warmup_ms;
-    params.hold_ms = pid.hold_ms;
-    params.freeze_release_ms = pid.freeze_release_ms;
-    return params;
-}
-
-struct MotionPidProbeFilters {
-    float filtered_pitch{0.0f};
-    bool filtered_pitch_inited{false};
-    float filtered_roll{0.0f};
-    bool filtered_roll_inited{false};
-    float filtered_omega_z{0.0f};
-    bool filtered_omega_z_inited{false};
-
-    void update(const robot::device::ImuDevice::ImuData& imu)
-    {
-        const float raw_pitch = imu.pitch_deg;
-        const float raw_roll = imu.roll_deg;
-        const float raw_omega_z = imu.gyro[2] * (180.0f / 3.14159265f);
-
-        if (!filtered_pitch_inited) {
-            filtered_pitch = raw_pitch;
-            filtered_pitch_inited = true;
-        } else {
-            filtered_pitch = 0.8f * filtered_pitch + 0.2f * raw_pitch;
-        }
-
-        if (!filtered_roll_inited) {
-            filtered_roll = raw_roll;
-            filtered_roll_inited = true;
-        } else {
-            filtered_roll = 0.8f * filtered_roll + 0.2f * raw_roll;
-        }
-
-        if (!filtered_omega_z_inited) {
-            filtered_omega_z = raw_omega_z;
-            filtered_omega_z_inited = true;
-        } else {
-            filtered_omega_z = 0.8f * filtered_omega_z + 0.2f * raw_omega_z;
-        }
-    }
-};
-
 struct PidProbeSnapshot {
-    robot::service::HeadingPidController::DebugState pid{};
+    robot::service::HeadingCorrector::DebugState pid{};
     float correction{0.0f};
     float lt_target{0.0f};
     float rt_target{0.0f};
@@ -225,17 +159,73 @@ struct PidProbeSnapshot {
     float rb_target{0.0f};
 };
 
+float clamp_pid_target(float v) {
+    return std::clamp(v, -100.0f, 100.0f);
+}
+
+robot::service::HeadingCorrector::Params make_pid_probe_params(const hw::HwParams::PidParams& src) {
+    robot::service::HeadingCorrector::Params params;
+    params.pitch_alpha = src.pitch_alpha;
+    params.roll_alpha = src.roll_alpha;
+    params.gyro_alpha = src.gyro_alpha;
+    params.pitch_drop_threshold = src.pitch_drop_threshold;
+    params.roll_threshold = src.roll_threshold;
+    params.learn_improve_eps = src.learn_improve_eps;
+    params.best_decay_per_s = src.best_decay_per_s;
+    params.freeze_gyro_z_threshold = src.freeze_gyro_z_threshold;
+    params.freeze_pitch_rate_threshold = src.freeze_pitch_rate_threshold;
+    params.freeze_roll_rate_threshold = src.freeze_roll_rate_threshold;
+    params.max_output = src.max_output;
+    params.min_effective_output = src.min_effective_output;
+    params.warmup_ms = src.warmup_ms;
+    params.hold_ms = src.hold_ms;
+    params.freeze_release_ms = src.freeze_release_ms;
+    return params;
+}
+
+struct MotionPidProbeFilters {
+    float filtered_pitch{0.0f};
+    float filtered_roll{0.0f};
+    float filtered_omega_z{0.0f};
+    bool pitch_inited{false};
+    bool roll_inited{false};
+    bool omega_inited{false};
+
+    void update(const robot::device::ImuDevice::ImuData& imu) {
+        const float raw_omega_z = imu.gyro[2] * (180.0f / 3.14159265f);
+        if (!pitch_inited) {
+            filtered_pitch = imu.pitch_deg;
+            pitch_inited = true;
+        } else {
+            filtered_pitch = 0.8f * filtered_pitch + 0.2f * imu.pitch_deg;
+        }
+
+        if (!roll_inited) {
+            filtered_roll = imu.roll_deg;
+            roll_inited = true;
+        } else {
+            filtered_roll = 0.8f * filtered_roll + 0.2f * imu.roll_deg;
+        }
+
+        if (!omega_inited) {
+            filtered_omega_z = raw_omega_z;
+            omega_inited = true;
+        } else {
+            filtered_omega_z = 0.8f * filtered_omega_z + 0.2f * raw_omega_z;
+        }
+    }
+};
+
 struct ProbeThreadGuard {
     std::atomic<bool>* stop{nullptr};
-    std::thread* thread{nullptr};
+    std::thread* th{nullptr};
 
-    ~ProbeThreadGuard()
-    {
+    ~ProbeThreadGuard() {
         if (stop) {
             stop->store(true, std::memory_order_relaxed);
         }
-        if (thread && thread->joinable()) {
-            thread->join();
+        if (th && th->joinable()) {
+            th->join();
         }
     }
 };
@@ -245,8 +235,7 @@ std::string build_pid_sample_json(int64_t ts_ms,
                                   const std::string& state,
                                   float yaw,
                                   float omega_z,
-                                  const PidProbeSnapshot& pid_probe)
-{
+                                  const PidProbeSnapshot& pid_probe) {
     rapidjson::StringBuffer buffer;
     rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
     writer.StartObject();
@@ -295,8 +284,7 @@ std::string build_segment_summary_json(int seg,
                                        const std::string& from_state,
                                        const std::string& to_state,
                                        float max_drift_deg,
-                                       float duration_s)
-{
+                                       float duration_s) {
     rapidjson::StringBuffer buffer;
     rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
     writer.StartObject();
@@ -323,8 +311,7 @@ std::string build_final_summary_json(int total_segs,
                                      float max_drift_all_deg,
                                      float pitch_drop_threshold,
                                      float roll_threshold,
-                                     float max_output)
-{
+                                     float max_output) {
     rapidjson::StringBuffer buffer;
     rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
     writer.StartObject();
@@ -367,9 +354,35 @@ void fail_if_exit_requested(hw::FullSystemFixture& f) {
     FAIL("hardware test interrupted by signal");
 }
 
-void run_combined_system_test(hw::FullSystemFixture& f,
-                              const char* tag,
-                              bool expect_real_brush) {
+struct WalkStopGuard {
+    explicit WalkStopGuard(std::shared_ptr<robot::device::WalkMotorGroup> group)
+        : group_(std::move(group)) {}
+
+    ~WalkStopGuard() {
+        if (!group_) {
+            return;
+        }
+        group_->emergency_override(0.0f);
+        group_->disable_all();
+    }
+
+   private:
+    std::shared_ptr<robot::device::WalkMotorGroup> group_;
+};
+
+bool wait_imu_valid(const std::shared_ptr<robot::device::ImuDevice>& imu,
+                    std::chrono::milliseconds timeout) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (imu && imu->get_latest().valid) {
+            return true;
+        }
+        std::this_thread::sleep_for(50ms);
+    }
+    return imu && imu->get_latest().valid;
+}
+
+void run_combined_system_test(hw::FullSystemFixture& f, const char* tag, bool expect_real_brush) {
     hw::HwExitGuard::instance().install();
     ScopedActiveFixture active_fixture(&f);
 
@@ -415,7 +428,7 @@ void run_combined_system_test(hw::FullSystemFixture& f,
 
     auto poll_once = [&]() {
         fail_if_exit_requested(f);
-        f.bms->update();
+        // f.bms->update();
         f.health->update();
         f.watchdog->heartbeat(wd_tid);
         ++total_health_records;
@@ -450,7 +463,7 @@ void run_combined_system_test(hw::FullSystemFixture& f,
             if (curr != from)
                 return curr;
             poll_once();
-            std::this_thread::sleep_for(5ms);
+            std::this_thread::sleep_for(500ms);
         }
         fail_if_exit_requested(f);
         return from;
@@ -475,11 +488,8 @@ void run_combined_system_test(hw::FullSystemFixture& f,
         std::string next = wait_transition(state);
 
         if (next == state) {
-            spdlog::error("[{}] 段 {} 超时 {}s，当前状态仍为 {}",
-                          tag,
-                          seg_idx,
-                          f.p.limit_timeout_sec,
-                          state);
+            spdlog::error(
+                "[{}] 段 {} 超时 {}s，当前状态仍为 {}", tag, seg_idx, f.p.limit_timeout_sec, state);
             INFO("限位等待超时，请检查导轨/传感器接线");
             REQUIRE(next != state);
             break;
@@ -589,7 +599,9 @@ TEST_CASE("System（真实硬件）ThingsBoard RPC start/stop/return 驱动运�
     spdlog::warn("[hw_system][tb_rpc_runtime] 1. 确认设备在线");
     spdlog::warn("[hw_system][tb_rpc_runtime] 2. 打开最新 telemetry，关注 device_state/task_state");
     spdlog::warn("[hw_system][tb_rpc_runtime] 3. 准备依次发送 RPC: start -> stop -> return");
-    spdlog::warn("[hw_system][tb_rpc_runtime] 4. return 之后，请人工触发【停机位一侧限位】让状态进入 Charging");
+    spdlog::warn(
+        "[hw_system][tb_rpc_runtime] 4. return 之后，请人工触发【停机位一侧限位】让状态进入 "
+        "Charging");
     spdlog::warn("[hw_system][tb_rpc_runtime] 当前 at_parking_side={} at_far_end={}",
                  f.is_at_parking_side(),
                  f.is_at_far_end());
@@ -598,7 +610,8 @@ TEST_CASE("System（真实硬件）ThingsBoard RPC start/stop/return 驱动运�
     f.tb_control->publish_startup_attributes();
     f.tb_control->publish_business_telemetry();
 
-    spdlog::warn("[hw_system][tb_rpc_runtime] ACTION REQUIRED: 在 ThingsBoard 平台发送 RPC `start`");
+    spdlog::warn(
+        "[hw_system][tb_rpc_runtime] ACTION REQUIRED: 在 ThingsBoard 平台发送 RPC `start`");
     REQUIRE(f.wait_state_with_thingsboard({"CleanFwd", "CleanReturn"}, std::chrono::seconds(120)));
     {
         const auto snap = f.supervisor->snapshot();
@@ -650,8 +663,11 @@ TEST_CASE("System（真实硬件）ThingsBoard RPC terminate/reset 驱动结束�
 
     spdlog::warn("[hw_system][tb_terminate_reset] ThingsBoard 平台准备：");
     spdlog::warn("[hw_system][tb_terminate_reset] 1. 确认设备在线");
-    spdlog::warn("[hw_system][tb_terminate_reset] 2. 准备依次发送 RPC: start -> stop -> terminate -> reset");
-    spdlog::warn("[hw_system][tb_terminate_reset] 3. reset 之前，请确保机器人回到【停机位】或手动压住停机位一侧限位");
+    spdlog::warn(
+        "[hw_system][tb_terminate_reset] 2. 准备依次发送 RPC: start -> stop -> terminate -> reset");
+    spdlog::warn(
+        "[hw_system][tb_terminate_reset] 3. reset "
+        "之前，请确保机器人回到【停机位】或手动压住停机位一侧限位");
     spdlog::warn("[hw_system][tb_terminate_reset] 当前 at_parking_side={} at_far_end={}",
                  f.is_at_parking_side(),
                  f.is_at_far_end());
@@ -677,7 +693,9 @@ TEST_CASE("System（真实硬件）ThingsBoard RPC terminate/reset 驱动结束�
         CHECK(snap.task_state == "TerminatedTask");
     }
 
-    spdlog::warn("[hw_system][tb_terminate_reset] ACTION REQUIRED: 确保 at_parking_side=true，然后在 ThingsBoard 平台发送 RPC `reset`");
+    spdlog::warn(
+        "[hw_system][tb_terminate_reset] ACTION REQUIRED: 确保 at_parking_side=true，然后在 "
+        "ThingsBoard 平台发送 RPC `reset`");
     REQUIRE(f.wait_state_with_thingsboard({"Idle"}, std::chrono::seconds(180)));
     {
         const auto snap = f.supervisor->snapshot();
@@ -689,8 +707,7 @@ TEST_CASE("System（真实硬件）ThingsBoard RPC terminate/reset 驱动结束�
 // ────────────────────────────────────────────────────────────────────────────
 // [hw_system][imu_gps_health_only] — 仅 IMU/GPS 持续采集并由 HealthService 落盘
 // ────────────────────────────────────────────────────────────────────────────
-TEST_CASE("System（真实硬件）仅 IMU/GPS 持续采集并本地落盘",
-          "[hw_system][imu_gps_health_only]") {
+TEST_CASE("System（真实硬件）仅 IMU/GPS 持续采集并本地落盘", "[hw_system][imu_gps_health_only]") {
     hw::ImuGpsHealthFixture f;
     const std::string health_path = "/data/pv_robot/logs/hw_imu_gps_health_only.jsonl";
     remove_rotated_health_logs(health_path);
@@ -945,6 +962,229 @@ TEST_CASE("System（真实硬件）运动 1s 后 emergency_override 急停", "[h
 }
 
 // ────────────────────────────────────────────────────────────────────────────
+enum class LowerPoseEvalMode {
+    PitchStableGate,
+    PitchRollRateScore,
+};
+
+void run_lower_pose_search_test(const char* tag, LowerPoseEvalMode mode) {
+    hw::FullSystemFixture f(false /* pid_off */);
+    hw::HwExitGuard::instance().install();
+    ScopedActiveFixture active_fixture(&f);
+
+    spdlog::warn("[{}] ====================================", tag);
+    spdlog::warn("[{}] ⚠ 上轮 LT/RT 将保持 0rpm，下轮 LB/RB 将低速连续正反扫动", tag);
+    spdlog::warn("[{}] 连续探测式：下一帧满足条件立即停", tag);
+    spdlog::warn("[{}] 请确保机器人已放稳，轨道附近无人员/障碍物", tag);
+    spdlog::warn("[{}] ====================================", tag);
+
+    REQUIRE(f.init());
+    REQUIRE(wait_imu_valid(f.imu, 3000ms));
+
+    WalkStopGuard stop_guard(f.walk_group);
+    f.walk_group->clear_override();
+    f.walk_group->update();
+
+    REQUIRE(f.walk_group->enable_all() == robot::device::DeviceError::OK);
+    REQUIRE(f.walk_group->set_mode_all(robot::protocol::WalkMotorMode::SPEED) ==
+            robot::device::DeviceError::OK);
+    std::this_thread::sleep_for(300ms);
+
+    constexpr float kLowerScanRpm = 3.0f;
+    constexpr float kPitchAlpha = 1.0f;
+    constexpr float kRollAlpha = 1.0f;
+    constexpr float kRollRateAlpha = 0.25f;
+    constexpr float kPitchImproveEpsDeg = 0.03f;
+    constexpr float kPitchNearBestEpsDeg = 0.02f;
+    constexpr float kScoreNearBestEps = 0.05f;
+    constexpr float kStableRollRateGate = 0.2f;  // deg/s
+    constexpr float kSafetyRollRateGate = 0.9f;  // deg/s
+    constexpr float kPitchWeight = 1.0f;
+    constexpr float kRollRateWeight = 6.0f;
+    constexpr auto kSamplePeriod = 50ms;
+    constexpr auto kMinPhaseRun = 500ms;
+    constexpr auto kMaxPhaseRun = 15000ms;
+
+    if (mode == LowerPoseEvalMode::PitchRollRateScore) {
+        spdlog::info("[{}] score = {:.2f} * abs(pitch) - {:.2f} * abs(roll_rate)",
+                     tag,
+                     kPitchWeight,
+                     kRollRateWeight);
+    }
+
+    auto imu0 = f.imu->get_latest();
+    float filtered_pitch = imu0.pitch_deg;
+    float filtered_roll = imu0.roll_deg;
+    float prev_filtered_roll = filtered_roll;
+    float filtered_roll_rate = 0.0f;
+    bool roll_rate_inited = false;
+    float global_best_abs_pitch = std::abs(filtered_pitch);
+    float phase_best_abs_pitch = global_best_abs_pitch;
+    float global_best_score = kPitchWeight * global_best_abs_pitch;
+    float phase_best_score = global_best_score;
+    const float start_pitch = filtered_pitch;
+    const float start_roll = filtered_roll;
+    int direction = 1;
+    bool reversed = false;
+
+    auto set_lower_scan = [&](int dir) {
+        // 物理前进方向：下轮 LB/RB 为负转；反向则为正转。
+        const float lower_rpm = (dir > 0) ? -kLowerScanRpm : kLowerScanRpm;
+        return f.walk_group->set_speeds(0.0f, 0.0f, lower_rpm, lower_rpm);
+    };
+
+    auto stop_all = [&] {
+        f.walk_group->set_speeds(0.0f, 0.0f, 0.0f, 0.0f);
+        std::this_thread::sleep_for(100ms);
+    };
+
+    REQUIRE(set_lower_scan(direction) == robot::device::DeviceError::OK);
+    auto phase_started_at = std::chrono::steady_clock::now();
+    auto last_sample_at = phase_started_at;
+    int sample_count = 0;
+
+    while (!hw::HwExitGuard::instance().exit_requested()) {
+        std::this_thread::sleep_for(kSamplePeriod);
+        const auto now = std::chrono::steady_clock::now();
+        const float dt_s =
+            std::max(1e-3f, std::chrono::duration<float>(now - last_sample_at).count());
+        last_sample_at = now;
+
+        const auto imu = f.imu->get_latest();
+        if (!imu.valid) {
+            continue;
+        }
+
+        filtered_pitch = (1.0f - kPitchAlpha) * filtered_pitch + kPitchAlpha * imu.pitch_deg;
+        filtered_roll = (1.0f - kRollAlpha) * filtered_roll + kRollAlpha * imu.roll_deg;
+
+        const float raw_roll_rate = (filtered_roll - prev_filtered_roll) / dt_s;
+        prev_filtered_roll = filtered_roll;
+        if (!roll_rate_inited) {
+            filtered_roll_rate = raw_roll_rate;
+            roll_rate_inited = true;
+        } else {
+            filtered_roll_rate =
+                (1.0f - kRollRateAlpha) * filtered_roll_rate + kRollRateAlpha * raw_roll_rate;
+        }
+
+        const float abs_pitch = std::abs(filtered_pitch);
+        const float abs_roll_rate = std::abs(filtered_roll_rate);
+        const float pose_score = kPitchWeight * abs_pitch - kRollRateWeight * abs_roll_rate;
+
+        if (abs_pitch > phase_best_abs_pitch + kPitchImproveEpsDeg) {
+            phase_best_abs_pitch = abs_pitch;
+        }
+        if (abs_pitch > global_best_abs_pitch + kPitchImproveEpsDeg) {
+            global_best_abs_pitch = abs_pitch;
+        }
+        if (pose_score > phase_best_score + kPitchImproveEpsDeg) {
+            phase_best_score = pose_score;
+        }
+        if (pose_score > global_best_score + kPitchImproveEpsDeg) {
+            global_best_score = pose_score;
+        }
+
+        if (++sample_count % 5 == 0) {
+            spdlog::info(
+                "[{}] dir={} raw_pitch={:.3f} filt_pitch={:.3f} raw_roll={:.3f} filt_roll={:.3f} "
+                "roll_rate={:.3f} abs_pitch={:.3f} best_pitch={:.3f} score={:.3f} "
+                "best_score={:.3f}",
+                tag,
+                direction > 0 ? "lower_forward" : "lower_reverse",
+                imu.pitch_deg,
+                filtered_pitch,
+                imu.roll_deg,
+                filtered_roll,
+                filtered_roll_rate,
+                abs_pitch,
+                phase_best_abs_pitch,
+                pose_score,
+                phase_best_score);
+        }
+
+        const auto phase_elapsed =
+            std::chrono::duration_cast<std::chrono::milliseconds>(now - phase_started_at);
+        const bool safety_stop = abs_roll_rate >= kSafetyRollRateGate;
+        const bool stable_zone = abs_roll_rate <= kStableRollRateGate;
+        bool candidate_stop = false;
+        if (phase_elapsed >= kMinPhaseRun && stable_zone) {
+            if (mode == LowerPoseEvalMode::PitchStableGate) {
+                candidate_stop = abs_pitch >= (phase_best_abs_pitch - kPitchNearBestEpsDeg);
+            } else {
+                candidate_stop = pose_score >= (phase_best_score - kScoreNearBestEps);
+            }
+        }
+        const bool phase_timeout = phase_elapsed >= kMaxPhaseRun;
+
+        if (!safety_stop && !candidate_stop && !phase_timeout) {
+            continue;
+        }
+
+        stop_all();
+        spdlog::info(
+            "[{}] {}结束: reason={} elapsed={}ms pitch={:.3f} roll={:.3f} roll_rate={:.3f} "
+            "abs_pitch={:.3f} phase_best_pitch={:.3f} score={:.3f} phase_best_score={:.3f}",
+            tag,
+            direction > 0 ? "正向" : "反向",
+            safety_stop ? "safety_stop" : (candidate_stop ? "candidate_stop" : "timeout"),
+            phase_elapsed.count(),
+            filtered_pitch,
+            filtered_roll,
+            filtered_roll_rate,
+            abs_pitch,
+            phase_best_abs_pitch,
+            pose_score,
+            phase_best_score);
+
+        if (safety_stop || reversed) {
+            break;
+        }
+
+        reversed = true;
+        direction = -direction;
+        phase_best_abs_pitch = std::abs(filtered_pitch);
+        phase_best_score = pose_score;
+        phase_started_at = std::chrono::steady_clock::now();
+        last_sample_at = phase_started_at;
+        REQUIRE(set_lower_scan(direction) == robot::device::DeviceError::OK);
+    }
+
+    stop_all();
+    const auto final_imu = f.imu->get_latest();
+    spdlog::info(
+        "[{}] start_pitch={:.3f} start_roll={:.3f} best_abs_pitch={:.3f} "
+        "best_score={:.3f} final_pitch={:.3f} final_roll={:.3f}",
+        tag,
+        start_pitch,
+        start_roll,
+        global_best_abs_pitch,
+        global_best_score,
+        final_imu.pitch_deg,
+        final_imu.roll_deg);
+
+    f.walk_group->disable_all();
+    fail_if_exit_requested(f);
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// [hw_system][lower_pitch_peak] — 连续探测式：abs(pitch) + roll_rate 判稳/判险
+// ────────────────────────────────────────────────────────────────────────────
+TEST_CASE("System（真实硬件）连续探测式初始化找正（pitch 主判据）",
+          "[hw_system][lower_pitch_peak]") {
+    run_lower_pose_search_test("[hw_system][lower_pitch_peak]", LowerPoseEvalMode::PitchStableGate);
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// [hw_system][lower_pitch_score] — 连续探测式：pitch + roll_rate 综合评分
+// ────────────────────────────────────────────────────────────────────────────
+TEST_CASE("System（真实硬件）连续探测式初始化找正（pitch + roll_rate 综合评分）",
+          "[hw_system][lower_pitch_score]") {
+    run_lower_pose_search_test("[hw_system][lower_pitch_score]",
+                               LowerPoseEvalMode::PitchRollRateScore);
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 // [hw_system][watchdog_timeout] — WatchdogMgr 漏心跳超时（纯软件）
 // ────────────────────────────────────────────────────────────────────────────
 TEST_CASE("System（真实硬件）WatchdogMgr 漏心跳后超时回调触发", "[hw_system][watchdog_timeout]") {
@@ -1047,7 +1287,6 @@ TEST_CASE("System（真实硬件）P1 故障链：FSM Returning → EvParkingSid
 
     spdlog::info("[hw_system][p1_fault_chain] PASS: CleanFwd→Returning→Charging");
 }
-
 
 // ────────────────────────────────────────────────────────────────────────────
 // [hw_system][n1_clean_cycle] — N=1 完整任务链（手动触发真实前右限位）
@@ -1175,7 +1414,9 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + PID 控制 + 真实滚
     const bool right_limit_active = !f.right_sw->read_current_level();
     const bool left_limit_active = !f.left_sw->read_current_level();
     {
-        INFO("设备不在已知端点（right_limit_active=false, left_limit_active=false），请将设备移至某一端点");
+        INFO(
+            "设备不在已知端点（right_limit_active=false, "
+            "left_limit_active=false），请将设备移至某一端点");
         REQUIRE((right_limit_active || left_limit_active));
     }
     spdlog::info("[hw_system][pid_combined] 传感器: right_limit_active={} left_limit_active={}",
@@ -1205,11 +1446,10 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + PID 控制 + 真实滚
     constexpr auto kPidSampleInterval = 500ms;
     auto last_health_update_at = clock::time_point{};
     constexpr auto kHealthUpdateInterval = 2000ms;
-
     std::mutex pid_probe_mu;
     PidProbeSnapshot pid_probe_snapshot;
     std::atomic<bool> pid_probe_stop{false};
-    robot::service::HeadingPidController pid_probe_ctrl(make_pid_probe_params(f.p.pid));
+    robot::service::HeadingCorrector pid_probe_ctrl(make_pid_probe_params(f.p.pid));
     pid_probe_ctrl.enable(true);
 
     std::thread pid_probe_thread([&]() {
@@ -1227,11 +1467,15 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + PID 控制 + 真实滚
             const auto imu = f.imu->get_latest();
             probe_filters.update(imu);
 
+            robot::service::HeadingCorrector::Input input;
+            input.raw_pitch_deg = probe_filters.filtered_pitch;
+            input.raw_roll_deg = probe_filters.filtered_roll;
+            input.raw_yaw_deg = imu.yaw_deg;
+            input.raw_gyro_z_dps = probe_filters.filtered_omega_z;
+            input.dt_s = dt_s;
+
             PidProbeSnapshot snap;
-            snap.correction = pid_probe_ctrl.compute(probe_filters.filtered_pitch,
-                                                     probe_filters.filtered_roll,
-                                                     probe_filters.filtered_omega_z,
-                                                     dt_s);
+            snap.correction = pid_probe_ctrl.compute(input).correction_rpm;
             snap.pid = pid_probe_ctrl.debug_state();
 
             const auto gd = f.walk_group->get_group_diagnostics();
@@ -1293,13 +1537,12 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + PID 控制 + 真实滚
             pid_probe = pid_probe_snapshot;
         }
 
-        pid_ofs << build_pid_sample_json(
-                       ts_ms,
-                       cur_seg,
-                       f.fsm->current_state(),
-                       std::round(yaw * 100.0f) / 100.0f,
-                       std::round(omega_z_dps * 100.0f) / 100.0f,
-                       pid_probe)
+        pid_ofs << build_pid_sample_json(ts_ms,
+                                         cur_seg,
+                                         f.fsm->current_state(),
+                                         std::round(yaw * 100.0f) / 100.0f,
+                                         std::round(omega_z_dps * 100.0f) / 100.0f,
+                                         pid_probe)
                 << '\n';
 
         spdlog::info(
@@ -1342,8 +1585,8 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + PID 控制 + 真实滚
     };
 
     // ── 启动任务 ────────────────────────────────────────────────────────────
-    f.fsm->dispatch(make_schedule_start(
-        right_limit_active, left_limit_active, f.p.combined_passes));
+    f.fsm->dispatch(
+        make_schedule_start(right_limit_active, left_limit_active, f.p.combined_passes));
     {
         const std::string s = f.fsm->current_state();
         INFO("FSM 未能进入 CleanFwd/CleanReturn，请检查传感器与 FSM 逻辑");
@@ -1379,13 +1622,12 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + PID 控制 + 真实滚
 
         // 写段摘要到 pid_metrics.jsonl
         const float seg_dur = std::chrono::duration<float>(clock::now() - seg_start).count();
-        pid_ofs << build_segment_summary_json(
-                       seg_idx,
-                       going_fwd ? "fwd" : "ret",
-                       state,
-                       next,
-                       std::round(max_drift_all * 100.0f) / 100.0f,
-                       std::round(seg_dur * 10.0f) / 10.0f)
+        pid_ofs << build_segment_summary_json(seg_idx,
+                                              going_fwd ? "fwd" : "ret",
+                                              state,
+                                              next,
+                                              std::round(max_drift_all * 100.0f) / 100.0f,
+                                              std::round(seg_dur * 10.0f) / 10.0f)
                 << '\n';
 
         spdlog::info(
@@ -1406,13 +1648,12 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + PID 控制 + 真实滚
     }
 
     // 写全局摘要到 pid_metrics.jsonl
-    pid_ofs << build_final_summary_json(
-                   seg_idx,
-                   total_health_records,
-                   std::round(max_drift_all * 100.0f) / 100.0f,
-                   f.p.pid.pitch_drop_threshold,
-                   f.p.pid.roll_threshold,
-                   f.p.pid.max_output)
+    pid_ofs << build_final_summary_json(seg_idx,
+                                        total_health_records,
+                                        std::round(max_drift_all * 100.0f) / 100.0f,
+                                        f.p.pid.pitch_drop_threshold,
+                                        f.p.pid.roll_threshold,
+                                        f.p.pid.max_output)
             << '\n';
     pid_ofs.close();
 

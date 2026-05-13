@@ -2,17 +2,28 @@
  * @Author: UncleDrew
  * @Date: 2026-03-14 16:03:29
  * @LastEditors: UncleDrew
- * @LastEditTime: 2026-05-09 15:23:06
+ * @LastEditTime: 2026-05-12 12:13:29
  * @FilePath: /pv_cleaning_robot/pv_cleaning_robot/service/motion_service.cc
  * @Description: 运动服务——集成 WalkMotorGroup + IMU 姿态纠偏 + 边缘触发覆盖
  *
  * Copyright (c) 2026 by UncleDrew, All Rights Reserved.
  */
-#include <cmath>
-
 #include "pv_cleaning_robot/service/motion_service.h"
 
 namespace robot::service {
+
+namespace {
+
+HeadingCorrector::SpeedCommand to_corrector_command(
+    const device::WalkMotorGroup::SpeedCmd& cmd) {
+    return {cmd.lt_rpm, cmd.rt_rpm, cmd.lb_rpm, cmd.rb_rpm};
+}
+
+device::WalkMotorGroup::SpeedCmd to_group_command(const HeadingCorrector::SpeedCommand& cmd) {
+    return {cmd.lt_rpm, cmd.rt_rpm, cmd.lb_rpm, cmd.rb_rpm};
+}
+
+}  // namespace
 
 MotionService::MotionService(std::shared_ptr<device::WalkMotorGroup> group,
                              std::shared_ptr<device::BrushMotor> brush,
@@ -23,7 +34,9 @@ MotionService::MotionService(std::shared_ptr<device::WalkMotorGroup> group,
     , brush_(std::move(brush))
     , imu_(std::move(imu))
     , bus_(bus)
-    , cfg_(cfg) {}
+    , cfg_(cfg)
+    , heading_corrector_(cfg.pid)
+    , last_override_clear_generation_(group_ ? group_->override_clear_generation() : 0u) {}
 
 void MotionService::set_parking_side_provider(std::function<ParkingSide()> provider) {
     parking_side_provider_ = std::move(provider);
@@ -59,23 +72,32 @@ bool MotionService::enable_speed_mode() {
 }
 
 void MotionService::sync_heading_pid_enabled() {
+    heading_corrector_.set_params(cfg_.pid);
     if (!cfg_.heading_pid_en) {
-        group_->enable_heading_control(false);
+        heading_corrector_.enable(false);
         return;
     }
-    group_->set_heading_pid_params(cfg_.pid);
-    group_->enable_heading_control(true);
+    if (heading_corrector_.is_enabled()) {
+        heading_corrector_.reset();
+    } else {
+        heading_corrector_.enable(true);
+    }
+}
+
+void MotionService::set_base_speed_command(const device::WalkMotorGroup::SpeedCmd& cmd) {
+    base_speed_cmd_ = cmd;
+    walk_command_active_ = true;
 }
 
 bool MotionService::start_returning_impl(bool run_brush) {
     sync_runtime_config();
     group_->clear_override();
+    walk_command_active_ = false;
 
     const int dir = task_direction_sign();
-    // brush_->set_mode_speed();
     if (run_brush) {
         // 返程刷反向转，用 return_brush_rpm 单独表达返程刷速。
-        brush_->set_rpm(-cfg_.return_brush_rpm * dir);
+        brush_->set_rpm(cfg_.return_brush_rpm * dir);
     } else {
         brush_->stop();
     }
@@ -86,7 +108,12 @@ bool MotionService::start_returning_impl(bool run_brush) {
     }
 
     const float spd = cfg_.return_speed_rpm * static_cast<float>(dir);
-    return group_->set_speeds(-spd, -spd, +spd, +spd) == device::DeviceError::OK;
+    const device::WalkMotorGroup::SpeedCmd cmd{-spd, -spd, +spd, +spd};
+    if (group_->set_speeds(cmd) != device::DeviceError::OK) {
+        return false;
+    }
+    set_base_speed_command(cmd);
+    return true;
 }
 
 // ── 运动控制 ──────────────────────────────────────────────────────────────
@@ -95,6 +122,7 @@ bool MotionService::start_cleaning() {
     sync_runtime_config();
     // 解除可能由 SafetyMonitor::on_limit_trigger() 触发的 emergency_override 锁
     group_->clear_override();
+    walk_command_active_ = false;
 
     if (!enable_speed_mode()) {
         return false;
@@ -107,25 +135,21 @@ bool MotionService::start_cleaning() {
     // 车辆前进：LT=+spd, RT=+spd, LB=-spd, RB=-spd
     const int dir = task_direction_sign();
     const float spd = cfg_.clean_speed_rpm * static_cast<float>(dir);
-    if (group_->set_speeds(spd, spd, -spd, -spd) != device::DeviceError::OK)
+    const device::WalkMotorGroup::SpeedCmd cmd{spd, spd, -spd, -spd};
+    if (group_->set_speeds(cmd) != device::DeviceError::OK)
         return false;
+    set_base_speed_command(cmd);
 
-    // brush_->set_mode_speed();
-    brush_->set_rpm(cfg_.brush_rpm * dir);
+    brush_->set_rpm(-cfg_.brush_rpm * dir);
     return true;
 }
 
 void MotionService::stop_cleaning() {
     brush_->stop();
-    group_->enable_heading_control(false);
+    heading_corrector_.enable(false);
+    walk_command_active_ = false;
     group_->set_speed_uniform(0.0f);
     group_->disable_all();
-}
-
-void MotionService::pause_task() {
-    brush_->stop();
-    group_->enable_heading_control(false);
-    group_->set_speed_uniform(0.0f);
 }
 
 bool MotionService::start_returning() {
@@ -139,49 +163,10 @@ bool MotionService::start_returning_no_brush() {
 
 void MotionService::emergency_stop() {
     brush_->stop();
+    heading_corrector_.enable(false);
+    walk_command_active_ = false;
     group_->emergency_override(0.0f);  // 原地停止 + 抑制心跳
     group_->disable_all();
-}
-
-bool MotionService::set_walk_speed(float rpm) {
-    // 正值语义统一为“从停机位驶向对侧端点”。
-    const float directed_rpm = rpm * static_cast<float>(task_direction_sign());
-    return group_->set_speeds(directed_rpm, directed_rpm, -directed_rpm, -directed_rpm) ==
-           device::DeviceError::OK;
-}
-
-// ── 边缘触发接口 ──────────────────────────────────────────────────────────
-
-void MotionService::on_edge_triggered() {
-    // 直接调用 WalkMotorGroup::emergency_override()
-    // 该函数立即向 CAN 总线发送停车/反转帧，并设置 override_active_ 标志，
-    // 阻止 update() 继续重发正常心跳帧，保证安全状态不被覆盖
-    group_->emergency_override(cfg_.edge_reverse_rpm);
-    brush_->stop();
-}
-
-void MotionService::cancel_edge_override() {
-    // 由上层 FSM 或 SafetyMonitor 在确认安全后调用
-    group_->clear_override();
-}
-
-// ── 状态查询 ──────────────────────────────────────────────────────────────
-
-bool MotionService::is_moving() const {
-    const auto st = group_->get_group_status();
-    for (const auto& w : st.wheel) {
-        if (std::abs(w.speed_rpm) > 5.0f)
-            return true;
-    }
-    return false;
-}
-
-bool MotionService::is_brush_running() const {
-    return brush_->get_status().running;
-}
-
-bool MotionService::is_edge_override_active() const {
-    return group_->is_override_active();
 }
 
 // ── 周期心跳（50 ms，由 ThreadExecutor 调用）──────────────────────────────
@@ -191,48 +176,46 @@ void MotionService::update() {
     if (imu_) {
         imu_data = imu_->get_latest();
     }
-    const float raw_pitch = imu_data.pitch_deg;
-    const float raw_roll = imu_data.roll_deg;
-    const float raw_yaw = imu_data.yaw_deg;
-    const float raw_omega_z = imu_data.gyro[2] * (180.0f / 3.14159265f);
+    const bool override_active = group_->is_override_active();
 
-    // EMA 低通滤波（α=0.8，τ≈100ms @50ms 周期），抑制 IMU 高频噪声对姿态纠偏的扰动。
-    // 首次调用硬初始化，避免从 0 缓慢收敛引发控制初始抖动；
-    // 使用成员变量（非 static）解决多实例共享和 IMU 重启后的污染问题。
-    if (!filtered_pitch_inited_) {
-        filtered_pitch_ = raw_pitch;
-        filtered_pitch_inited_ = true;
-    } else {
-        filtered_pitch_ = 0.8f * filtered_pitch_ + 0.2f * raw_pitch;
+    if (walk_command_active_ && cfg_.heading_pid_en && !override_active) {
+        HeadingCorrector::Input input;
+        input.raw_pitch_deg = imu_data.pitch_deg;
+        input.raw_roll_deg = imu_data.roll_deg;
+        input.raw_yaw_deg = imu_data.yaw_deg;
+        input.raw_gyro_z_dps = imu_data.gyro[2] * (180.0f / 3.14159265f);
+        input.dt_s = 0.02f;
+        input.has_base_command = true;
+        input.base_command = to_corrector_command(base_speed_cmd_);
+
+        const auto status = group_->get_group_status();
+        const auto diagnostics = group_->get_group_diagnostics();
+        input.wheel_feedback.valid = true;
+        input.wheel_feedback.rpm = {status.wheel[0].speed_rpm,
+                                    status.wheel[1].speed_rpm,
+                                    status.wheel[2].speed_rpm,
+                                    status.wheel[3].speed_rpm};
+        input.wheel_feedback.current = {diagnostics.wheel[0].torque_a,
+                                        diagnostics.wheel[1].torque_a,
+                                        diagnostics.wheel[2].torque_a,
+                                        diagnostics.wheel[3].torque_a};
+
+        const auto heading_output = heading_corrector_.compute(input);
+        if (heading_output.has_speed_command) {
+            group_->set_speeds(to_group_command(heading_output.speed_command));
+        }
     }
 
-    if (!filtered_roll_inited_) {
-        filtered_roll_ = raw_roll;
-        filtered_roll_inited_ = true;
-    } else {
-        filtered_roll_ = 0.8f * filtered_roll_ + 0.2f * raw_roll;
-    }
+    group_->update();
 
-    if (!filtered_yaw_inited_) {
-        filtered_yaw_ = raw_yaw;
-        filtered_yaw_inited_ = true;
-    } else {
-        filtered_yaw_ = 0.8f * filtered_yaw_ + 0.2f * raw_yaw;
+    const auto clear_generation = group_->override_clear_generation();
+    if (clear_generation != last_override_clear_generation_) {
+        last_override_clear_generation_ = clear_generation;
+        heading_corrector_.reset();
+        if (walk_command_active_) {
+            group_->set_speeds(base_speed_cmd_);
+        }
     }
-
-    if (!filtered_omega_z_inited_) {
-        filtered_omega_z_ = raw_omega_z;
-        filtered_omega_z_inited_ = true;
-    } else {
-        filtered_omega_z_ = 0.8f * filtered_omega_z_ + 0.2f * raw_omega_z;
-    }
-
-    // 传入过滤后的 pitch/roll/yaw/gyro_z，由 WalkMotorGroup::update() 完成：
-    //   1. 更新 online 超时状态
-    //   2. 排干命令队列（消费 set_speeds/clear_override 投递的 Cmd）
-    //   3. override 激活时跳过重发（不干扰紧急停车帧）
-    //   4. 若 heading_ctrl_en_，计算姿态差速修正并发帧
-    group_->update(filtered_pitch_, filtered_roll_, filtered_yaw_, filtered_omega_z_);
 
     // 注意：brush_->update() 已移到 bms_exec 线程（SCHED_OTHER, 500ms）
     // 原因：Modbus RTU 读取寄存器需 5~10ms 阻塞 I/O，放在 walk_ctrl(FIFO 80, 20ms)

@@ -8,6 +8,7 @@
 #include "pv_cleaning_robot/device/walk_motor_group.h"
 #include "pv_cleaning_robot/middleware/event_bus.h"
 #include "pv_cleaning_robot/middleware/thread_executor.h"
+#include "pv_cleaning_robot/service/heading_corrector.h"
 #include "pv_cleaning_robot/service/thingsboard_control_plane.h"
 
 namespace robot::service {
@@ -19,13 +20,10 @@ namespace robot::service {
 ///      给每台电机；update() 每 20ms 重发设定值维持心跳，超时自停
 ///   2. 主动上报+温度查询：反馈方式使用主动上报（100Hz），
 ///      无法上报温度时由 WalkMotorGroup::update() 定期发 0x107 查询补采
-///   3. IMU 姿态纠偏：基于过滤后的 pitch/roll/yaw/gyro_z，
-///      update() 每 20ms 计算差速补偿并在强干扰时冻结学习
-///   4. 边缘紧急响应：register_edge_callback() 注册后，
-///      边缘触发时 emergency_override() 立即发帧（不经过 update() 调度），
-///      并用 cancel_edge_override() 解除，恢复正常行驶
-///   5. 冲突保护：override 激活期间 update() 跳过心跳重发，
-///      防止1/4号提案（心跳/姿态纠偏帧）干扰边缘停车指令
+///   3. IMU 姿态纠偏：MotionService 持有 HeadingCorrector，
+///      update() 每 20ms 计算最终4轮目标速度并下发给 WalkMotorGroup
+///   4. 冲突保护：override 激活期间 WalkMotorGroup::update() 跳过心跳重发，
+///      防止控制心跳干扰边缘停车指令
 class MotionService : public middleware::IRunnable {
    public:
     struct Config {
@@ -35,7 +33,7 @@ class MotionService : public middleware::IRunnable {
         int return_brush_rpm{1200};     ///< 滚刷返程转速（绝对值，实际方向取反）
         float edge_reverse_rpm{30.0f};  ///< 边缘触发后反转速度（RPM，0=原地停）
         bool heading_pid_en{true};      ///< 是否使能姿态纠偏
-        device::WalkMotorGroup::HeadingPidParams pid{};  ///< 姿态纠偏参数
+        HeadingCorrector::Params pid{};  ///< 姿态纠偏参数
     };
 
     /// @param group    4轮行走电机组（构造时已配置 comm_timeout_ms）
@@ -61,9 +59,6 @@ class MotionService : public middleware::IRunnable {
     /// 停止清扫（停滚刷，行走归零，禁用姿态纠偏）
     void stop_cleaning();
 
-    /// 暂停任务（停滚刷，速度归零，保留驱动可恢复状态）
-    void pause_task();
-
     /// 以返回速度反向行进（滚刷反向运行，保持姿态纠偏）
     bool start_returning();
 
@@ -76,20 +71,6 @@ class MotionService : public middleware::IRunnable {
     /// 原地急停（失能行走，停滚刷）
     void emergency_stop();
 
-    /// 直接设置行走速度（RPM），同时更新姿态纠偏基准速度
-    bool set_walk_speed(float rpm);
-
-    // ── 边缘触发接口 ─────────────────────────────────────────────────────
-    /// 边缘触发时立即调用：override 帧直接发送，抑制心跳
-    void on_edge_triggered();
-    /// 恢复正常行驶（由 FSM/SafetyMonitor 在确认安全后调用）
-    void cancel_edge_override();
-
-    // ── 状态查询 ─────────────────────────────────────────────────────────
-    bool is_moving() const;
-    bool is_brush_running() const;
-    bool is_edge_override_active() const;
-
     void update() override;  ///< 由 ThreadExecutor 20ms 调用（50Hz 姿态纠偏）
 
    private:
@@ -100,22 +81,17 @@ class MotionService : public middleware::IRunnable {
     Config cfg_;
     std::function<ParkingSide()> parking_side_provider_;
     std::function<TbRuntimeConfig()> runtime_config_provider_;
-
-    /// EMA 滤波后的姿态/角速度（替代 update() 中的 static 局部变量，解决多实例共享和重启污染）
-    float filtered_pitch_{0.0f};
-    bool filtered_pitch_inited_{false};
-    float filtered_roll_{0.0f};
-    bool filtered_roll_inited_{false};
-    float filtered_yaw_{0.0f};
-    bool filtered_yaw_inited_{false};
-    float filtered_omega_z_{0.0f};         ///< EMA 滤波后的 Z 轴角速度（°/s），用于冻结扰动
-    bool filtered_omega_z_inited_{false};  ///< 首次调用时硬初始化标志
+    HeadingCorrector heading_corrector_{};
+    device::WalkMotorGroup::SpeedCmd base_speed_cmd_{};
+    bool walk_command_active_{false};
+    uint32_t last_override_clear_generation_{0};
 
     int task_direction_sign() const;
     void sync_runtime_config();
     bool enable_speed_mode();
     void sync_heading_pid_enabled();
     bool start_returning_impl(bool run_brush);
+    void set_base_speed_command(const device::WalkMotorGroup::SpeedCmd& cmd);
 };
 
 }  // namespace robot::service

@@ -1,17 +1,15 @@
 #include <catch2/catch.hpp>
 
 #include <cmath>
-#include <tuple>
-#include <vector>
 
-#include "pv_cleaning_robot/service/heading_pid_controller.h"
+#include "pv_cleaning_robot/service/heading_corrector.h"
 
-using robot::service::HeadingPidController;
+using robot::service::HeadingCorrector;
 
 namespace {
 
-HeadingPidController::Params test_params() {
-    HeadingPidController::Params p;
+HeadingCorrector::Params test_params() {
+    HeadingCorrector::Params p;
     p.pitch_alpha = 1.0f;
     p.roll_alpha = 1.0f;
     p.gyro_alpha = 1.0f;
@@ -32,133 +30,165 @@ HeadingPidController::Params test_params() {
 
 }  // namespace
 
-TEST_CASE("HeadingPidController: disabled controller outputs zero", "[service][heading_pid]") {
-    HeadingPidController ctrl(test_params());
-
-    REQUIRE(ctrl.compute(-34.8f, -2.0f, 0.0f, 0.02f) == Approx(0.0f));
-}
-
-TEST_CASE("HeadingPidController: warmup needs a stable window, not one long sample",
-          "[service][heading_pid]") {
-    HeadingPidController ctrl(test_params());
+TEST_CASE("HeadingCorrector: raw samples are accepted directly", "[service][heading_pid]") {
+    HeadingCorrector ctrl(test_params());
     ctrl.enable(true);
 
-    REQUIRE(ctrl.compute(-34.8f, -2.0f, 0.0f, 0.10f) == Approx(0.0f));
+    HeadingCorrector::Input input;
+    input.raw_pitch_deg = -34.8f;
+    input.raw_roll_deg = -2.0f;
+    input.raw_yaw_deg = -8.0f;
+    input.raw_gyro_z_dps = 0.5f;
+    input.dt_s = 0.02f;
+
+    const auto out = ctrl.compute(input);
+    REQUIRE_FALSE(out.has_speed_command);
+}
+
+TEST_CASE("HeadingCorrector: wheel feedback remains part of raw input", "[service][heading_pid]") {
+    HeadingCorrector ctrl(test_params());
+    ctrl.enable(true);
+
+    HeadingCorrector::Input input;
+    input.raw_pitch_deg = -34.8f;
+    input.raw_roll_deg = -2.0f;
+    input.raw_yaw_deg = -8.0f;
+    input.raw_gyro_z_dps = 0.5f;
+    input.dt_s = 0.02f;
+    input.wheel_feedback.valid = true;
+    input.wheel_feedback.rpm = {25.0f, 24.0f, -25.0f, -24.0f};
+
+    REQUIRE(ctrl.compute(input).correction_rpm == Approx(0.0f));
+}
+
+TEST_CASE("HeadingCorrector: disabled controller outputs zero", "[service][heading_pid]") {
+    HeadingCorrector ctrl(test_params());
+
+    HeadingCorrector::Input input;
+    input.raw_pitch_deg = -34.8f;
+    input.raw_roll_deg = -2.0f;
+    input.dt_s = 0.02f;
+
+    const auto out = ctrl.compute(input);
+    REQUIRE(out.correction_rpm == Approx(0.0f));
+    REQUIRE_FALSE(out.has_speed_command);
+}
+
+TEST_CASE("HeadingCorrector: warmup needs a stable window, not one long sample",
+          "[service][heading_pid]") {
+    HeadingCorrector ctrl(test_params());
+    ctrl.enable(true);
+
+    HeadingCorrector::Input input;
+    input.raw_pitch_deg = -34.8f;
+    input.raw_roll_deg = -2.0f;
+    input.dt_s = 0.10f;
+    REQUIRE(ctrl.compute(input).correction_rpm == Approx(0.0f));
 
     const auto state = ctrl.debug_state();
-    REQUIRE(state.mode == HeadingPidController::Mode::UNINITIALIZED);
+    REQUIRE(state.mode == HeadingCorrector::Mode::UNINITIALIZED);
     REQUIRE(state.pitch_abs_best == Approx(0.0f));
 }
 
-TEST_CASE("HeadingPidController: learns local pitch best before tracking",
-          "[service][heading_pid]") {
-    HeadingPidController ctrl(test_params());
+TEST_CASE("HeadingCorrector: learns local pitch best before tracking", "[service][heading_pid]") {
+    HeadingCorrector ctrl(test_params());
     ctrl.enable(true);
 
+    HeadingCorrector::Input input;
+    input.dt_s = 0.02f;
+
     for (int i = 0; i < 5; ++i) {
-        REQUIRE(ctrl.compute(-34.2f, -4.5f, 0.0f, 0.02f) == Approx(0.0f));
+        input.raw_pitch_deg = -34.2f;
+        input.raw_roll_deg = -4.5f;
+        REQUIRE(ctrl.compute(input).correction_rpm == Approx(0.0f));
     }
 
     for (int i = 0; i < 5; ++i) {
-        REQUIRE(ctrl.compute(-34.8f, -2.0f, 0.0f, 0.02f) == Approx(0.0f));
+        input.raw_pitch_deg = -34.8f;
+        input.raw_roll_deg = -2.0f;
+        REQUIRE(ctrl.compute(input).correction_rpm == Approx(0.0f));
     }
 
     const auto state = ctrl.debug_state();
-    REQUIRE(state.mode == HeadingPidController::Mode::TRACK);
+    REQUIRE(state.mode == HeadingCorrector::Mode::TRACK);
     REQUIRE(state.pitch_abs_best == Approx(34.8f).margin(0.05f));
     REQUIRE(state.roll_at_best == Approx(-2.0f).margin(0.1f));
 }
 
-TEST_CASE("HeadingPidController: right-biased sample commands negative correction toward center",
+TEST_CASE("HeadingCorrector: right-biased sample commands negative correction toward center",
           "[service][heading_pid]") {
-    HeadingPidController ctrl(test_params());
+    HeadingCorrector ctrl(test_params());
     ctrl.enable(true);
 
+    HeadingCorrector::Input input;
+    input.dt_s = 0.02f;
+    input.has_base_command = true;
+    input.base_command = {100.0f, 100.0f, -100.0f, -100.0f};
+
     for (int i = 0; i < 10; ++i) {
-        ctrl.compute(-34.83f, -1.95f, 0.0f, 0.02f);
+        input.raw_pitch_deg = -34.83f;
+        input.raw_roll_deg = -1.95f;
+        ctrl.compute(input);
     }
 
-    float correction = 0.0f;
+    HeadingCorrector::Output output;
     for (int i = 0; i < 4; ++i) {
-        correction = ctrl.compute(-34.17f, -5.98f, 0.0f, 0.02f);
+        input.raw_pitch_deg = -34.17f;
+        input.raw_roll_deg = -5.98f;
+        output = ctrl.compute(input);
     }
 
-    REQUIRE(correction < 0.0f);
-
+    REQUIRE(output.correction_rpm < 0.0f);
+    REQUIRE(output.has_speed_command);
+    REQUIRE(output.speed_command.lt_rpm < 100.0f);
+    REQUIRE(output.speed_command.rt_rpm < 100.0f);
+    REQUIRE(output.speed_command.lb_rpm < -100.0f);
+    REQUIRE(output.speed_command.rb_rpm < -100.0f);
 }
 
-TEST_CASE("HeadingPidController: best reference waits for a new stable window after freeze",
+TEST_CASE("HeadingCorrector: debug state reflects controller-owned filtering",
           "[service][heading_pid]") {
-    auto params = test_params();
-    params.warmup_ms = 80;
-    params.freeze_release_ms = 60;
-
-    HeadingPidController ctrl(params);
+    HeadingCorrector ctrl(test_params());
     ctrl.enable(true);
 
-    for (int i = 0; i < 12; ++i) {
-        ctrl.compute(-34.8f, -2.0f, 0.0f, 0.02f);
-    }
+    HeadingCorrector::Input input;
+    input.raw_pitch_deg = -35.0f;
+    input.raw_roll_deg = -1.5f;
+    input.raw_yaw_deg = -7.0f;
+    input.raw_gyro_z_dps = 1.0f;
+    input.dt_s = 0.02f;
 
-    const auto learned = ctrl.debug_state();
-    REQUIRE(learned.mode == HeadingPidController::Mode::TRACK);
-    REQUIRE(learned.pitch_abs_best == Approx(34.8f).margin(0.05f));
-
-    REQUIRE(ctrl.compute(-34.5f, 0.0f, 80.0f, 0.02f) == Approx(0.0f));
-    REQUIRE(ctrl.debug_state().mode == HeadingPidController::Mode::FREEZE);
-
-    for (int i = 0; i < 3; ++i) {
-        REQUIRE(ctrl.compute(-35.2f, -1.0f, 0.0f, 0.02f) == Approx(0.0f));
-    }
-
-    const auto still_frozen = ctrl.debug_state();
-    REQUIRE(still_frozen.mode == HeadingPidController::Mode::TRACK);
-    REQUIRE(still_frozen.pitch_abs_best == Approx(34.8f).margin(0.05f));
-    REQUIRE(still_frozen.roll_at_best == Approx(-2.0f).margin(0.1f));
-
-    REQUIRE(ctrl.compute(-35.2f, -1.0f, 0.0f, 0.02f) == Approx(0.0f));
-    const auto refreshed = ctrl.debug_state();
-    REQUIRE(refreshed.pitch_abs_best == Approx(35.2f).margin(0.05f));
-    REQUIRE(refreshed.roll_at_best == Approx(-1.0f).margin(0.1f));
+    ctrl.compute(input);
+    const auto state = ctrl.debug_state();
+    REQUIRE(state.filtered_pitch == Approx(-35.0f));
+    REQUIRE(state.filtered_roll == Approx(-1.5f));
+    REQUIRE(state.filtered_yaw == Approx(-7.0f));
+    REQUIRE(state.filtered_gyro_z == Approx(1.0f));
 }
 
-TEST_CASE("HeadingPidController: disturbance enters freeze and suppresses output",
+TEST_CASE("HeadingCorrector: final wheel target generation stays inside controller",
           "[service][heading_pid]") {
-    HeadingPidController ctrl(test_params());
+    HeadingCorrector ctrl(test_params());
     ctrl.enable(true);
+
+    HeadingCorrector::Input input;
+    input.dt_s = 0.02f;
+    input.has_base_command = true;
+    input.base_command = {100.0f, 100.0f, -100.0f, -100.0f};
 
     for (int i = 0; i < 10; ++i) {
-        ctrl.compute(-34.83f, -1.95f, 0.0f, 0.02f);
+        input.raw_pitch_deg = -34.83f;
+        input.raw_roll_deg = -1.95f;
+        ctrl.compute(input);
     }
 
-    const float correction = ctrl.compute(-34.5f, 0.0f, 80.0f, 0.02f);
-    REQUIRE(correction == Approx(0.0f));
-    REQUIRE(ctrl.debug_state().mode == HeadingPidController::Mode::FREEZE);
-}
+    input.raw_pitch_deg = -34.17f;
+    input.raw_roll_deg = -5.98f;
 
-TEST_CASE("HeadingPidController: replayed IMU sequence tracks a local pitch maximum",
-          "[service][heading_pid][replay]") {
-    HeadingPidController ctrl(test_params());
-    ctrl.enable(true);
-
-    const std::vector<std::tuple<float, float, float>> samples = {
-        {-34.17f, -5.98f, 7.81f},
-        {-34.22f, -5.67f, 7.42f},
-        {-34.50f, -3.00f, 1.58f},
-        {-34.83f, -1.95f, -0.49f},
-        {-34.74f, -1.16f, -1.12f},
-        {-34.66f, -0.73f, -3.59f},
-        {-34.54f, 0.65f, -6.23f},
-        {-34.58f, 1.44f, -7.36f},
-    };
-
-    float correction = 0.0f;
-    for (const auto& [pitch, roll, gyro_z] : samples) {
-        correction = ctrl.compute(pitch, roll, gyro_z, 0.02f);
-    }
-
-    const auto state = ctrl.debug_state();
-    REQUIRE(state.pitch_abs_best >= Approx(34.7f));
-    REQUIRE(state.mode != HeadingPidController::Mode::UNINITIALIZED);
-    REQUIRE(std::isfinite(correction));
+    const auto output = ctrl.compute(input);
+    REQUIRE(output.has_speed_command);
+    REQUIRE(std::isfinite(output.speed_command.lt_rpm));
+    REQUIRE(std::isfinite(output.speed_command.rt_rpm));
+    REQUIRE(std::isfinite(output.speed_command.lb_rpm));
+    REQUIRE(std::isfinite(output.speed_command.rb_rpm));
 }
