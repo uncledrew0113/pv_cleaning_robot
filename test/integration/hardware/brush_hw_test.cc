@@ -3,10 +3,9 @@
  * @brief ODrive BrushMotor 真实硬件测试
  *
  * 测试分组：
- *   [hw_brush][open_close]       - 串口打开 + watchdog/basic 命令写入
+ *   [hw_brush][open_close]       - 串口打开 + 清错/重启命令
  *   [hw_brush][speed_cycle]      - 速度模式主链
- *   [hw_brush][torque_cycle]     - 力矩模式主链
- *   [hw_brush][idle_and_stop]    - stop / enter_idle 收敛
+ *   [hw_brush][stop]             - stop 收敛
  *   [hw_brush][diagnostics_poll] - update/status/diagnostics 轮询
  *
  * 运行方法（目标机）：
@@ -41,7 +40,6 @@ class MotorSafeStopGuard {
     ~MotorSafeStopGuard() {
         motor_.stop();
         std::this_thread::sleep_for(300ms);
-        motor_.enter_idle();
     }
 
    private:
@@ -55,11 +53,7 @@ struct BrushFixture {
 
     BrushFixture()
         : serial(std::make_shared<robot::driver::LibSerialPort>(kp.brush_port, build_uart_config()))
-        , motor(serial,
-                kp.brush_axis,
-                kp.brush_counts_per_rev,
-                kp.brush_watchdog_enabled,
-                kp.brush_watchdog_timeout_s) {}
+        , motor(serial, kp.brush_axis) {}
 
     static robot::hal::UartConfig build_uart_config() {
         robot::hal::UartConfig cfg;
@@ -76,15 +70,10 @@ void require_brush_hw_params() {
     INFO("brush_port=" << kp.brush_port);
     INFO("brush_baud=" << kp.brush_baud);
     INFO("brush_axis=" << static_cast<int>(kp.brush_axis));
-    INFO("brush_counts_per_rev=" << kp.brush_counts_per_rev);
-    INFO("brush_watchdog_enabled=" << kp.brush_watchdog_enabled);
-    INFO("brush_watchdog_timeout_s=" << kp.brush_watchdog_timeout_s);
     INFO("brush_test_rpm=" << kp.brush_test_rpm);
 
     REQUIRE(!kp.brush_port.empty());
     REQUIRE(kp.brush_baud > 0);
-    REQUIRE(kp.brush_counts_per_rev > 0.0f);
-    REQUIRE(kp.brush_watchdog_timeout_s > 0.0f);
     REQUIRE(std::abs(kp.brush_test_rpm) >= 5.0f);
     REQUIRE(std::abs(kp.brush_test_rpm) <= 5000.0f);
 }
@@ -100,14 +89,13 @@ robot::device::BrushMotor::Diagnostics stream_diagnostics(robot::device::BrushMo
         motor.update();
         diag = motor.get_diagnostics();
         spdlog::info(
-            "[hw_brush][{}] sample={} actual_rpm={} target_rpm={} target_torque_nm={:.3f} "
+            "[hw_brush][{}] sample={} actual_rpm={} target_rpm={} "
             "current_a={:.3f} bus_voltage_v={:.3f} temp_c={:.3f} running={} fault={} "
             "fault_code={} comm_error_count={}",
             label,
             sample_idx,
             diag.actual_rpm,
             diag.target_rpm,
-            static_cast<double>(diag.target_torque_nm),
             static_cast<double>(diag.current_a),
             static_cast<double>(diag.bus_voltage_v),
             static_cast<double>(diag.temperature_c),
@@ -124,7 +112,6 @@ robot::device::BrushMotor::Diagnostics stream_diagnostics(robot::device::BrushMo
 void log_diag(const char* label, const robot::device::BrushMotor::Diagnostics& diag) {
     INFO(label << "_actual_rpm=" << diag.actual_rpm);
     INFO(label << "_target_rpm=" << diag.target_rpm);
-    INFO(label << "_target_torque_nm=" << diag.target_torque_nm);
     INFO(label << "_bus_voltage_v=" << diag.bus_voltage_v);
     INFO(label << "_current_a=" << diag.current_a);
     INFO(label << "_temperature_c=" << diag.temperature_c);
@@ -136,7 +123,7 @@ void log_diag(const char* label, const robot::device::BrushMotor::Diagnostics& d
 
 }  // namespace
 
-TEST_CASE("BrushMotor（真实硬件）打开串口并下发基础初始化命令", "[hw_brush][open_close]") {
+TEST_CASE("BrushMotor（真实硬件）打开串口并执行清错/重启命令", "[hw_brush][open_close]") {
     require_brush_hw_params();
 
     BrushFixture f;
@@ -144,7 +131,7 @@ TEST_CASE("BrushMotor（真实硬件）打开串口并下发基础初始化命�
     MotorSafeStopGuard guard(f.motor);
 
     REQUIRE(f.motor.clear_fault() == robot::device::DeviceError::OK);
-    REQUIRE(f.motor.enter_idle() == robot::device::DeviceError::OK);
+    REQUIRE(f.motor.restart() == robot::device::DeviceError::OK);
 }
 
 TEST_CASE("BrushMotor（真实硬件）速度模式主链", "[hw_brush][speed_cycle]") {
@@ -154,7 +141,6 @@ TEST_CASE("BrushMotor（真实硬件）速度模式主链", "[hw_brush][speed_cy
     REQUIRE(f.motor.open());
     MotorSafeStopGuard guard(f.motor);
     REQUIRE(f.motor.clear_fault() == robot::device::DeviceError::OK);
-    REQUIRE(f.motor.set_mode_speed() == robot::device::DeviceError::OK);
 
     const int target_rpm = static_cast<int>(std::lround(kp.brush_test_rpm));
     REQUIRE(f.motor.set_rpm(target_rpm) == robot::device::DeviceError::OK);
@@ -173,54 +159,25 @@ TEST_CASE("BrushMotor（真实硬件）速度模式主链", "[hw_brush][speed_cy
     CHECK((diag.actual_rpm > 0) == (target_rpm > 0));
 }
 
-TEST_CASE("BrushMotor（真实硬件）力矩模式主链", "[hw_brush][torque_cycle]") {
+TEST_CASE("BrushMotor（真实硬件）stop 能让滚刷收敛下来", "[hw_brush][stop]") {
     require_brush_hw_params();
 
     BrushFixture f;
     REQUIRE(f.motor.open());
     MotorSafeStopGuard guard(f.motor);
     REQUIRE(f.motor.clear_fault() == robot::device::DeviceError::OK);
-    REQUIRE(f.motor.set_mode_torque() == robot::device::DeviceError::OK);
-
-    constexpr float kTestTorqueNm = 0.15f;
-    REQUIRE(f.motor.set_torque(kTestTorqueNm) == robot::device::DeviceError::OK);
-    const auto diag = stream_diagnostics(f.motor, "torque_cycle", 12000ms, 200ms);
-    log_diag("torque", diag);
-
-    CHECK_FALSE(diag.fault);
-    CHECK(diag.bus_voltage_v > 5.0f);
-    CHECK(std::abs(diag.target_torque_nm - kTestTorqueNm) < 0.02f);
-    CHECK(diag.comm_error_count == 0u);
-}
-
-TEST_CASE("BrushMotor（真实硬件）stop 和 enter_idle 能让滚刷收敛下来",
-          "[hw_brush][idle_and_stop]") {
-    require_brush_hw_params();
-
-    BrushFixture f;
-    REQUIRE(f.motor.open());
-    MotorSafeStopGuard guard(f.motor);
-    REQUIRE(f.motor.clear_fault() == robot::device::DeviceError::OK);
-    REQUIRE(f.motor.set_mode_speed() == robot::device::DeviceError::OK);
 
     const int target_rpm = static_cast<int>(std::lround(kp.brush_test_rpm));
     REQUIRE(f.motor.set_rpm(target_rpm) == robot::device::DeviceError::OK);
-    const auto running = stream_diagnostics(f.motor, "idle_and_stop_running", 12000ms, 200ms);
+    const auto running = stream_diagnostics(f.motor, "stop_running", 12000ms, 200ms);
     REQUIRE(std::abs(running.actual_rpm) >= 5);
 
     REQUIRE(f.motor.stop() == robot::device::DeviceError::OK);
-    const auto stopped = stream_diagnostics(f.motor, "idle_and_stop_stopped", 4000ms, 200ms);
+    const auto stopped = stream_diagnostics(f.motor, "stop_stopped", 4000ms, 200ms);
     log_diag("stopped", stopped);
     CHECK_FALSE(stopped.fault);
     CHECK(std::abs(stopped.actual_rpm) < std::max(5, std::abs(running.actual_rpm)));
     CHECK(stopped.target_rpm == 0);
-
-    REQUIRE(f.motor.enter_idle() == robot::device::DeviceError::OK);
-    const auto idled = stream_diagnostics(f.motor, "idle_and_stop_idled", 2000ms, 200ms);
-    log_diag("idled", idled);
-    CHECK_FALSE(idled.fault);
-    CHECK(idled.target_rpm == 0);
-    CHECK(std::abs(idled.target_torque_nm) < 0.001f);
 }
 
 TEST_CASE("BrushMotor（真实硬件）status 和 diagnostics 在轮询后保持一致",
@@ -231,7 +188,6 @@ TEST_CASE("BrushMotor（真实硬件）status 和 diagnostics 在轮询后保持
     REQUIRE(f.motor.open());
     MotorSafeStopGuard guard(f.motor);
     REQUIRE(f.motor.clear_fault() == robot::device::DeviceError::OK);
-    REQUIRE(f.motor.set_mode_speed() == robot::device::DeviceError::OK);
     REQUIRE(f.motor.set_rpm(static_cast<int>(std::lround(kp.brush_test_rpm))) ==
             robot::device::DeviceError::OK);
 

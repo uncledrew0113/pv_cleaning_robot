@@ -16,24 +16,12 @@
   },
   "serial": {
     "imu": { "port": "/dev/ttyS1", "baudrate": 9600 },
-    "gps": { "port": "/dev/ttyS2", "baudrate": 115200 },
     "brush": {
       "port": "/dev/ttyACM0",
       "baudrate": 115200,
-      "axis": 0,
-      "counts_per_rev": 8192,
-      "watchdog_enabled": false,
-      "watchdog_timeout_s": 0.5
+      "axis": 0
     },
-    "bms": { "port": "/dev/ttyS8", "baudrate": 9600 },
-    "distance_sensor": {
-      "port": "/dev/ttyS9",
-      "baudrate": 9600,
-      "slave_id": 1,
-      "channel_count": 4,
-      "decimal_mode": 0,
-      "analog_type": 0
-    }
+    "bms": { "port": "/dev/ttyS8", "baudrate": 9600 }
   },
   "gps": {
     "source": "gpsd",
@@ -71,8 +59,7 @@
       "port": "/dev/ttyS5",
       "baudrate": 115200,
       "dev_eui": "",
-      "app_key": "",
-      "report_interval_s": 300
+      "app_key": ""
     }
   },
   "storage": {
@@ -83,11 +70,10 @@
   },
   "diagnostics": {
     "mode": "development",
-    "publish_interval_ms": 1000,
-    "publish_interval_active_ms": 1000,
-    "publish_interval_idle_ms": 300000,
     "cloud_upload": true,
     "local_log": true,
+    "publish_interval_active_ms": 1000,
+    "publish_interval_idle_ms": 300000,
     "local_log_path": "data/pv_robot/logs/telemetry.jsonl",
     "local_log_max_bytes": 10485760,
     "local_log_max_files": 5

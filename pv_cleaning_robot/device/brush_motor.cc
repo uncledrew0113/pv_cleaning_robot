@@ -7,12 +7,9 @@
  * @Description: 滚刷电机驱动类 - 基于ODrive控制器的串口通信实现
  *
  * 该文件实现了BrushMotor类，用于控制光伏清扫机器人的滚刷电机。
- * 通过串口与ODrive控制器通信，支持速度和力矩控制模式，
- * 包含看门狗机制、故障检测和状态监控功能。
+ * 通过串口与ODrive控制器通信，支持速度控制、故障检测和状态监控功能。
  *
  * 主要特性：
- * - 支持速度和力矩两种控制模式
- * - 内置通信超时和看门狗保护机制
  * - 实时状态反馈和故障诊断
  * - 线程安全的操作接口
  *
@@ -58,10 +55,9 @@ DeviceError uart_error_to_device_error(hal::UartResult err) {
 }
 
 /**
- * @brief 将编码器计数每秒转换为RPM（转每分钟）
+ * @brief 将 turns/s 转换为 RPM（转每分钟）
  *
- * @param counts_per_sec 每秒编码器计数
- * @param counts_per_rev 每转编码器计数
+ * @param turns_per_sec 每秒转数
  * @return 对应的RPM值
  */
 int turns_per_sec_to_rpm(float turns_per_sec) {
@@ -69,11 +65,10 @@ int turns_per_sec_to_rpm(float turns_per_sec) {
 }
 
 /**
- * @brief 将RPM转换为编码器计数每秒
+ * @brief 将 RPM 转换为 turns/s
  *
  * @param rpm 转速（RPM）
- * @param counts_per_rev 每转编码器计数
- * @return 对应的每秒编码器计数
+ * @return 对应的每秒转数
  */
 float rpm_to_turns_per_sec(int rpm) {
     return static_cast<float>(rpm) / 60.0f;
@@ -84,25 +79,14 @@ float rpm_to_turns_per_sec(int rpm) {
 /**
  * @brief BrushMotor构造函数
  *
- * 初始化滚刷电机控制器，配置串口通信参数和看门狗设置
+ * 初始化滚刷电机控制器，配置串口通信参数
  *
  * @param serial 串口接口的共享指针
  * @param axis ODrive控制器中的轴编号（通常为0）
- * @param counts_per_rev 历史保留参数；ASCII 协议的速度命令和反馈使用 turns/s
- * @param watchdog_enabled 是否启用看门狗机制
- * @param watchdog_timeout_s 看门狗超时时间（秒）
  */
-BrushMotor::BrushMotor(std::shared_ptr<hal::ISerialPort> serial,
-                       uint8_t axis,
-                       float counts_per_rev,
-                       bool watchdog_enabled,
-                       float watchdog_timeout_s)
+BrushMotor::BrushMotor(std::shared_ptr<hal::ISerialPort> serial, uint8_t axis)
     : serial_(std::move(serial))
-    , axis_(axis)
-    , counts_per_rev_(counts_per_rev)
-    , watchdog_enabled_(watchdog_enabled)
-    , watchdog_timeout_(static_cast<int>(watchdog_timeout_s * 1000.0f))
-    , last_feed_time_(std::chrono::steady_clock::now()) {}
+    , axis_(axis) {}
 
 BrushMotor::~BrushMotor() noexcept {
     try {
@@ -117,8 +101,6 @@ BrushMotor::~BrushMotor() noexcept {
  * 执行以下初始化步骤：
  * 1. 打开串口连接
  * 2. 清空串口缓冲区
- * 3. 配置看门狗超时时间（如果启用）
- * 4. 启用或禁用看门狗机制
  *
  * @return 初始化是否成功
  */
@@ -132,115 +114,32 @@ bool BrushMotor::open() {
     }
     serial_->flush_input();
     serial_->flush_output();
-
-    char cmd[kCmdCap];
-    if (watchdog_enabled_) {
-        size_t len = protocol::encode_set_watchdog_timeout(
-            axis_, watchdog_timeout_.count() / 1000.0f, cmd, sizeof(cmd));
-        if (len == 0 || write_ascii_locked(cmd, len) != DeviceError::OK) {
-            return false;
-        }
-    }
-    const size_t len =
-        protocol::encode_set_watchdog_enabled(axis_, watchdog_enabled_, cmd, sizeof(cmd));
-    return len > 0 && write_ascii_locked(cmd, len) == DeviceError::OK;
+    return true;
 }
 
 void BrushMotor::close() {
     std::lock_guard<hal::PiMutex> guard(mtx_);
     if (!serial_ || !serial_->is_open()) {
         diag_ = Diagnostics{};
-        active_control_ = false;
-        keepalive_required_ = false;
-        target_rpm_ = 0;
-        target_torque_nm_ = 0.0f;
         update_running_locked();
         return;
     }
 
     char cmd[kCmdCap];
-    size_t len = 0;
-    if (control_mode_ == ControlMode::TORQUE) {
-        len = protocol::encode_set_torque(axis_, 0.0f, cmd, sizeof(cmd));
-    } else {
-        len = protocol::encode_set_velocity(axis_, 0.0f, cmd, sizeof(cmd));
-    }
+    const size_t len = protocol::encode_set_velocity(axis_, 0.0f, cmd, sizeof(cmd));
     if (len > 0) {
         static_cast<void>(write_ascii_locked(cmd, len));
     }
 
     diag_ = Diagnostics{};
-    active_control_ = false;
-    keepalive_required_ = false;
-    target_rpm_ = 0;
-    target_torque_nm_ = 0.0f;
     update_running_locked();
     serial_->close();
 }
 
 /**
- * @brief 设置电机为速度控制模式
- *
- * 将电机控制器设置为速度控制模式，并进入闭环控制状态。
- * 在速度模式下，可以通过set_rpm()设置目标转速。
- *
- * @return 操作结果
- */
-DeviceError BrushMotor::set_mode_speed() {
-    std::lock_guard<hal::PiMutex> guard(mtx_);
-    if (!serial_ || !serial_->is_open()) {
-        return DeviceError::NOT_OPEN;
-    }
-    char cmd[kCmdCap];
-    size_t len = protocol::encode_set_control_mode(
-        axis_, protocol::OdriveControlMode::VELOCITY, cmd, sizeof(cmd));
-    DeviceError err = write_ascii_locked(cmd, len);
-    if (err != DeviceError::OK) {
-        return err;
-    }
-    len = protocol::encode_set_requested_state(
-        axis_, protocol::kOdriveAxisStateClosedLoopControl, cmd, sizeof(cmd));
-    err = write_ascii_locked(cmd, len);
-    if (err == DeviceError::OK) {
-        control_mode_ = ControlMode::SPEED;
-    }
-    return err;
-}
-
-/**
- * @brief 设置电机为力矩控制模式
- *
- * 将电机控制器设置为力矩控制模式，并进入闭环控制状态。
- * 在力矩模式下，可以通过set_torque()设置目标力矩。
- *
- * @return 操作结果
- */
-DeviceError BrushMotor::set_mode_torque() {
-    std::lock_guard<hal::PiMutex> guard(mtx_);
-    if (!serial_ || !serial_->is_open()) {
-        return DeviceError::NOT_OPEN;
-    }
-    char cmd[kCmdCap];
-    size_t len = protocol::encode_set_control_mode(
-        axis_, protocol::OdriveControlMode::TORQUE, cmd, sizeof(cmd));
-    DeviceError err = write_ascii_locked(cmd, len);
-    if (err != DeviceError::OK) {
-        return err;
-    }
-    len = protocol::encode_set_requested_state(
-        axis_, protocol::kOdriveAxisStateClosedLoopControl, cmd, sizeof(cmd));
-    err = write_ascii_locked(cmd, len);
-    if (err == DeviceError::OK) {
-        control_mode_ = ControlMode::TORQUE;
-    }
-    return err;
-}
-
-/**
  * @brief 设置电机目标转速
  *
- * 在速度控制模式下设置电机的目标转速（RPM）。
- * 该方法会自动切换到速度控制模式。
+ * ODrive 需已在设备侧固化为速度控制闭环；本方法只发送速度给定。
  *
  * @param rpm 目标转速（RPM），正值表示正转，负值表示反转
  * @return 操作结果
@@ -257,44 +156,7 @@ DeviceError BrushMotor::set_rpm(int rpm) {
     if (err != DeviceError::OK) {
         return err;
     }
-    control_mode_ = ControlMode::SPEED;
-    target_rpm_ = rpm;
-    target_torque_nm_ = 0.0f;
     diag_.target_rpm = rpm;
-    diag_.target_torque_nm = 0.0f;
-    active_control_ = (rpm != 0);
-    keepalive_required_ = (rpm != 0);
-    update_running_locked();
-    return DeviceError::OK;
-}
-
-/**
- * @brief 设置电机目标力矩
- *
- * 在力矩控制模式下设置电机的目标力矩（牛米）。
- * 该方法会自动切换到力矩控制模式。
- *
- * @param torque_nm 目标力矩（牛米），正值表示正转力矩，负值表示反转力矩
- * @return 操作结果
- */
-DeviceError BrushMotor::set_torque(float torque_nm) {
-    std::lock_guard<hal::PiMutex> guard(mtx_);
-    if (!serial_ || !serial_->is_open()) {
-        return DeviceError::NOT_OPEN;
-    }
-    char cmd[kCmdCap];
-    const size_t len = protocol::encode_set_torque(axis_, torque_nm, cmd, sizeof(cmd));
-    const DeviceError err = write_ascii_locked(cmd, len);
-    if (err != DeviceError::OK) {
-        return err;
-    }
-    control_mode_ = ControlMode::TORQUE;
-    target_rpm_ = 0;
-    target_torque_nm_ = torque_nm;
-    diag_.target_rpm = 0;
-    diag_.target_torque_nm = torque_nm;
-    active_control_ = (std::fabs(torque_nm) > 0.001f);
-    keepalive_required_ = active_control_;
     update_running_locked();
     return DeviceError::OK;
 }
@@ -302,8 +164,7 @@ DeviceError BrushMotor::set_torque(float torque_nm) {
 /**
  * @brief 停止电机运行
  *
- * 将电机转速或力矩设置为0，实现平滑停止。
- * 根据当前控制模式发送相应的停止命令。
+ * 将电机转速设置为0，实现平滑停止。
  *
  * @return 操作结果
  */
@@ -313,52 +174,12 @@ DeviceError BrushMotor::stop() {
         return DeviceError::NOT_OPEN;
     }
     char cmd[kCmdCap];
-    size_t len = 0;
-    if (control_mode_ == ControlMode::TORQUE) {
-        len = protocol::encode_set_torque(axis_, 0.0f, cmd, sizeof(cmd));
-    } else {
-        len = protocol::encode_set_velocity(axis_, 0.0f, cmd, sizeof(cmd));
-    }
+    const size_t len = protocol::encode_set_velocity(axis_, 0.0f, cmd, sizeof(cmd));
     const DeviceError err = write_ascii_locked(cmd, len);
     if (err != DeviceError::OK) {
         return err;
     }
-    target_rpm_ = 0;
-    target_torque_nm_ = 0.0f;
     diag_.target_rpm = 0;
-    diag_.target_torque_nm = 0.0f;
-    active_control_ = false;
-    keepalive_required_ = false;
-    update_running_locked();
-    return DeviceError::OK;
-}
-
-/**
- * @brief 使电机进入空闲状态
- *
- * 将电机控制器设置为IDLE状态，此时电机将停止运行并释放控制。
- * 这是一种比stop()更彻底的停止方式。
- *
- * @return 操作结果
- */
-DeviceError BrushMotor::enter_idle() {
-    std::lock_guard<hal::PiMutex> guard(mtx_);
-    if (!serial_ || !serial_->is_open()) {
-        return DeviceError::NOT_OPEN;
-    }
-    char cmd[kCmdCap];
-    const size_t len = protocol::encode_set_requested_state(
-        axis_, protocol::kOdriveAxisStateIdle, cmd, sizeof(cmd));
-    const DeviceError err = write_ascii_locked(cmd, len);
-    if (err != DeviceError::OK) {
-        return err;
-    }
-    target_rpm_ = 0;
-    target_torque_nm_ = 0.0f;
-    diag_.target_rpm = 0;
-    diag_.target_torque_nm = 0.0f;
-    active_control_ = false;
-    keepalive_required_ = false;
     update_running_locked();
     return DeviceError::OK;
 }
@@ -378,6 +199,21 @@ DeviceError BrushMotor::clear_fault() {
     char cmd[kCmdCap];
     const size_t len = protocol::encode_clear_errors(cmd, sizeof(cmd));
     return write_ascii_locked(cmd, len);
+}
+
+DeviceError BrushMotor::restart() {
+    std::lock_guard<hal::PiMutex> guard(mtx_);
+    if (!serial_ || !serial_->is_open()) {
+        return DeviceError::NOT_OPEN;
+    }
+    char cmd[kCmdCap];
+    const size_t len = protocol::encode_restart(cmd, sizeof(cmd));
+    const DeviceError err = write_ascii_locked(cmd, len);
+    if (err == DeviceError::OK) {
+        diag_ = Diagnostics{};
+        update_running_locked();
+    }
+    return err;
 }
 
 /**
@@ -410,8 +246,7 @@ BrushMotor::Diagnostics BrushMotor::get_diagnostics() const {
  * 该方法需要定期调用（通常在单独线程中），用于：
  * 1. 读取电机反馈数据（位置、速度、电压、电流、温度）
  * 2. 检查电机和控制器错误状态
- * 3. 执行看门狗喂狗操作（如果需要）
- * 4. 更新运行状态
+ * 3. 更新运行状态
  *
  * 这个方法是线程安全的，可以在后台线程中调用。
  */
@@ -492,17 +327,6 @@ void BrushMotor::update() {
     diag_.fault_code = motor_err | axis_err | ctrl_err;
     diag_.fault = (diag_.fault_code != 0);
 
-    const auto now = std::chrono::steady_clock::now();
-    if (watchdog_enabled_ && keepalive_required_ &&
-        (now - last_feed_time_) >= (watchdog_timeout_ / 2)) {
-        len = protocol::encode_watchdog_feed(axis_, cmd, sizeof(cmd));
-        if (write_ascii_locked(cmd, len) != DeviceError::OK) {
-            mark_comm_error_locked();
-            return;
-        }
-    }
-
-    ++update_seq_;
     update_running_locked();
 }
 
@@ -510,8 +334,6 @@ void BrushMotor::update() {
  * @brief 线程安全的ASCII命令写入
  *
  * 将ASCII命令写入串口，包含错误处理和超时控制。
- * 该方法会更新最后通信时间，用于看门狗喂狗判断。
- *
  * @param line 要写入的命令字符串
  * @param len 命令字符串长度
  * @return 操作结果
@@ -528,7 +350,6 @@ DeviceError BrushMotor::write_ascii_locked(const char* line, size_t len) {
         ++diag_.comm_error_count;
         return uart_error_to_device_error(serial_->get_last_error());
     }
-    last_feed_time_ = std::chrono::steady_clock::now();
     return DeviceError::OK;
 }
 
@@ -614,9 +435,7 @@ void BrushMotor::mark_comm_error_locked() {
  * 运行状态用于指示电机是否正在按照目标参数工作。
  */
 void BrushMotor::update_running_locked() {
-    const bool target_active =
-        (std::abs(target_rpm_) > 0) || (std::fabs(target_torque_nm_) > 0.001f);
-    diag_.running = !diag_.fault && active_control_ && target_active;
+    diag_.running = !diag_.fault && diag_.target_rpm != 0;
 }
 
 }  // namespace robot::device

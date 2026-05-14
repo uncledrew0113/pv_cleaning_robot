@@ -10,7 +10,7 @@ using robot::device::DeviceError;
 
 struct BrushMotorFixture {
     std::shared_ptr<MockSerialPort> serial{std::make_shared<MockSerialPort>()};
-    BrushMotor motor{serial, 0, 8192.0f, true, 0.5f};
+    BrushMotor motor{serial, 0};
 };
 
 TEST_CASE("BrushMotor opens backing serial port", "[device][brush_motor]") {
@@ -20,19 +20,9 @@ TEST_CASE("BrushMotor opens backing serial port", "[device][brush_motor]") {
     REQUIRE(f.serial->opened);
 }
 
-TEST_CASE("BrushMotor set_mode_speed programs odrive speed mode", "[device][brush_motor]") {
-    BrushMotorFixture f;
-    REQUIRE(f.motor.open());
-    REQUIRE(f.motor.set_mode_speed() == DeviceError::OK);
-    const auto tx = f.serial->take_tx_text();
-    REQUIRE(tx.find("w axis0.controller.config.control_mode 2\n") != std::string::npos);
-    REQUIRE(tx.find("w axis0.requested_state 8\n") != std::string::npos);
-}
-
 TEST_CASE("BrushMotor set_rpm sends velocity command immediately", "[device][brush_motor]") {
     BrushMotorFixture f;
     REQUIRE(f.motor.open());
-    REQUIRE(f.motor.set_mode_speed() == DeviceError::OK);
     f.serial->clear_tx();
 
     REQUIRE(f.motor.set_rpm(600) == DeviceError::OK);
@@ -45,7 +35,6 @@ TEST_CASE("BrushMotor set_rpm sends velocity command immediately", "[device][bru
 TEST_CASE("BrushMotor stop clears target and running state", "[device][brush_motor]") {
     BrushMotorFixture f;
     REQUIRE(f.motor.open());
-    REQUIRE(f.motor.set_mode_speed() == DeviceError::OK);
     REQUIRE(f.motor.set_rpm(300) == DeviceError::OK);
     f.serial->clear_tx();
 
@@ -60,7 +49,6 @@ TEST_CASE("BrushMotor stop clears target and running state", "[device][brush_mot
 TEST_CASE("BrushMotor update parses odrive feedback and diagnostics", "[device][brush_motor]") {
     BrushMotorFixture f;
     REQUIRE(f.motor.open());
-    REQUIRE(f.motor.set_mode_speed() == DeviceError::OK);
     REQUIRE(f.motor.set_rpm(600) == DeviceError::OK);
 
     f.serial->queue_rx_text("1.5 5.0\n");
@@ -82,22 +70,14 @@ TEST_CASE("BrushMotor update parses odrive feedback and diagnostics", "[device][
     REQUIRE(d.running);
 }
 
-TEST_CASE("BrushMotor update feeds watchdog in steady state", "[device][brush_motor]") {
+TEST_CASE("BrushMotor restart sends odrive reboot command", "[device][brush_motor]") {
     BrushMotorFixture f;
     REQUIRE(f.motor.open());
-    REQUIRE(f.motor.set_mode_speed() == DeviceError::OK);
     REQUIRE(f.motor.set_rpm(100) == DeviceError::OK);
     f.serial->clear_tx();
 
-    f.serial->queue_rx_text("0 1.666667\n");
-    f.serial->queue_rx_text("24.0\n");
-    f.serial->queue_rx_text("1.0\n");
-    f.serial->queue_rx_text("40.0\n");
-    f.serial->queue_rx_text("0\n");
-    f.serial->queue_rx_text("0\n");
-    f.serial->queue_rx_text("0\n");
+    REQUIRE(f.motor.restart() == DeviceError::OK);
 
-    f.motor.update();
-
-    REQUIRE(f.serial->take_tx_text().find("u 0\n") != std::string::npos);
+    REQUIRE(f.serial->take_tx_text().find("sr\n") != std::string::npos);
+    REQUIRE(f.motor.get_diagnostics().target_rpm == 0);
 }

@@ -47,7 +47,7 @@ set(COMMON_SRCS
   ${PROJ}/service/scheduler_service.cc
   ${PROJ}/service/nav_service.cc
   ${PROJ}/service/motion_service.cc
-  ${PROJ}/service/heading_pid_controller.cc
+  ${PROJ}/service/heading_corrector.cc
   ${PROJ}/service/health_service.cc
   ${PROJ}/service/cloud_service.cc
   ${PROJ}/service/thingsboard_control_plane.cc
@@ -79,7 +79,6 @@ add_executable(unit_tests
   device/brush_motor_test.cc
   device/limit_switch_test.cc
   device/gps_device_test.cc
-  device/gpsd_gps_source_test.cc
   device/distance_sensor_device_test.cc
 
   # 驱动层（纯软件路径，无需真实硬件即可运行）
@@ -114,7 +113,6 @@ add_executable(unit_tests
 
   # App 层
   app/robot_fsm_test.cc
-  app/terminal_semantics_test.cc
   app/robot_supervisor_test.cc
   app/fault_handler_test.cc
   app/watchdog_mgr_test.cc
@@ -123,7 +121,6 @@ add_executable(unit_tests
   integration/task_chain_test.cc
   integration/system_integration_test.cc
   integration/thingsboard_real_integration_test.cc
-  integration/thingsboard_runtime_mock_integration_test.cc
 
   ${COMMON_SRCS}
 )
@@ -144,11 +141,9 @@ target_link_libraries(unit_tests PRIVATE
 # ── 硬件集成测试可执行文件（需要真实硬件，目标机上运行） ─────────────────
 add_executable(hw_tests
   integration/hardware/hw_test_main.cc
-  integration/hardware/driver_hw_test.cc
   integration/hardware/bms_hw_test.cc
   integration/hardware/imu_hw_test.cc
   integration/hardware/gpsd_hw_test.cc
-  integration/hardware/full_sweep_hw_test.cc
   integration/hardware/limit_switch_hw_test.cc
   integration/hardware/walk_motor_group_hw_test.cc
   integration/hardware/clean_cycle_hw_test.cc

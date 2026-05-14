@@ -624,17 +624,9 @@ TbRuntimeConfig ThingsBoardConfigManager::parse_runtime_config(const rapidjson::
             if (const auto it = robot.FindMember("charge_start_soc");
                 it != robot.MemberEnd() && it->value.IsNumber()) {
                 cfg.charge_start_soc = it->value.GetDouble();
-            } else if (const auto it = robot.FindMember("battery_low_soc");
-                       it != robot.MemberEnd() && it->value.IsNumber()) {
-                // 兼容旧命名 battery_low_soc。
-                cfg.charge_start_soc = it->value.GetDouble();
             }
             if (const auto it = robot.FindMember("charge_stop_soc");
                 it != robot.MemberEnd() && it->value.IsNumber()) {
-                cfg.charge_stop_soc = it->value.GetDouble();
-            } else if (const auto it = robot.FindMember("battery_full_soc");
-                       it != robot.MemberEnd() && it->value.IsNumber()) {
-                // 兼容旧命名 battery_full_soc。
                 cfg.charge_stop_soc = it->value.GetDouble();
             }
         }

@@ -40,7 +40,7 @@ struct FaultHandlerFixture {
     std::shared_ptr<WalkMotorGroup> group{std::make_shared<WalkMotorGroup>(can)};
     std::shared_ptr<MockSerialPort> brush_serial{std::make_shared<MockSerialPort>()};
     std::shared_ptr<BrushMotor> brush{
-        std::make_shared<BrushMotor>(brush_serial, 0, 8192.0f, true, 0.5f)};
+        std::make_shared<BrushMotor>(brush_serial, 0)};
     EventBus bus;
     std::shared_ptr<MotionService> motion;
     FaultService fault_svc{bus};
@@ -142,7 +142,7 @@ TEST_CASE("FaultHandler: 析构后 EventBus publish 不崩溃", "[app][fault_han
     auto can = std::make_shared<MockCanBus>();
     auto group = std::make_shared<WalkMotorGroup>(can);
     auto brush_serial = std::make_shared<MockSerialPort>();
-    auto brush = std::make_shared<BrushMotor>(brush_serial, 0, 8192.0f, true, 0.5f);
+    auto brush = std::make_shared<BrushMotor>(brush_serial, 0);
     can->open_result = true;
     can->send_result = true;
     brush_serial->open_result = true;

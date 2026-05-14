@@ -87,10 +87,6 @@ inline std::optional<RepoPaths> find_repo_paths()
         if (fs::exists(runtime_candidate) && fs::exists(fixed_candidate)) {
             return RepoPaths{current, runtime_candidate, fixed_candidate};
         }
-        const auto legacy_candidate = current / "config" / "config.json";
-        if (fs::exists(legacy_candidate)) {
-            return RepoPaths{current, legacy_candidate, {}};
-        }
         if (!current.has_parent_path()) {
             break;
         }

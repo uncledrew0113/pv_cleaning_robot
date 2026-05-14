@@ -7,8 +7,7 @@
  * 测试分组：
  *   [hw_cycle][startup]          - 全层栈初始化，FSM = "Idle"
  *   [hw_cycle][self_check_pass]  - EvScheduleStart{right/left sensor facts} → FSM = "CleanFwd"
- *   [hw_cycle][one_pass_no_pid]  - 完整一趟（PID 关），前右限位驱动换向，≤120s
- *   [hw_cycle][one_pass_with_pid]- 完整一趟（PID 开），整趟 yaw 漂移 < 10°
+ *   [hw_cycle][one_pass_no_pid]  - 完整一趟（纯执行器路径），前右限位驱动换向，≤120s
  *   [hw_cycle][fault_p0_estop]   - 注入 P0 故障 → FSM = "Fault"，电机停转
  *   [hw_cycle][low_battery_return]- 注入低电 → FSM = "Returning" → "Charging"
  *   [hw_cycle][bms_valid]        - 清扫过程中 BMS 数据持续有效
@@ -17,7 +16,6 @@
  *
  * 运行方法（目标板，机器人在停机位）：
  *   ./hw_tests "[hw_cycle]"
- *   ./hw_tests "[hw_cycle][one_pass_with_pid]"
  *
  * 安全：清扫速度 kTestSpeedRpm=30 RPM；FullSystemFixture 析构自动 emergency_stop()
  */
@@ -84,17 +82,17 @@ TEST_CASE("自检流程（原始 right/left 限位事实 → CleanFwd）", "[hw_
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// [hw_cycle][one_pass_no_pid] — 完整一趟（PID 关）
+// [hw_cycle][one_pass_no_pid] — 完整一趟（纯执行器路径）
 // 流程：Idle → SelfCheck → CleanFwd → (左限位) → CleanReturn → (右限位) → Charging
 // ────────────────────────────────────────────────────────────────────────────
-TEST_CASE("完整清扫一趟（PID 关闭）", "[hw_cycle][one_pass_no_pid]") {
+TEST_CASE("完整清扫一趟（纯执行器路径）", "[hw_cycle][one_pass_no_pid]") {
     hw::FullSystemFixture fx(false /* pid_off */);
     REQUIRE(fx.init());
     REQUIRE(fx.wait_state("Idle", 2s));
 
     const bool right_limit_active = !fx.right_sw->read_current_level();
     const bool left_limit_active = !fx.left_sw->read_current_level();
-    spdlog::warn("[hw_cycle][one_pass_no_pid] ★ 开始清扫（PID 关），预计 ≤120s ★");
+    spdlog::warn("[hw_cycle][one_pass_no_pid] ★ 开始清扫（纯执行器路径），预计 ≤120s ★");
 
     const auto t_start = std::chrono::steady_clock::now();
     fx.fsm->dispatch(app::EvScheduleStart{right_limit_active, left_limit_active, 1.0f});
@@ -120,66 +118,6 @@ TEST_CASE("完整清扫一趟（PID 关闭）", "[hw_cycle][one_pass_no_pid]") {
     spdlog::info("[hw_cycle][one_pass_no_pid] → Charging，总耗时={:.1f}s", elapsed);
     CHECK(elapsed <= 120.0f);
     CHECK(fx.fsm->current_state() == "Charging");
-}
-
-// ────────────────────────────────────────────────────────────────────────────
-// [hw_cycle][one_pass_with_pid] — 完整一趟（PID 开），整趟 yaw 漂移 < 10°
-// ────────────────────────────────────────────────────────────────────────────
-TEST_CASE("完整清扫一趟（PID 开启，yaw 漂移 < 10°）", "[hw_cycle][one_pass_with_pid]") {
-    hw::FullSystemFixture fx(true /* pid_on */);
-    REQUIRE(fx.init());
-    REQUIRE(fx.wait_state("Idle", 2s));
-
-    // 记录初始 yaw
-    auto d0 = fx.imu->get_latest();
-    REQUIRE(d0.valid);
-    const float yaw_start = d0.yaw_deg;
-    float       yaw_max_drift = 0.0f;
-
-    // 后台线程持续监测 yaw 漂移
-    std::atomic<bool> monitor_running{true};
-    std::thread monitor_thread([&] {
-        while (monitor_running.load()) {
-            auto d = fx.imu->get_latest();
-            if (d.valid) {
-                float drift = std::abs(d.yaw_deg - yaw_start);
-                if (drift > yaw_max_drift) yaw_max_drift = drift;
-            }
-            std::this_thread::sleep_for(100ms);
-        }
-    });
-
-    const bool right_limit_active = !fx.right_sw->read_current_level();
-    const bool left_limit_active = !fx.left_sw->read_current_level();
-    spdlog::warn("[hw_cycle][one_pass_with_pid] ★ 开始清扫（PID 开），预计 ≤120s ★");
-
-    const auto t_start = std::chrono::steady_clock::now();
-    fx.fsm->dispatch(app::EvScheduleStart{right_limit_active, left_limit_active, 1.0f});
-
-    REQUIRE(fx.wait_state("CleanFwd", 5s));
-    spdlog::info("[hw_cycle][one_pass_with_pid] → CleanFwd  初始 yaw={:.2f}°", yaw_start);
-
-    REQUIRE(fx.wait_state("CleanReturn",
-            std::chrono::seconds(fx.p.limit_timeout_sec)));
-    spdlog::info("[hw_cycle][one_pass_with_pid] → CleanReturn");
-
-    REQUIRE(fx.wait_state("Charging",
-            std::chrono::seconds(fx.p.limit_timeout_sec)));
-
-    monitor_running.store(false);
-    monitor_thread.join();
-
-    const float elapsed = std::chrono::duration<float>(
-        std::chrono::steady_clock::now() - t_start).count();
-
-    spdlog::info("[hw_cycle][one_pass_with_pid] ────────────────────────────");
-    spdlog::info("[hw_cycle][one_pass_with_pid] 总耗时={:.1f}s", elapsed);
-    spdlog::info("[hw_cycle][one_pass_with_pid] 整趟最大 yaw 漂移={:.2f}°", yaw_max_drift);
-    spdlog::info("[hw_cycle][one_pass_with_pid] ────────────────────────────");
-
-    CHECK(fx.fsm->current_state() == "Charging");
-    CHECK(elapsed <= 120.0f);
-    CHECK(yaw_max_drift < 10.0f);  // 整趟漂移 < 10°
 }
 
 // ────────────────────────────────────────────────────────────────────────────

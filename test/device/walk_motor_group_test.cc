@@ -223,7 +223,8 @@ TEST_CASE("设备层WalkMotorGroup - set_mode_all() 发送4帧 SET_MODE", "[devi
     group.close();
 }
 
-TEST_CASE("设备层WalkMotorGroup - set_speeds() 仅发送1帧，ID=0x32", "[device][walk_motor_group]") {
+TEST_CASE("设备层WalkMotorGroup - set_speeds() 更新槽位，update() 发送1帧，ID=0x32",
+          "[device][walk_motor_group]") {
     auto bus = std::make_shared<MockCanBus>();
     device::WalkMotorGroup group(bus, 1u);
     group.open();
@@ -232,9 +233,11 @@ TEST_CASE("设备层WalkMotorGroup - set_speeds() 仅发送1帧，ID=0x32", "[de
     auto err = group.set_speeds(10.0f, 20.0f, 30.0f, 40.0f);
 
     REQUIRE(err == device::DeviceError::OK);
-    // 关键断言：4路速度仅发1帧
-    REQUIRE(bus->sent_frames.size() == 1u);
+    REQUIRE(bus->sent_frames.empty());
 
+    group.update();
+
+    REQUIRE(bus->sent_frames.size() == 1u);
     const auto& f = bus->sent_frames[0];
     REQUIRE(f.id == 0x032u);
     REQUIRE(be16s(f.data[0], f.data[1]) == 1000);  // LT: 10 RPM
@@ -245,7 +248,8 @@ TEST_CASE("设备层WalkMotorGroup - set_speeds() 仅发送1帧，ID=0x32", "[de
     group.close();
 }
 
-TEST_CASE("设备层WalkMotorGroup - set_speed_uniform() 4路速度相同", "[device][walk_motor_group]") {
+TEST_CASE("设备层WalkMotorGroup - set_speed_uniform() 更新槽位后由 update() 同步发送",
+          "[device][walk_motor_group]") {
     auto bus = std::make_shared<MockCanBus>();
     device::WalkMotorGroup group(bus, 1u);
     group.open();
@@ -253,15 +257,22 @@ TEST_CASE("设备层WalkMotorGroup - set_speed_uniform() 4路速度相同", "[de
 
     group.set_speed_uniform(100.0f);
 
+    REQUIRE(bus->sent_frames.empty());
+
+    group.update();
+
     REQUIRE(bus->sent_frames.size() == 1u);
     const auto& f = bus->sent_frames[0];
-    for (int slot = 0; slot < 4; ++slot)
-        REQUIRE(be16s(f.data[slot * 2], f.data[slot * 2 + 1]) == 10000);
+    REQUIRE(be16s(f.data[0], f.data[1]) == 10000);
+    REQUIRE(be16s(f.data[2], f.data[3]) == 10000);
+    REQUIRE(be16s(f.data[4], f.data[5]) == -10000);
+    REQUIRE(be16s(f.data[6], f.data[7]) == -10000);
 
     group.close();
 }
 
-TEST_CASE("设备层WalkMotorGroup - set_currents() 发送1帧、ID=0x32", "[device][walk_motor_group]") {
+TEST_CASE("设备层WalkMotorGroup - set_currents() 更新槽位后由 update() 发送",
+          "[device][walk_motor_group]") {
     auto bus = std::make_shared<MockCanBus>();
     device::WalkMotorGroup group(bus, 1u);
     group.open();
@@ -270,13 +281,18 @@ TEST_CASE("设备层WalkMotorGroup - set_currents() 发送1帧、ID=0x32", "[dev
     auto err = group.set_currents(5.0f, -5.0f, 10.0f, -10.0f);
 
     REQUIRE(err == device::DeviceError::OK);
+    REQUIRE(bus->sent_frames.empty());
+
+    group.update();
+
     REQUIRE(bus->sent_frames.size() == 1u);
     REQUIRE(bus->sent_frames[0].id == 0x032u);
 
     group.close();
 }
 
-TEST_CASE("设备层WalkMotorGroup - set_open_loops() 发送1帧", "[device][walk_motor_group]") {
+TEST_CASE("设备层WalkMotorGroup - set_open_loops() 更新槽位后由 update() 发送",
+          "[device][walk_motor_group]") {
     auto bus = std::make_shared<MockCanBus>();
     device::WalkMotorGroup group(bus, 1u);
     group.open();
@@ -285,6 +301,10 @@ TEST_CASE("设备层WalkMotorGroup - set_open_loops() 发送1帧", "[device][wal
     auto err = group.set_open_loops(1000, -1000, 2000, -2000);
 
     REQUIRE(err == device::DeviceError::OK);
+    REQUIRE(bus->sent_frames.empty());
+
+    group.update();
+
     REQUIRE(bus->sent_frames.size() == 1u);
     const auto& f = bus->sent_frames[0];
     REQUIRE(be16s(f.data[0], f.data[1]) == 1000);
@@ -308,6 +328,99 @@ TEST_CASE("设备层WalkMotorGroup - update() 重发上次控制帧", "[device][
     REQUIRE(f.id == 0x032u);
     REQUIRE(be16s(f.data[0], f.data[1]) == 8000);  // 80 × 100
 
+    group.close();
+}
+
+TEST_CASE("设备层WalkMotorGroup - clear_override 生效前 generation 不变",
+          "[device][walk_motor_group]") {
+    auto bus = std::make_shared<MockCanBus>();
+    device::WalkMotorGroup group(bus, 1u);
+    REQUIRE(group.open() == device::DeviceError::OK);
+
+    const auto gen0 = group.override_clear_generation();
+    REQUIRE(group.emergency_override(0.0f) == device::DeviceError::OK);
+    group.clear_override();
+
+    REQUIRE(group.override_clear_generation() == gen0);
+    group.close();
+}
+
+TEST_CASE("设备层WalkMotorGroup - clear_override 经过一次 update 后 generation 加一",
+          "[device][walk_motor_group]") {
+    auto bus = std::make_shared<MockCanBus>();
+    device::WalkMotorGroup group(bus, 1u);
+    REQUIRE(group.open() == device::DeviceError::OK);
+
+    const auto gen0 = group.override_clear_generation();
+    REQUIRE(group.emergency_override(0.0f) == device::DeviceError::OK);
+    group.clear_override();
+    group.update();
+
+    REQUIRE(group.override_clear_generation() == gen0 + 1u);
+    group.close();
+}
+
+TEST_CASE("设备层WalkMotorGroup - 多次 set_speeds 后 update 仅重发最后一次 normal 命令",
+          "[device][walk_motor_group]") {
+    auto bus = std::make_shared<MockCanBus>();
+    device::WalkMotorGroup group(bus, 1u);
+    REQUIRE(group.open() == device::DeviceError::OK);
+
+    REQUIRE(group.set_speeds(10.0f, 10.0f, -10.0f, -10.0f) == device::DeviceError::OK);
+    REQUIRE(group.set_speeds(20.0f, 20.0f, -20.0f, -20.0f) == device::DeviceError::OK);
+    REQUIRE(group.set_speeds(30.0f, 30.0f, -30.0f, -30.0f) == device::DeviceError::OK);
+    bus->sent_frames.clear();
+
+    group.update();
+
+    REQUIRE(bus->sent_frames.size() == 1u);
+    const auto& f = bus->sent_frames.back();
+    REQUIRE(be16s(f.data[0], f.data[1]) == 3000);
+    REQUIRE(be16s(f.data[2], f.data[3]) == 3000);
+    REQUIRE(be16s(f.data[4], f.data[5]) == -3000);
+    REQUIRE(be16s(f.data[6], f.data[7]) == -3000);
+    group.close();
+}
+
+TEST_CASE("设备层WalkMotorGroup - emergency_override 锁存期间 update() 不发送 normal 心跳",
+          "[device][walk_motor_group]") {
+    auto bus = std::make_shared<MockCanBus>();
+    device::WalkMotorGroup group(bus, 1u);
+    REQUIRE(group.open() == device::DeviceError::OK);
+    REQUIRE(group.set_speed_uniform(80.0f) == device::DeviceError::OK);
+    group.update();
+
+    bus->sent_frames.clear();
+    REQUIRE(group.emergency_override(0.0f) == device::DeviceError::OK);
+    REQUIRE(bus->sent_frames.size() == 1u);
+
+    bus->sent_frames.clear();
+    group.update();
+    REQUIRE(bus->sent_frames.empty());
+    REQUIRE(group.is_override_active());
+    group.close();
+}
+
+TEST_CASE("设备层WalkMotorGroup - clear_override 生效当拍不恢复 normal 心跳",
+          "[device][walk_motor_group]") {
+    auto bus = std::make_shared<MockCanBus>();
+    device::WalkMotorGroup group(bus, 1u);
+    REQUIRE(group.open() == device::DeviceError::OK);
+    REQUIRE(group.set_speed_uniform(80.0f) == device::DeviceError::OK);
+    group.update();
+    REQUIRE(group.emergency_override(0.0f) == device::DeviceError::OK);
+    bus->sent_frames.clear();
+
+    group.clear_override();
+    group.update();
+
+    REQUIRE(bus->sent_frames.empty());
+    REQUIRE_FALSE(group.is_override_active());
+
+    REQUIRE(group.set_speed_uniform(90.0f) == device::DeviceError::OK);
+    group.update();
+    REQUIRE(bus->sent_frames.size() == 1u);
+    REQUIRE(be16s(bus->sent_frames.back().data[0], bus->sent_frames.back().data[1]) == 9000);
     group.close();
 }
 
@@ -336,98 +449,4 @@ TEST_CASE("设备层WalkMotorGroup - recv_loop: 4个电机各自独立更新", "
         auto st = group.get_wheel_status(wheel);
         REQUIRE(st.speed_rpm == Approx(static_cast<float>(w * 10 + 10)).margin(kSpeedEps));
     }
-}
-
-// ════════════════════════════════════════════════════════════════════════════
-//  HeadingPidController 集成测试
-// ════════════════════════════════════════════════════════════════════════════
-
-TEST_CASE("设备层WalkMotorGroup - HeadingPidParams 是 HeadingPidController::Params 的类型别名",
-          "[device][walk_motor_group]") {
-    // 编译期断言，运行期无条件通过
-    static_assert(
-        std::is_same_v<device::WalkMotorGroup::HeadingPidParams,
-                       service::HeadingPidController::Params>,
-        "HeadingPidParams must be an alias for HeadingPidController::Params");
-    SUCCEED("编译期类型别名验证通过");
-}
-
-TEST_CASE("设备层WalkMotorGroup - update() uses pitch/roll correction when heading control is enabled",
-          "[device][walk_motor_group]") {
-    auto bus = std::make_shared<MockCanBus>();
-    device::WalkMotorGroup group(bus, 1u);
-    group.open();
-
-    device::WalkMotorGroup::HeadingPidParams params;
-    params.pitch_alpha = 1.0f;
-    params.roll_alpha = 1.0f;
-    params.gyro_alpha = 1.0f;
-    params.pitch_drop_threshold = 0.10f;
-    params.roll_threshold = 0.50f;
-    params.learn_improve_eps = 0.02f;
-    params.best_decay_per_s = 0.0f;
-    params.freeze_gyro_z_threshold = 30.0f;
-    params.freeze_pitch_rate_threshold = 20.0f;
-    params.freeze_roll_rate_threshold = 20.0f;
-    params.max_output = 30.0f;
-    params.min_effective_output = 0.0f;
-    params.warmup_ms = 40;
-    params.hold_ms = 40;
-    params.freeze_release_ms = 60;
-    group.set_heading_pid_params(params);
-
-    group.set_speed_uniform(100.0f);
-    group.enable_heading_control(true);
-
-    for (int i = 0; i < 10; ++i) {
-        group.update(-34.83f, -1.95f, 0.0f, 0.0f);
-    }
-    bus->sent_frames.clear();
-
-    for (int i = 0; i < 4; ++i) {
-        group.update(-34.17f, -5.98f, 0.0f, 0.0f);
-    }
-
-    REQUIRE_FALSE(bus->sent_frames.empty());
-    const auto& f = bus->sent_frames.back();
-    REQUIRE(f.id == 0x032u);
-    int16_t lt = be16s(f.data[0], f.data[1]);
-    int16_t rt = be16s(f.data[2], f.data[3]);
-    int16_t lb = be16s(f.data[4], f.data[5]);
-    int16_t rb = be16s(f.data[6], f.data[7]);
-    REQUIRE(lt == rt);
-    REQUIRE(lb == rb);
-    REQUIRE(lt < 10000);
-    REQUIRE(lb < -10000);
-
-    group.close();
-}
-
-TEST_CASE("设备层WalkMotorGroup - update() keeps base speeds when heading control is disabled",
-          "[device][walk_motor_group]") {
-    auto bus = std::make_shared<MockCanBus>();
-    device::WalkMotorGroup group(bus, 1u);
-    group.open();
-
-    group.set_speed_uniform(100.0f);
-    group.enable_heading_control(false);
-
-    group.update(-34.83f, -1.95f, 0.0f, 0.0f);
-    bus->sent_frames.clear();
-
-    group.update(-34.17f, -5.98f, 0.0f, 0.0f);
-
-    REQUIRE_FALSE(bus->sent_frames.empty());
-    const auto& f = bus->sent_frames.back();
-    REQUIRE(f.id == 0x032u);
-    int16_t lt = be16s(f.data[0], f.data[1]);
-    int16_t rt = be16s(f.data[2], f.data[3]);
-    int16_t lb = be16s(f.data[4], f.data[5]);
-    int16_t rb = be16s(f.data[6], f.data[7]);
-    REQUIRE(lt == 10000);
-    REQUIRE(rt == 10000);
-    REQUIRE(lb == -10000);
-    REQUIRE(rb == -10000);
-
-    group.close();
 }

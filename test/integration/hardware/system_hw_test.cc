@@ -12,15 +12,17 @@
  *   [hw_system][health_real_data]   — HealthService 用真实传感器数据落盘 JSONL
  *   [hw_system][safety_idle]        — SafetyMonitor 启动后不误触发限位回调
  *   [hw_system][motion_then_stop]   — 运动 1s 后急停，验证电机停止且 override 激活
+ *   [hw_system][nav_fused_odometry] — 真实硬件观察融合里程计输出
  *   [hw_system][lower_pitch_peak]   — 上轮停止，下轮正反扫动寻找 pitch 最大点
  *   [hw_system][watchdog_heartbeat] — WatchdogMgr 正常心跳不触发超时
  *   [hw_system][combined]           — N 趟完整任务链 + 全程持续采集健康数据
- *   [hw_system][pid_combined]       — N 趟完整任务链 + PID 控制 + yaw 指标采集到 pid_metrics.jsonl
+ *   [hw_system][pid_combined]       — N 趟完整任务链 + 姿态纠偏链路观测 + yaw 指标采集到 pid_metrics.jsonl
  *   [hw_system][imu_gps_health_only]— 仅 IMU/GPS 持续采集，并由 HealthService 本地落盘
  *
  * 运行方法（目标机）：
  *   ./hw_tests "[hw_system]"
  *   ./hw_tests "[hw_system][health_real_data]"
+ *   ./hw_tests "[hw_system][nav_fused_odometry]"
  *   ./hw_tests "[hw_system][pid_combined]"
  *   ./hw_tests "[hw_system][lower_pitch_peak]"
  */
@@ -152,16 +154,8 @@ bool open_pid_metrics_file(const std::filesystem::path& path, std::ofstream* out
 
 struct PidProbeSnapshot {
     robot::service::HeadingCorrector::DebugState pid{};
-    float correction{0.0f};
-    float lt_target{0.0f};
-    float rt_target{0.0f};
-    float lb_target{0.0f};
-    float rb_target{0.0f};
+    robot::service::HeadingCorrector::Output output{};
 };
-
-float clamp_pid_target(float v) {
-    return std::clamp(v, -100.0f, 100.0f);
-}
 
 robot::service::HeadingCorrector::Params make_pid_probe_params(const hw::HwParams::PidParams& src) {
     robot::service::HeadingCorrector::Params params;
@@ -182,39 +176,6 @@ robot::service::HeadingCorrector::Params make_pid_probe_params(const hw::HwParam
     params.freeze_release_ms = src.freeze_release_ms;
     return params;
 }
-
-struct MotionPidProbeFilters {
-    float filtered_pitch{0.0f};
-    float filtered_roll{0.0f};
-    float filtered_omega_z{0.0f};
-    bool pitch_inited{false};
-    bool roll_inited{false};
-    bool omega_inited{false};
-
-    void update(const robot::device::ImuDevice::ImuData& imu) {
-        const float raw_omega_z = imu.gyro[2] * (180.0f / 3.14159265f);
-        if (!pitch_inited) {
-            filtered_pitch = imu.pitch_deg;
-            pitch_inited = true;
-        } else {
-            filtered_pitch = 0.8f * filtered_pitch + 0.2f * imu.pitch_deg;
-        }
-
-        if (!roll_inited) {
-            filtered_roll = imu.roll_deg;
-            roll_inited = true;
-        } else {
-            filtered_roll = 0.8f * filtered_roll + 0.2f * imu.roll_deg;
-        }
-
-        if (!omega_inited) {
-            filtered_omega_z = raw_omega_z;
-            omega_inited = true;
-        } else {
-            filtered_omega_z = 0.8f * filtered_omega_z + 0.2f * raw_omega_z;
-        }
-    }
-};
 
 struct ProbeThreadGuard {
     std::atomic<bool>* stop{nullptr};
@@ -265,16 +226,22 @@ std::string build_pid_sample_json(int64_t ts_ms,
     writer.Double(pid_probe.pid.pitch_drop);
     writer.Key("pid_roll_delta");
     writer.Double(pid_probe.pid.roll_delta);
+    writer.Key("pid_feedback_correction");
+    writer.Double(pid_probe.output.feedback_correction_rpm);
+    writer.Key("pid_feedforward_correction");
+    writer.Double(pid_probe.output.feedforward_correction_rpm);
     writer.Key("pid_correction");
-    writer.Double(pid_probe.correction);
+    writer.Double(pid_probe.output.correction_rpm);
+    writer.Key("pid_has_speed_command");
+    writer.Bool(pid_probe.output.has_speed_command);
     writer.Key("lt_tgt_final");
-    writer.Double(pid_probe.lt_target);
+    writer.Double(pid_probe.output.speed_command.lt_rpm);
     writer.Key("rt_tgt_final");
-    writer.Double(pid_probe.rt_target);
+    writer.Double(pid_probe.output.speed_command.rt_rpm);
     writer.Key("lb_tgt_final");
-    writer.Double(pid_probe.lb_target);
+    writer.Double(pid_probe.output.speed_command.lb_rpm);
     writer.Key("rb_tgt_final");
-    writer.Double(pid_probe.rb_target);
+    writer.Double(pid_probe.output.speed_command.rb_rpm);
     writer.EndObject();
     return {buffer.GetString(), buffer.GetSize()};
 }
@@ -776,6 +743,14 @@ TEST_CASE("System（真实硬件）全栈初始化 FSM→Idle 无崩溃", "[hw_s
                  ld.pitch_deg,
                  ld.roll_deg);
 
+    auto odom = f.nav->get_fused_odometry();
+    spdlog::info("[hw_system][full_init] fused_odom valid={} top={:.3f}m bottom={:.3f}m fused={:.3f}m diff={:.3f}m",
+                 odom.valid,
+                 odom.top_distance_m,
+                 odom.bottom_distance_m,
+                 odom.fused_distance_m,
+                 odom.distance_diff_m);
+
     // BMS：读取状态
     f.bms->update();
     std::this_thread::sleep_for(200ms);
@@ -788,6 +763,62 @@ TEST_CASE("System（真实硬件）全栈初始化 FSM→Idle 无崩溃", "[hw_s
 
     // 初始化成功即通过，硬件状态只记录不断言（允许 BMS/IMU 短期无应答）
     CHECK(f.fsm->current_state() == "Idle");
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// [hw_system][nav_fused_odometry] — 真实硬件观察融合里程计输出
+// ────────────────────────────────────────────────────────────────────────────
+TEST_CASE("System（真实硬件）融合里程计在静止和低速运动时输出有效",
+          "[hw_system][nav_fused_odometry]") {
+    hw::FullSystemFixture f;
+    REQUIRE(f.init());
+
+    spdlog::warn("[hw_system][nav_fused_odometry] ⚠ 将以低速前进 1.5s，请确保轨道安全、前方无人");
+
+    std::this_thread::sleep_for(1500ms);
+    const auto idle = f.nav->get_fused_odometry();
+    spdlog::info(
+        "[hw_system][nav_fused_odometry] idle valid={} top={:.3f} bottom={:.3f} fused={:.3f} "
+        "diff={:.3f} top_v={:.3f} bottom_v={:.3f} fused_v={:.3f}",
+        idle.valid,
+        idle.top_distance_m,
+        idle.bottom_distance_m,
+        idle.fused_distance_m,
+        idle.distance_diff_m,
+        idle.top_speed_mps,
+        idle.bottom_speed_mps,
+        idle.fused_speed_mps);
+
+    CHECK(idle.valid);
+    CHECK(std::isfinite(idle.top_distance_m));
+    CHECK(std::isfinite(idle.bottom_distance_m));
+    CHECK(std::isfinite(idle.fused_distance_m));
+    CHECK(std::isfinite(idle.distance_diff_m));
+
+    REQUIRE(f.motion->start_cleaning());
+    std::this_thread::sleep_for(1500ms);
+    f.motion->emergency_stop();
+    std::this_thread::sleep_for(500ms);
+
+    const auto moving = f.nav->get_fused_odometry();
+    spdlog::info(
+        "[hw_system][nav_fused_odometry] moving valid={} top={:.3f} bottom={:.3f} fused={:.3f} "
+        "diff={:.3f} top_v={:.3f} bottom_v={:.3f} fused_v={:.3f}",
+        moving.valid,
+        moving.top_distance_m,
+        moving.bottom_distance_m,
+        moving.fused_distance_m,
+        moving.distance_diff_m,
+        moving.top_speed_mps,
+        moving.bottom_speed_mps,
+        moving.fused_speed_mps);
+
+    CHECK(moving.valid);
+    CHECK(std::isfinite(moving.top_distance_m));
+    CHECK(std::isfinite(moving.bottom_distance_m));
+    CHECK(std::isfinite(moving.fused_distance_m));
+    CHECK(std::isfinite(moving.distance_diff_m));
+    CHECK(std::abs(moving.fused_distance_m - idle.fused_distance_m) > 0.02);
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -1371,9 +1402,9 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + 真实滚刷 + 全程�
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// [hw_system][pid_combined] — N 趟完整任务链 + 姿态纠偏 + 真实滚刷 + 全程 yaw 指标采集
+// [hw_system][pid_combined] — N 趟完整任务链 + 姿态纠偏链路观测 + 真实滚刷 + 全程 yaw 指标采集
 // ────────────────────────────────────────────────────────────────────────────
-TEST_CASE("System（真实硬件）N 趟完整任务链 + PID 控制 + 真实滚刷 + yaw 指标采集",
+TEST_CASE("System（真实硬件）N 趟完整任务链 + 姿态纠偏链路观测 + 真实滚刷 + yaw 指标采集",
           "[hw_system][pid_combined]") {
     hw::FullSystemFixture f(true /* pid_on */, true /* use_real_brush */);
     hw::HwExitGuard::instance().install();
@@ -1423,13 +1454,16 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + PID 控制 + 真实滚
                  right_limit_active,
                  left_limit_active);
 
-    // 记录出发时的 target_yaw（PID 将锁定此航向）
+    // 记录出发时的参考 yaw，用于评估整趟轨迹漂移。
     const float target_yaw = f.imu->get_latest().yaw_deg;
     spdlog::info("[hw_system][pid_combined] target_yaw={:.2f}°", target_yaw);
 
     using clock = std::chrono::steady_clock;
     int total_health_records = 0;
     float max_drift_all = 0.0f;  // 全程最大 yaw 漂移（绝对值）
+    bool saw_pid_initialized = false;
+    bool saw_pid_speed_command = false;
+    bool saw_pid_nonzero_correction = false;
 
     // norm_angle helper（−180 ~ +180）
     auto norm_angle = [](float deg) -> float {
@@ -1442,6 +1476,7 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + PID 控制 + 真实滚
 
     // 当前段号（写入每条 JSONL 记录）
     int cur_seg = 0;
+    float seg_max_drift = 0.0f;
     auto last_pid_sample_at = clock::time_point{};
     constexpr auto kPidSampleInterval = 500ms;
     auto last_health_update_at = clock::time_point{};
@@ -1453,47 +1488,60 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + PID 控制 + 真实滚
     pid_probe_ctrl.enable(true);
 
     std::thread pid_probe_thread([&]() {
-        MotionPidProbeFilters probe_filters;
-        auto last_tick = clock::now();
+        std::string last_state;
 
         while (!pid_probe_stop.load(std::memory_order_relaxed)) {
-            const auto now = clock::now();
-            float dt_s = std::chrono::duration<float>(now - last_tick).count();
-            if (dt_s < 0.0f) {
-                dt_s = 0.0f;
+            const std::string state = f.fsm->current_state();
+            const bool moving =
+                (state == "CleanFwd" || state == "CleanReturn" || state == "Returning");
+            if (state != last_state && moving) {
+                pid_probe_ctrl.reset();
             }
-            last_tick = now;
+            last_state = state;
+
+            if (!moving || f.walk_group->is_override_active()) {
+                std::this_thread::sleep_for(50ms);
+                continue;
+            }
 
             const auto imu = f.imu->get_latest();
-            probe_filters.update(imu);
+            const auto status = f.walk_group->get_group_status();
+            const auto diagnostics = f.walk_group->get_group_diagnostics();
 
             robot::service::HeadingCorrector::Input input;
-            input.raw_pitch_deg = probe_filters.filtered_pitch;
-            input.raw_roll_deg = probe_filters.filtered_roll;
+            input.raw_pitch_deg = imu.pitch_deg;
+            input.raw_roll_deg = imu.roll_deg;
             input.raw_yaw_deg = imu.yaw_deg;
-            input.raw_gyro_z_dps = probe_filters.filtered_omega_z;
-            input.dt_s = dt_s;
+            input.raw_gyro_z_dps = imu.gyro[2] * (180.0f / 3.14159265f);
+            input.dt_s = 0.02f;  // 与 MotionService::update() 当前实现保持一致
+            input.wheel_feedback.valid = true;
+            input.wheel_feedback.rpm = {status.wheel[0].speed_rpm,
+                                        status.wheel[1].speed_rpm,
+                                        status.wheel[2].speed_rpm,
+                                        status.wheel[3].speed_rpm};
+            input.wheel_feedback.current = {diagnostics.wheel[0].torque_a,
+                                            diagnostics.wheel[1].torque_a,
+                                            diagnostics.wheel[2].torque_a,
+                                            diagnostics.wheel[3].torque_a};
+            input.has_base_command = true;
+            if (state == "CleanFwd") {
+                const float spd = f.p.test_speed_rpm;
+                input.base_command = {spd, spd, -spd, -spd};
+            } else {
+                const float spd = f.p.test_return_rpm;
+                input.base_command = {-spd, -spd, +spd, +spd};
+            }
 
             PidProbeSnapshot snap;
-            snap.correction = pid_probe_ctrl.compute(input).correction_rpm;
+            snap.output = pid_probe_ctrl.compute(input);
             snap.pid = pid_probe_ctrl.debug_state();
-
-            const auto gd = f.walk_group->get_group_diagnostics();
-            const std::string state = f.fsm->current_state();
-            const bool moving = (state == "CleanFwd" || state == "CleanReturn");
-            const float applied_correction = moving ? snap.correction : 0.0f;
-
-            snap.lt_target = clamp_pid_target(gd.wheel[0].target_value + applied_correction);
-            snap.rt_target = clamp_pid_target(gd.wheel[1].target_value + applied_correction);
-            snap.lb_target = clamp_pid_target(gd.wheel[2].target_value + applied_correction);
-            snap.rb_target = clamp_pid_target(gd.wheel[3].target_value + applied_correction);
 
             {
                 std::lock_guard<std::mutex> lock(pid_probe_mu);
                 pid_probe_snapshot = snap;
             }
 
-            std::this_thread::sleep_until(now + 50ms);
+            std::this_thread::sleep_for(50ms);
         }
     });
     ProbeThreadGuard pid_probe_guard{&pid_probe_stop, &pid_probe_thread};
@@ -1518,8 +1566,12 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + PID 控制 + 真实滚
         const float omega_z_dps = imu.gyro[2] * (180.0f / 3.14159265f);
         const float yaw_err = norm_angle(target_yaw - yaw);
         const float drift = std::abs(yaw_err);
-        if (drift > max_drift_all)
+        if (drift > max_drift_all) {
             max_drift_all = drift;
+        }
+        if (drift > seg_max_drift) {
+            seg_max_drift = drift;
+        }
 
         if (last_pid_sample_at != clock::time_point{} &&
             now - last_pid_sample_at < kPidSampleInterval) {
@@ -1535,6 +1587,15 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + PID 控制 + 真实滚
         {
             std::lock_guard<std::mutex> lock(pid_probe_mu);
             pid_probe = pid_probe_snapshot;
+        }
+        if (pid_probe.pid.mode != robot::service::HeadingCorrector::Mode::UNINITIALIZED) {
+            saw_pid_initialized = true;
+        }
+        if (pid_probe.output.has_speed_command) {
+            saw_pid_speed_command = true;
+        }
+        if (std::abs(pid_probe.output.correction_rpm) > 1e-3f) {
+            saw_pid_nonzero_correction = true;
         }
 
         pid_ofs << build_pid_sample_json(ts_ms,
@@ -1560,13 +1621,13 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + PID 控制 + 真实滚
             gd.wheel[3].speed_rpm,
             f.fsm->current_state(),
             pid_mode_name(pid_probe.pid.mode),
-            pid_probe.correction,
+            pid_probe.output.correction_rpm,
             pid_probe.pid.pitch_drop,
             pid_probe.pid.roll_delta,
-            pid_probe.lt_target,
-            pid_probe.rt_target,
-            pid_probe.lb_target,
-            pid_probe.rb_target);
+            pid_probe.output.speed_command.lt_rpm,
+            pid_probe.output.speed_command.rt_rpm,
+            pid_probe.output.speed_command.lb_rpm,
+            pid_probe.output.speed_command.rb_rpm);
     };
 
     // 等待 FSM 从 from 状态切换到其他状态（每段独立超时）
@@ -1600,6 +1661,7 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + PID 控制 + 真实滚
     while (state != "Charging") {
         ++seg_idx;
         cur_seg = seg_idx;
+        seg_max_drift = 0.0f;
         const bool going_fwd = (state == "CleanFwd");
         const auto seg_start = clock::now();
         spdlog::warn("[hw_system][pid_combined] 段 {}: {} → 等待{}限位（最多 {}s）...",
@@ -1626,7 +1688,7 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + PID 控制 + 真实滚
                                               going_fwd ? "fwd" : "ret",
                                               state,
                                               next,
-                                              std::round(max_drift_all * 100.0f) / 100.0f,
+                                              std::round(seg_max_drift * 100.0f) / 100.0f,
                                               std::round(seg_dur * 10.0f) / 10.0f)
                 << '\n';
 
@@ -1665,6 +1727,9 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + PID 控制 + 真实滚
     CHECK(!wd_timeout.load());
     // 无故障
     CHECK(f.dispatched_faults.empty());
+    CHECK(saw_pid_initialized);
+    CHECK(saw_pid_speed_command);
+    CHECK(saw_pid_nonzero_correction);
     // yaw 漂移 CHECK（不强制 REQUIRE，允许 PID 参数不理想时继续记录）
     if (max_drift_all >= f.p.pid_max_drift_deg) {
         spdlog::warn(

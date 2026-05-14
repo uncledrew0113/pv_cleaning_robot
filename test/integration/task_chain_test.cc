@@ -79,7 +79,7 @@ struct TaskChainFixture {
     // 设备
     std::shared_ptr<WalkMotorGroup> group{std::make_shared<WalkMotorGroup>(can)};
     std::shared_ptr<BrushMotor> brush{
-        std::make_shared<BrushMotor>(brush_sp, 0, 8192.0f, true, 0.5f)};
+        std::make_shared<BrushMotor>(brush_sp, 0)};
     std::shared_ptr<ImuDevice> imu{std::make_shared<ImuDevice>(imu_sp)};
     std::shared_ptr<GpsDevice> gps{std::make_shared<GpsDevice>(gps_sp)};
     std::shared_ptr<LimitSwitch> left_sw{
@@ -149,9 +149,9 @@ struct TaskChainFixture {
         scheduler.clear_windows();
         scheduler.add_window({8, 0});
         tb_cfg = std::make_shared<ThingsBoardConfigManager>(cfg, scheduler);
-        motion->set_parking_side_provider(
+        motion->set_parking_side_query(
             [this]() { return tb_cfg->active_config().parking_side; });
-        motion->set_runtime_config_provider([this]() { return tb_cfg->active_config(); });
+        motion->set_runtime_config_query([this]() { return tb_cfg->active_config(); });
         fault_handler.start_listening();
         fsm.dispatch(EvInitDone{});
         supervisor = std::make_shared<RobotSupervisor>(

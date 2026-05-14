@@ -63,8 +63,11 @@ DeviceError WalkMotorGroup::open() {
         return DeviceError::NOT_OPEN;
     }
     closing_.store(false, std::memory_order_release);
-    override_active_.store(false, std::memory_order_release);
-    pending_clear_override_.store(false, std::memory_order_release);
+    {
+        std::lock_guard<hal::PiMutex> lk(mtx_);
+        control_mode_ = ControlMode::Normal;
+        clear_override_pending_ = false;
+    }
     if (can_->is_open())
         return DeviceError::OK;
     if (!can_->open())
@@ -149,21 +152,15 @@ DeviceError WalkMotorGroup::open() {
 
 void WalkMotorGroup::close() {
     closing_.store(true, std::memory_order_release);
-    override_active_.store(true, std::memory_order_release);
-    pending_clear_override_.store(false, std::memory_order_release);
-
-    {
-        std::lock_guard<hal::PiMutex> lk(cmd_mtx_);
-        cmd_head_ = 0;
-        cmd_tail_ = 0;
-    }
     {
         std::lock_guard<hal::PiMutex> lk(mtx_);
-        pid_ctrl_.enable(false);
-        has_ctrl_frame_ = false;
-        last_ctrl_frame_ = {};
-        base_upper_lt_rpm_ = 0.0f;
-        base_upper_rt_rpm_ = 0.0f;
+        control_mode_ = ControlMode::LatchedOverride;
+        clear_override_pending_ = false;
+        has_normal_ctrl_frame_ = false;
+        normal_ctrl_frame_ = {};
+        normal_target_values_ = {};
+        override_frame_ = {};
+        override_target_values_ = {};
     }
 
     if (can_ && can_->is_open()) {
@@ -193,7 +190,6 @@ void WalkMotorGroup::close() {
         recv_thread_.join();
     if (can_ && can_->is_open())
         can_->close();
-    last_update_time_ = {};  // close/open 重启时 dt_s 使用默认 20ms
 }
 
 // ── 内部发帧 ─────────────────────────────────────────────────────────────────
@@ -219,25 +215,6 @@ DeviceError WalkMotorGroup::send_ctrl(const hal::CanFrame& frame) {
     std::lock_guard<hal::PiMutex> lk(mtx_);
     ++ctrl_err_count_;
     return DeviceError::COMM_TIMEOUT;
-}
-
-// ── 命令队列内部实现 ──────────────────────────────────────────────────────────
-
-bool WalkMotorGroup::enqueue_cmd(const Cmd& cmd) {
-    if (closing_.load(std::memory_order_acquire)) {
-        spdlog::debug("[WalkMotorGroup] dropping command while closing");
-        return false;
-    }
-    std::lock_guard<hal::PiMutex> lk(cmd_mtx_);
-    int next_head = (cmd_head_ + 1) % kCmdQueueSize;
-    if (next_head == cmd_tail_) {
-        // 队列满：丢弃最旧命令，不阻塞调用方线程
-        spdlog::warn("[WalkMotorGroup] cmd_queue full, oldest command dropped");
-        cmd_tail_ = (cmd_tail_ + 1) % kCmdQueueSize;
-    }
-    cmd_buf_[static_cast<size_t>(cmd_head_)] = cmd;
-    cmd_head_ = next_head;
-    return true;
 }
 
 // ── 模式控制 ─────────────────────────────────────────────────────────────────
@@ -278,18 +255,22 @@ DeviceError WalkMotorGroup::disable_all() {
 // ── 同步批量给定 ─────────────────────────────────────────────────────────────
 
 DeviceError WalkMotorGroup::set_speeds(float lt, float rt, float lb, float rb) {
+    if (closing_.load(std::memory_order_acquire) || !can_->is_open())
+        return DeviceError::NOT_OPEN;
     lt = clamp_rpm(lt);
     rt = clamp_rpm(rt);
     lb = clamp_rpm(lb);
     rb = clamp_rpm(rb);
 
-    Cmd cmd;
-    cmd.type = Cmd::Type::SET_CTRL_FRAME;
-    cmd.frame = protocol::WalkMotorCanCodec::encode_group_speed(id_base_, lt, rt, lb, rb);
-    cmd.base_upper_lt_rpm = lt;
-    cmd.base_upper_rt_rpm = rt;
-    cmd.target_rpms = {lt, rt, lb, rb};
-    return enqueue_cmd(cmd) ? DeviceError::OK : DeviceError::NOT_OPEN;
+    std::lock_guard<hal::PiMutex> lk(mtx_);
+    normal_ctrl_frame_ = protocol::WalkMotorCanCodec::encode_group_speed(id_base_, lt, rt, lb, rb);
+    normal_target_values_ = {lt, rt, lb, rb};
+    has_normal_ctrl_frame_ = true;
+    diag_[0].target_value = lt;
+    diag_[1].target_value = rt;
+    diag_[2].target_value = lb;
+    diag_[3].target_value = rb;
+    return DeviceError::OK;
 }
 
 DeviceError WalkMotorGroup::set_speeds(const SpeedCmd& cmd) {
@@ -303,42 +284,57 @@ DeviceError WalkMotorGroup::set_speed_uniform(float rpm) {
 }
 
 DeviceError WalkMotorGroup::set_currents(float lt, float rt, float lb, float rb) {
-    Cmd cmd;
-    cmd.type = Cmd::Type::SET_CTRL_FRAME;
-    cmd.frame = protocol::WalkMotorCanCodec::encode_group_current(id_base_, lt, rt, lb, rb);
-    cmd.base_upper_lt_rpm = 0.0f;
-    cmd.base_upper_rt_rpm = 0.0f;
-    cmd.target_rpms = {lt, rt, lb, rb};
-    return enqueue_cmd(cmd) ? DeviceError::OK : DeviceError::NOT_OPEN;
+    if (closing_.load(std::memory_order_acquire) || !can_->is_open())
+        return DeviceError::NOT_OPEN;
+
+    std::lock_guard<hal::PiMutex> lk(mtx_);
+    normal_ctrl_frame_ = protocol::WalkMotorCanCodec::encode_group_current(id_base_, lt, rt, lb, rb);
+    normal_target_values_ = {lt, rt, lb, rb};
+    has_normal_ctrl_frame_ = true;
+    diag_[0].target_value = lt;
+    diag_[1].target_value = rt;
+    diag_[2].target_value = lb;
+    diag_[3].target_value = rb;
+    return DeviceError::OK;
 }
 
 DeviceError WalkMotorGroup::set_open_loops(int16_t lt, int16_t rt, int16_t lb, int16_t rb) {
-    Cmd cmd;
-    cmd.type = Cmd::Type::SET_CTRL_FRAME;
-    cmd.frame = protocol::WalkMotorCanCodec::encode_group_open_loop(id_base_, lt, rt, lb, rb);
-    cmd.base_upper_lt_rpm = 0.0f;
-    cmd.base_upper_rt_rpm = 0.0f;
-    cmd.target_rpms = {static_cast<float>(lt),
-                       static_cast<float>(rt),
-                       static_cast<float>(lb),
-                       static_cast<float>(rb)};
-    return enqueue_cmd(cmd) ? DeviceError::OK : DeviceError::NOT_OPEN;
+    if (closing_.load(std::memory_order_acquire) || !can_->is_open())
+        return DeviceError::NOT_OPEN;
+
+    std::lock_guard<hal::PiMutex> lk(mtx_);
+    normal_ctrl_frame_ = protocol::WalkMotorCanCodec::encode_group_open_loop(id_base_, lt, rt, lb, rb);
+    normal_target_values_ = {static_cast<float>(lt),
+                             static_cast<float>(rt),
+                             static_cast<float>(lb),
+                             static_cast<float>(rb)};
+    has_normal_ctrl_frame_ = true;
+    diag_[0].target_value = static_cast<float>(lt);
+    diag_[1].target_value = static_cast<float>(rt);
+    diag_[2].target_value = static_cast<float>(lb);
+    diag_[3].target_value = static_cast<float>(rb);
+    return DeviceError::OK;
 }
 
 DeviceError WalkMotorGroup::set_positions(float lt_deg, float rt_deg, float lb_deg, float rb_deg) {
+    if (closing_.load(std::memory_order_acquire) || !can_->is_open())
+        return DeviceError::NOT_OPEN;
     auto cp = [](float v) { return clamp(v, 0.0f, 360.0f); };
     lt_deg = cp(lt_deg);
     rt_deg = cp(rt_deg);
     lb_deg = cp(lb_deg);
     rb_deg = cp(rb_deg);
-    Cmd cmd;
-    cmd.type = Cmd::Type::SET_CTRL_FRAME;
-    cmd.frame = protocol::WalkMotorCanCodec::encode_group_position(
-        id_base_, lt_deg, rt_deg, lb_deg, rb_deg);
-    cmd.base_upper_lt_rpm = 0.0f;
-    cmd.base_upper_rt_rpm = 0.0f;
-    cmd.target_rpms = {lt_deg, rt_deg, lb_deg, rb_deg};
-    return enqueue_cmd(cmd) ? DeviceError::OK : DeviceError::NOT_OPEN;
+
+    std::lock_guard<hal::PiMutex> lk(mtx_);
+    normal_ctrl_frame_ =
+        protocol::WalkMotorCanCodec::encode_group_position(id_base_, lt_deg, rt_deg, lb_deg, rb_deg);
+    normal_target_values_ = {lt_deg, rt_deg, lb_deg, rb_deg};
+    has_normal_ctrl_frame_ = true;
+    diag_[0].target_value = lt_deg;
+    diag_[1].target_value = rt_deg;
+    diag_[2].target_value = lb_deg;
+    diag_[3].target_value = rb_deg;
+    return DeviceError::OK;
 }
 
 DeviceError WalkMotorGroup::set_feedback_mode_all(uint8_t period_ms) {
@@ -373,30 +369,11 @@ DeviceError WalkMotorGroup::query_firmware() {
     return send_ctrl(protocol::WalkMotorCanCodec::encode_query_firmware());
 }
 
-// ── 姿态纠偏控制 ─────────────────────────────────────────────────────────────
-
-void WalkMotorGroup::set_heading_pid_params(const HeadingPidParams& p) {
-    std::lock_guard<hal::PiMutex> lk(mtx_);
-    pid_ctrl_.set_params(p);
-}
-
-void WalkMotorGroup::enable_heading_control(bool en) {
-    std::lock_guard<hal::PiMutex> lk(mtx_);
-    pid_ctrl_.enable(en);
-}
-
 // ── 边缘紧急覆盖 ──────────────────────────────────────────────────────────────
 
 DeviceError WalkMotorGroup::emergency_override(float reverse_rpm) {
-    if (closing_.load(std::memory_order_acquire))
+    if (closing_.load(std::memory_order_acquire) || !can_->is_open())
         return DeviceError::NOT_OPEN;
-    // 防线一：立即置位（seq_cst），在持锁之前操作。
-    // 即使后续等待 send_mtx_，update() 的 step3 无锁检查也能立即感知并提前退出，
-    // 不必等到 send_mtx_ 释放后才被拦截。
-    override_active_.store(true, std::memory_order_seq_cst);
-    // 取消任何待消费的 clear_override 标志：若 update() 尚未消费该标志，
-    // 让它悄悄把本次 override 清掉会导致安全停止失效。
-    pending_clear_override_.store(false, std::memory_order_seq_cst);
 
     // 物理安装：LT/RT 正转=前进，LB/RB 因安装方向相反，负转=前进。
     // reverse_rpm > 0 = 车辆后退 → LT/RT=-rpm，LB/RB=+rpm（与前进方向相反）
@@ -410,39 +387,50 @@ DeviceError WalkMotorGroup::emergency_override(float reverse_rpm) {
     } else {
         lt = rt = lb = rb = 0.0f;
     }
-    auto frame = protocol::WalkMotorCanCodec::encode_group_speed(id_base_, lt, rt, lb, rb);
+    const auto frame = protocol::WalkMotorCanCodec::encode_group_speed(id_base_, lt, rt, lb, rb);
 
-    // 防线二：持锁后直接发帧，不经过 send_ctrl() 的 override 检查门。
-    // 与 send_ctrl() 的 lock(send_mtx_) 互斥，保证 stop 帧严格在任何
-    // 并发 PID 帧之后写入内核 TX ring（总线上的最后一条控制语义帧）。
-    DeviceError ret;
+    {
+        std::lock_guard<hal::PiMutex> lk(mtx_);
+        control_mode_ = ControlMode::LatchedOverride;
+        clear_override_pending_ = false;
+        override_frame_ = frame;
+        override_target_values_ = {lt, rt, lb, rb};
+    }
+
     {
         std::lock_guard<hal::PiMutex> lg(send_mtx_);
-        ret = can_->send(frame) ? DeviceError::OK : DeviceError::COMM_TIMEOUT;
+        const bool ok = can_->send(frame);
         std::lock_guard<hal::PiMutex> lk(mtx_);
         diag_[0].target_value = lt;
         diag_[1].target_value = rt;
         diag_[2].target_value = lb;
         diag_[3].target_value = rb;
-        if (ret == DeviceError::OK)
+        if (ok)
             ++ctrl_frame_count_;
         else
             ++ctrl_err_count_;
+        if (!ok)
+            return DeviceError::COMM_TIMEOUT;
     }
 
     spdlog::warn("[WalkMotorGroup] emergency_override: vehicle_reverse_rpm={:.1f}", reverse_rpm);
-    return ret;
+    return DeviceError::OK;
 }
 
 void WalkMotorGroup::clear_override() {
-    // 原子标志绕过命令队列：clear_override() 直写 pending_clear_override_，
-    // update() step2-pre 优先 exchange——任意满载下均不业失
-    pending_clear_override_.store(true, std::memory_order_seq_cst);
+    std::lock_guard<hal::PiMutex> lk(mtx_);
+    clear_override_pending_ = true;
     spdlog::info("[WalkMotorGroup] clear_override requested");
 }
 
 bool WalkMotorGroup::is_override_active() const {
-    return override_active_.load();
+    std::lock_guard<hal::PiMutex> lk(mtx_);
+    return control_mode_ == ControlMode::LatchedOverride;
+}
+
+uint32_t WalkMotorGroup::override_clear_generation() const {
+    std::lock_guard<hal::PiMutex> lk(mtx_);
+    return override_clear_generation_;
 }
 
 // ── 状态读取 ─────────────────────────────────────────────────────────────────
@@ -477,24 +465,12 @@ WalkMotorGroup::GroupDiagnostics WalkMotorGroup::get_group_diagnostics() const {
 
 // ── 周期心跳 ─────────────────────────────────────────────────────────────────
 
-void WalkMotorGroup::update(float pitch_deg, float roll_deg, float yaw_deg, float gyro_z_dps) {
+void WalkMotorGroup::update() {
     if (closing_.load(std::memory_order_acquire))
         return;
     if (!can_->is_open())
         return;
-    (void)yaw_deg;
     auto now = std::chrono::steady_clock::now();
-
-    // 计算距上次 update() 的实际时间（秒），用于姿态控制状态机时间窗
-    // 使用实测时间而非硬编码常量，适应线程执行器周期变更
-    float dt_s = 0.020f;  // 合理默认値（20ms），首次调用或异常大値时使用
-    if (last_update_time_ != std::chrono::steady_clock::time_point{}) {
-        float measured = std::chrono::duration<float>(now - last_update_time_).count();
-        // 限幅至 10ms~500ms，防止系统暂停/调试断点导致积分爆炸
-        if (measured >= 0.010f && measured <= 0.500f)
-            dt_s = measured;
-    }
-    last_update_time_ = now;
 
     // ── 1. 更新各轮 online 状态 ──
     // 日志推迟到锁外：spdlog::warn 可能触发堆分配和 spdlog 内部锁，
@@ -520,84 +496,47 @@ void WalkMotorGroup::update(float pitch_deg, float roll_deg, float yaw_deg, floa
             spdlog::warn("[WalkMotorGroup] motor {} offline", id_base_ + i);
     }
 
-    // ── 2-pre. CLEAR_OVERRIDE 原子检查（优先于命令队列，任意满载下不可丢失）──────────
-    if (pending_clear_override_.exchange(false, std::memory_order_acquire)) {
-        {
-            std::lock_guard<hal::PiMutex> lk(mtx_);
-            has_ctrl_frame_ = false;
-            pid_ctrl_.reset();
-        }
-        // release：保证上方 mtx_ 内写对其他核可见后再清 override
-        override_active_.store(false, std::memory_order_release);
-        spdlog::info("[WalkMotorGroup] clear_override applied");
-    }
-
-    // ── 2. 排干命令队列（update() 是唯一消费者，walk_ctrl 线程）────────────────────
-    // SET_CTRL_FRAME: 更新控制帧 + 上边框组基础速度，不触碰 override_active_
-    while (true) {
-        Cmd c;
-        {
-            std::lock_guard<hal::PiMutex> lk_cmd(cmd_mtx_);
-            if (cmd_tail_ == cmd_head_)
-                break;
-            c = cmd_buf_[static_cast<size_t>(cmd_tail_)];
-            cmd_tail_ = (cmd_tail_ + 1) % kCmdQueueSize;
-        }  // 释放 cmd_mtx_，避免与 mtx_ 嵌套持锁
-
-        std::lock_guard<hal::PiMutex> lk(mtx_);
-        last_ctrl_frame_ = c.frame;
-        has_ctrl_frame_ = true;
-        base_upper_lt_rpm_ = c.base_upper_lt_rpm;
-        base_upper_rt_rpm_ = c.base_upper_rt_rpm;
-        for (int i = 0; i < kWheelCount; ++i)
-            diag_[i].target_value = c.target_rpms[static_cast<size_t>(i)];
-    }
-
-    // ── 3. 若在 override 状态，跳过心跳重发 ──
-    if (override_active_.load(std::memory_order_acquire))
-        return;
-
-    // ── 4. 计算姿态纠偏差速（如果使能） ──
-    hal::CanFrame ctrl;
-    bool has;
+    hal::CanFrame candidate{};
+    bool should_send_normal = false;
+    bool clear_applied = false;
 
     {
         std::lock_guard<hal::PiMutex> lk(mtx_);
-        ctrl = last_ctrl_frame_;
-        has = has_ctrl_frame_;
+        if (control_mode_ == ControlMode::LatchedOverride && clear_override_pending_) {
+            clear_override_pending_ = false;
+            control_mode_ = ControlMode::Normal;
+            has_normal_ctrl_frame_ = false;
+            ++override_clear_generation_;
+            clear_applied = true;
+        }
 
-        if (has && pid_ctrl_.is_enabled()) {
-            const float correction = pid_ctrl_.compute(pitch_deg, roll_deg, gyro_z_dps, dt_s);
-            // 同一边框组内两轮必须同速；姿态纠偏依靠上下边框组形成差速。
-            // 底部轨道因安装反向，命令符号与顶部相反：
-            //   correction > 0 -> 上组物理速度增大、下组物理速度减小
-            //   correction < 0 -> 上组物理速度减小、下组物理速度增大
-            float upper_spd = correction;  // 上组修正量
-            float lower_spd = correction;  // 下组物理修正量（命令侧保持同号映射）
-            float lt = clamp_rpm(base_upper_lt_rpm_ + upper_spd);
-            float rt = clamp_rpm(base_upper_rt_rpm_ + upper_spd);
-            float lb = clamp_rpm(-base_upper_lt_rpm_ + lower_spd);
-            float rb = clamp_rpm(-base_upper_rt_rpm_ + lower_spd);
-            ctrl = protocol::WalkMotorCanCodec::encode_group_speed(id_base_, lt, rt, lb, rb);
+        if (control_mode_ == ControlMode::Normal && has_normal_ctrl_frame_) {
+            candidate = normal_ctrl_frame_;
+            should_send_normal = true;
         }
     }
 
-    if (has) {
-        // 防线二（仅姿态纠偏路径）：持 send_mtx_ 后双重检查 override。
-        // 处理 update 通过 step3 无锁检查后被 emergency 抢占的残余窗口：
-        //   emergency: store(true) → lock(send_mtx_) → send(stop) → unlock [release]
-        //   update:                                              lock(send_mtx_) [acquire]
-        //   happens-before 保证此处 load 必然读到 true → 丢弃纠偏帧。
-        std::lock_guard<hal::PiMutex> lg(send_mtx_);
-        if (!override_active_.load(std::memory_order_acquire)) {
-            if (can_->send(ctrl)) {
-                std::lock_guard<hal::PiMutex> lk(mtx_);
-                ++ctrl_frame_count_;
-            } else {
-                std::lock_guard<hal::PiMutex> lk(mtx_);
-                ++ctrl_err_count_;
-            }
+    if (clear_applied) {
+        spdlog::info("[WalkMotorGroup] clear_override applied");
+    }
+    if (!should_send_normal)
+        return;
+
+    std::lock_guard<hal::PiMutex> send_lk(send_mtx_);
+    {
+        std::lock_guard<hal::PiMutex> lk(mtx_);
+        if (control_mode_ != ControlMode::Normal || !has_normal_ctrl_frame_) {
+            return;
         }
+        candidate = normal_ctrl_frame_;
+    }
+
+    if (can_->send(candidate)) {
+        std::lock_guard<hal::PiMutex> lk(mtx_);
+        ++ctrl_frame_count_;
+    } else {
+        std::lock_guard<hal::PiMutex> lk(mtx_);
+        ++ctrl_err_count_;
     }
 }
 

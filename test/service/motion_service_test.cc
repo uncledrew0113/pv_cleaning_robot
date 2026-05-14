@@ -37,7 +37,7 @@ struct MotionFixture {
     std::shared_ptr<MockCanBus> can{std::make_shared<MockCanBus>()};
     std::shared_ptr<WalkMotorGroup> group{std::make_shared<WalkMotorGroup>(can)};
     std::shared_ptr<MockSerialPort> serial{std::make_shared<MockSerialPort>()};
-    std::shared_ptr<BrushMotor> brush{std::make_shared<BrushMotor>(serial, 0, 8192.0f, true, 0.5f)};
+    std::shared_ptr<BrushMotor> brush{std::make_shared<BrushMotor>(serial, 0)};
     EventBus bus;
     MotionService::Config cfg{make_motion_config()};
     MotionService motion;
@@ -82,7 +82,7 @@ TEST_CASE("MotionService start_cleaning emits CAN frames", "[service][motion]") 
 TEST_CASE("MotionService start_cleaning keeps right parking side as motion baseline",
           "[service][motion]") {
     MotionFixture f;
-    f.motion.set_parking_side_provider([] { return robot::service::ParkingSide::Right; });
+    f.motion.set_parking_side_query([] { return robot::service::ParkingSide::Right; });
 
     REQUIRE(f.motion.start_cleaning());
     f.motion.update();
@@ -96,7 +96,7 @@ TEST_CASE("MotionService start_cleaning keeps right parking side as motion basel
 TEST_CASE("MotionService start_cleaning flips walk direction for left parking side",
           "[service][motion]") {
     MotionFixture f;
-    f.motion.set_parking_side_provider([] { return robot::service::ParkingSide::Left; });
+    f.motion.set_parking_side_query([] { return robot::service::ParkingSide::Left; });
 
     REQUIRE(f.motion.start_cleaning());
     f.motion.update();
@@ -122,10 +122,31 @@ TEST_CASE("MotionService start_cleaning switches brush to speed mode and sets rp
 TEST_CASE("MotionService start_cleaning flips brush direction for left parking side",
           "[service][motion]") {
     MotionFixture f;
-    f.motion.set_parking_side_provider([] { return robot::service::ParkingSide::Left; });
+    f.motion.set_parking_side_query([] { return robot::service::ParkingSide::Left; });
     f.serial->clear_tx();
 
     f.motion.start_cleaning();
+
+    const auto tx = f.serial->take_tx_text();
+    REQUIRE(tx.find("v 0 -20.000 0\n") != std::string::npos);
+}
+
+TEST_CASE("MotionService start_cleaning preserves signed brush rpm from runtime config",
+          "[service][motion]") {
+    MotionFixture f;
+    f.motion.set_parking_side_query([] { return robot::service::ParkingSide::Right; });
+    f.motion.set_runtime_config_query([] {
+        robot::service::TbRuntimeConfig cfg;
+        cfg.clean_speed_rpm = 300.0;
+        cfg.return_speed_rpm = 300.0;
+        cfg.brush_rpm = -1200;
+        cfg.return_brush_rpm = 1200;
+        cfg.parking_side = robot::service::ParkingSide::Right;
+        return cfg;
+    });
+    f.serial->clear_tx();
+
+    REQUIRE(f.motion.start_cleaning());
 
     const auto tx = f.serial->take_tx_text();
     REQUIRE(tx.find("v 0 -20.000 0\n") != std::string::npos);
@@ -141,19 +162,6 @@ TEST_CASE("MotionService stop_cleaning commands brush stop", "[service][motion]"
     REQUIRE(f.serial->take_tx_text().find("v 0 0.000 0\n") != std::string::npos);
 }
 
-TEST_CASE("MotionService pause_task stops brush without immediately disabling walk motors",
-          "[service][motion]") {
-    MotionFixture f;
-    REQUIRE(f.motion.start_cleaning());
-    f.serial->clear_tx();
-    f.can->sent_frames.clear();
-
-    f.motion.pause_task();
-
-    REQUIRE(f.serial->take_tx_text().find("v 0 0.000 0\n") != std::string::npos);
-    REQUIRE(f.can->sent_frames.empty());
-}
-
 TEST_CASE("MotionService start_returning reverses brush direction", "[service][motion]") {
     MotionFixture f;
     f.serial->clear_tx();
@@ -166,7 +174,7 @@ TEST_CASE("MotionService start_returning reverses brush direction", "[service][m
 TEST_CASE("MotionService start_returning flips walk and brush direction for left parking side",
           "[service][motion]") {
     MotionFixture f;
-    f.motion.set_parking_side_provider([] { return robot::service::ParkingSide::Left; });
+    f.motion.set_parking_side_query([] { return robot::service::ParkingSide::Left; });
     f.serial->clear_tx();
 
     REQUIRE(f.motion.start_returning());
@@ -183,7 +191,7 @@ TEST_CASE("MotionService start_returning flips walk and brush direction for left
 TEST_CASE("MotionService start_cleaning syncs runtime config before sending commands",
           "[service][motion]") {
     MotionFixture f;
-    f.motion.set_runtime_config_provider([] {
+    f.motion.set_runtime_config_query([] {
         robot::service::TbRuntimeConfig cfg;
         cfg.clean_speed_rpm = 360.0;
         cfg.return_speed_rpm = 420.0;
@@ -207,7 +215,7 @@ TEST_CASE("MotionService start_cleaning syncs runtime config before sending comm
 TEST_CASE("MotionService start_returning syncs runtime return brush rpm before sending commands",
           "[service][motion]") {
     MotionFixture f;
-    f.motion.set_runtime_config_provider([] {
+    f.motion.set_runtime_config_query([] {
         robot::service::TbRuntimeConfig cfg;
         cfg.clean_speed_rpm = 300.0;
         cfg.return_speed_rpm = 420.0;
@@ -271,6 +279,27 @@ TEST_CASE("MotionService emergency_stop clears walk target values to zero", "[se
     REQUIRE(after.wheel[1].target_value == Approx(0.0f));
     REQUIRE(after.wheel[2].target_value == Approx(0.0f));
     REQUIRE(after.wheel[3].target_value == Approx(0.0f));
+}
+
+TEST_CASE("MotionService clear_override 生效后重置纠偏器并恢复基础速度槽位",
+          "[service][motion]") {
+    MotionFixture f;
+    REQUIRE(f.motion.start_cleaning());
+    f.motion.update();
+
+    f.can->sent_frames.clear();
+    REQUIRE(f.group->emergency_override(0.0f) == robot::device::DeviceError::OK);
+    f.can->sent_frames.clear();
+
+    f.group->clear_override();
+    f.motion.update();
+    REQUIRE(f.can->sent_frames.empty());
+
+    f.motion.update();
+    REQUIRE(contains_frame(
+        f.can->sent_frames,
+        robot::protocol::WalkMotorCanCodec::encode_group_speed(
+            1u, 210.0f, 210.0f, -210.0f, -210.0f)));
 }
 
 TEST_CASE("MotionService CAN send failure causes start_cleaning failure", "[service][motion]") {

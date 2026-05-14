@@ -167,10 +167,6 @@ std::string build_test_runtime_config_json()
     writer.Double(15.0);
     writer.Key("charge_stop_soc");
     writer.Double(95.0);
-    writer.Key("wheel_circ_m");
-    writer.Double(0.3);
-    writer.Key("track_length_m");
-    writer.Double(100.0);
     writer.Key("passes");
     writer.Double(1.0);
     writer.Key("parking_side");
@@ -215,14 +211,12 @@ std::string build_test_fixed_config_json(const std::string& health_path,
     writer.StartObject();
     writer.Key("mode");
     writer.String("development");
-    writer.Key("local_path");
-    writer.String(health_path.c_str());
     writer.Key("cloud_upload");
-    writer.Bool(false);
+    writer.Bool(true);
     writer.Key("local_log");
     writer.Bool(true);
-    writer.Key("publish_interval_ms");
-    writer.Int(1000);
+    writer.Key("local_log_path");
+    writer.String(health_path.c_str());
     writer.Key("publish_interval_active_ms");
     writer.Int(1000);
     writer.Key("publish_interval_idle_ms");
@@ -349,7 +343,7 @@ struct SystemFixture {
 
     // ── 设备层 ────────────────────────────────────────────────────
     std::shared_ptr<WalkMotorGroup>     group  {std::make_shared<WalkMotorGroup>(can)};
-    std::shared_ptr<BrushMotor>         brush  {std::make_shared<BrushMotor>(brush_sp, 0, 8192.0f, true, 0.5f)};
+    std::shared_ptr<BrushMotor> brush{std::make_shared<BrushMotor>(brush_sp, 0)};
     std::shared_ptr<ImuDevice>          imu    {std::make_shared<ImuDevice>(imu_sp)};
     std::shared_ptr<GpsDevice>          gps    {std::make_shared<GpsDevice>(gps_sp)};
     std::shared_ptr<BMS>                bms    {std::make_shared<BMS>(bms_sp, 95.0f, 15.0f)};
@@ -459,7 +453,9 @@ TEST_CASE("System: ConfigService 加载测试配置并正确返回字段值",
     REQUIRE(cfg.get<float>("robot.charge_stop_soc", 0.0f)  == Approx(95.0f));
     REQUIRE(cfg.get<bool>("robot.heading_pid_en", true) == false);
     REQUIRE(cfg.get<std::string>("diagnostics.mode", "") == "development");
-    REQUIRE(cfg.get<std::string>("diagnostics.local_path", "") == files.health_path.string());
+    REQUIRE(cfg.get<bool>("diagnostics.cloud_upload", false));
+    REQUIRE(cfg.get<bool>("diagnostics.local_log", false));
+    REQUIRE(cfg.get<std::string>("diagnostics.local_log_path", "") == files.health_path.string());
     REQUIRE(cfg.get<std::string>("system.hw_watchdog", "x") == "");
     REQUIRE(cfg.get<int>("can.walk_motor.motor_id", 0) == 1);
     REQUIRE(cfg.get<int>("can.walk_motor.comm_timeout_ms", 0) == 200);

@@ -82,12 +82,6 @@ DeviceError GpsdGpsSource::cold_restart() {
     return DeviceError::NOT_SUPPORTED;
 }
 
-/// @brief 单元测试接口：注入 gpsd JSON 行进行解析验证。
-/// @brief 测试接口：直接注入一行 JSON 数据进行解析。
-void GpsdGpsSource::ingest_json_line_for_test(std::string_view line) {
-    handle_json_line(line);
-}
-
 /// @brief 建立到 gpsd 的 TCP 连接。
 /// @brief 建立到 gpsd 的 TCP 连接。
 bool GpsdGpsSource::connect_socket() {

@@ -12,14 +12,13 @@
 #include "pv_cleaning_robot/hal/i_can_bus.h"
 #include "pv_cleaning_robot/hal/pi_mutex.h"
 #include "pv_cleaning_robot/protocol/walk_motor_can_codec.h"
-#include "pv_cleaning_robot/service/heading_pid_controller.h"
 
 namespace robot::device {
 
 /// 4轮行走电机组（M1502E_111，单 CAN 总线）
 ///
 /// 核心优化：协议层一帧覆盖4台电机（0x32 或 0x33），
-/// set_speeds() 仅发送 1 帧即可同步更新全部4路速度给定，
+/// set_speeds() 仅更新当前 normal 控制槽，由 update() 统一重发同步下发，
 /// 彻底消除逐台发送带来的时间偏斜与总线负载（4帧→1帧，负载降低 75%）。
 ///
 /// 物理布局（清扫机器人）：
@@ -30,18 +29,21 @@ namespace robot::device {
 ///
 /// 新增功能：
 ///   - 通信超时下发：open() 时自动向电机写入 comm_timeout_ms 超时时间
-///   - 姿态纠偏控制：set_heading_pid_params() 设置参数后，
-///     update(pitch_deg, roll_deg, yaw_deg, gyro_z_dps) 周期计算上下边框组速度补偿
-///   - 边缘紧急覆盖：emergency_override() 立即发停车或反转帧，
-///     并抑制 update() 心跳重发，直到 clear_override() 解除
+///   - 锁存式紧急覆盖：emergency_override() 立即发停车或反转帧，
+///     并锁存屏蔽 normal 心跳，直到 clear_override() 被 update() 应用
 ///
 /// 使用步骤：
 ///   1. 构造时传入共享 CAN 总线实例和 id_base（默认 1）
 ///   2. open() → set_mode_all(SPEED) → set_speeds(...)
-///   3. 每 10 ms 调用 update(...) 维持心跳+姿态纠偏
+///   3. 周期调用 update() 维持当前 normal 控制帧心跳
 class WalkMotorGroup {
    public:
     static constexpr int kWheelCount = 4;
+
+    enum class ControlMode : uint8_t {
+        Normal = 0,
+        LatchedOverride = 1,
+    };
 
     /// 车轮角色（下标用于数组索引，与 motor_id 偏移一一对应）
     enum class Wheel : int {
@@ -72,9 +74,6 @@ class WalkMotorGroup {
         uint32_t ctrl_frame_count = 0;  ///< 已发出的组合控制帧总数
         uint32_t ctrl_err_count = 0;    ///< 控制帧发送失败次数
     };
-
-    /// 姿态纠偏控制参数（沿用 service::HeadingPidController::Params 类型）
-    using HeadingPidParams = service::HeadingPidController::Params;
 
     /// @param can      与4台电机共用的 CAN 总线实例
     /// @param id_base  组内首台电机的 motor_id（必须为 1 或 5）
@@ -124,36 +123,31 @@ class WalkMotorGroup {
     DeviceError query_firmware();
 
     // ── 同步批量给定 ─────────────────────────────────────────────────────
-    /// 速度环给定：一帧同步设定4台电机（-210 ~ +210 RPM）
+    /// 速度环给定：更新当前 normal 速度控制槽（-210 ~ +210 RPM）
     DeviceError set_speeds(float lt, float rt, float lb, float rb);
     DeviceError set_speeds(const SpeedCmd& cmd);
     /// 全部相同速度（正=前进，负=后退）
     DeviceError set_speed_uniform(float rpm);
 
-    /// 电流环给定：一帧同步设定4台电机（-33 ~ +33 A）
+    /// 电流环给定：更新当前 normal 电流控制槽（-33 ~ +33 A）
     DeviceError set_currents(float lt, float rt, float lb, float rb);
 
-    /// 开环电压给定：一帧同步设定4台电机（-32767 ~ +32767 raw）
+    /// 开环电压给定：更新当前 normal 开环控制槽（-32767 ~ +32767 raw）
     DeviceError set_open_loops(int16_t lt, int16_t rt, int16_t lb, int16_t rb);
-    /// 位置环给定：一帧同步设定4台电机（0 ~ 360°，絶对位置）
+    /// 位置环给定：更新当前 normal 位置控制槽（0 ~ 360°，絶对位置）
     DeviceError set_positions(float lt_deg, float rt_deg, float lb_deg, float rb_deg);
-
-    // ── 姿态纠偏控制 ────────────────────────────────────────────────────
-    /// 设置姿态纠偏参数（默认已有合理初值）
-    void set_heading_pid_params(const HeadingPidParams& p);
-    /// 使能/禁用姿态纠偏（set_speeds 设定目标速度后，update(...) 自动补偿差速）
-    void enable_heading_control(bool en);
 
     // ── 边缘紧急覆盖（优先级最高，立即生效）────────────────────────────
     /// 立即发送停止或反转帧，并暂停心跳重发直到 clear_override() + update()
     /// @param reverse_rpm  反转速度（>0 表示反转，0 表示原地停止）
     DeviceError emergency_override(float reverse_rpm = 0.0f);
-    /// 解除紧急覆盖，下次 update() 调用时生效（清除 has_ctrl_frame_ 并重置姿态纠偏状态）。
+    /// 请求解除紧急覆盖；真正切回 Normal 发生在下一次 update() 中。
     /// @note 调用本函数后须调用一次 update() 才能令 is_override_active() 返回 false；
-    ///       这一设计保证 has_ctrl_frame_（旧速度帧）被原子清除后才恢复发帧，
-    ///       避免解除急停后立即发送过期速度命令。
+    ///       这一设计保证锁存覆盖先被状态机确认解除，再恢复 normal 控制心跳。
     void clear_override();
     bool is_override_active() const;
+    /// 每当 clear_override() 在 update() 中真正生效一次，generation 加 1。
+    uint32_t override_clear_generation() const;
 
     // ── 状态读取（线程安全，无 I/O）────────────────────────────────────
     WalkMotor::Status get_wheel_status(Wheel w) const;
@@ -162,34 +156,21 @@ class WalkMotorGroup {
     GroupDiagnostics get_group_diagnostics() const;
 
     // ── 周期心跳（建议由控制线程调用，50 ms）─────────────────────────
-    /// 心跳帧重发 + 姿态纠偏（由 walk_ctrl 线程每 20ms 调用一次）。
-    /// @param pitch_deg    当前 IMU pitch（°）
-    /// @param roll_deg     当前 IMU roll（°）
-    /// @param yaw_deg      当前 IMU yaw（°），当前仅保留给诊断/上层兼容
-    /// @param gyro_z_dps   当前 IMU Z 轴角速度（°/s），用于冻结干扰检测
-    void update(float pitch_deg = 0.0f,
-                float roll_deg = 0.0f,
-                float yaw_deg = 0.0f,
-                float gyro_z_dps = 0.0f);
+    /// 心跳推进：更新 online 状态；在 Normal 模式重发当前 normal 控制帧。
+    void update();
 
    private:
-    // ── 命令队列（Command Queue）─────────────────────────────────────────
-    /// set_speeds/set_currents/set_open_loops/set_positions/clear_override
-    /// 全部异步投递此队列，update()（walk_ctrl 线程）作为唯一消费者，
-    /// 序列化所有控制帧状态变更，彻底消除多核竞态（Q7/Q8 修复）
-    struct Cmd {
-        enum class Type : uint8_t { SET_CTRL_FRAME } type{Type::SET_CTRL_FRAME};
-        hal::CanFrame frame{};  ///< 预编码 CAN 帧（SET_CTRL_FRAME 时有效）
-        // 姿态纠偏前的上边框组基础速度；下边框组命令由其镜像推导。
-        float base_upper_lt_rpm{0.0f};
-        float base_upper_rt_rpm{0.0f};
-        std::array<float, 4> target_rpms{};  ///< diag[i].target_value 对应值
-    };
-    static constexpr int kCmdQueueSize = 8;  ///< 环形缓冲深度（正常最多 3 条/周期）
-    std::array<Cmd, kCmdQueueSize> cmd_buf_{};
-    int cmd_head_{0};       ///< 写指针（生产者写入，cmd_mtx_ 保护）
-    int cmd_tail_{0};       ///< 读指针（update() 消费，cmd_mtx_ 保护）
-    hal::PiMutex cmd_mtx_;  ///< 独立于 mtx_，保护 cmd_buf_/cmd_head_/cmd_tail_
+    // ── Normal / Override 控制状态 ──────────────────────────────────────
+    // 普通控制采用“最新槽位”语义：set_* 更新当前 normal 控制帧，update() 仅重发最后一条。
+    hal::CanFrame normal_ctrl_frame_{};
+    std::array<float, 4> normal_target_values_{};
+    bool has_normal_ctrl_frame_{false};
+
+    hal::CanFrame override_frame_{};
+    std::array<float, 4> override_target_values_{};
+
+    ControlMode control_mode_{ControlMode::Normal};
+    uint32_t override_clear_generation_{0};
 
     std::shared_ptr<hal::ICanBus> can_;
     uint8_t id_base_;                           ///< 1 或 5
@@ -207,38 +188,20 @@ class WalkMotorGroup {
     std::array<WalkMotor::Diagnostics, kWheelCount> diag_{};
     std::array<std::chrono::steady_clock::time_point, kWheelCount> last_fb_time_{};
 
-    hal::CanFrame last_ctrl_frame_{};
-    bool has_ctrl_frame_{false};
-    // 上边框组左右基础速度；下边框组速度由反向安装关系镜像推导。
-    float base_upper_lt_rpm_{0.0f};
-    float base_upper_rt_rpm_{0.0f};
-
     // 带统计的发帧计数
     uint32_t ctrl_frame_count_{0};
     uint32_t ctrl_err_count_{0};
 
-    // ── 姿态纠偏控制器 ─────────────────────────────────────────────────
-    /// 在 mtx_ 锁保护下访问；不含硬件依赖，便于独立单元测试。
-    service::HeadingPidController pid_ctrl_;
-
     // ── 边缘紧急覆盖 ──────────────────────────────────────────────────
-    std::atomic<bool> override_active_{false};
-    /// CLEAR_OVERRIDE 原子标志：clear_override() 直写，update() step2 优先检查，
-    /// 不占命令队列位置，任意满载下均不可丢失。
-    std::atomic<bool> pending_clear_override_{false};
-    /// CAN TX 串行化锁：emergency_override() 与 update() 姿态纠偏发帧路径共享。
-    /// 保证 stop 帧永远是总线上最后一帧（两条防线之二，详见 CONCURRENCY.md）。
-    /// 注意：仅保护 update() 姿态纠偏控制帧路径；
-    ///       配置帧（enable_all / set_mode_all 等）不经此锁，避免 start_returning()
-    ///       在 CLEAR_OVERRIDE 入队但未消费期间错误丢帧。
+    // clear_override() 请求标志；在下一次 update() 中真正把状态从 override 切回 normal。
+    bool clear_override_pending_{false};
+    /// CAN TX 串行化锁：确保 emergency_override() 的覆盖帧与 update() 的 normal 心跳
+    /// 不会交错发送；在 send 锁内会二次确认当前控制模式。
     hal::PiMutex send_mtx_;
-    /// update() 调用间隔计算基准（替代 static 局部变量，支持多实例和 close/open 重启重置）
-    std::chrono::steady_clock::time_point last_update_time_{};
 
     static constexpr auto kOnlineTimeout = std::chrono::milliseconds(500);
 
     DeviceError send_ctrl(const hal::CanFrame& frame);
-    bool enqueue_cmd(const Cmd& cmd);  ///< 投入环形缓冲；关闭中拒绝入队，满时丢弃最旧并 warn
     void recv_loop();
 };
 

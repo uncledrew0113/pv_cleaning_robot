@@ -38,25 +38,25 @@ MotionService::MotionService(std::shared_ptr<device::WalkMotorGroup> group,
     , heading_corrector_(cfg.pid)
     , last_override_clear_generation_(group_ ? group_->override_clear_generation() : 0u) {}
 
-void MotionService::set_parking_side_provider(std::function<ParkingSide()> provider) {
-    parking_side_provider_ = std::move(provider);
+void MotionService::set_parking_side_query(std::function<ParkingSide()> query) {
+    parking_side_query_ = std::move(query);
 }
 
-void MotionService::set_runtime_config_provider(std::function<TbRuntimeConfig()> provider) {
-    runtime_config_provider_ = std::move(provider);
+void MotionService::set_runtime_config_query(std::function<TbRuntimeConfig()> query) {
+    runtime_config_query_ = std::move(query);
 }
 
 int MotionService::task_direction_sign() const {
-    if (!parking_side_provider_)
+    if (!parking_side_query_)
         return 1;
-    return parking_side_provider_() == ParkingSide::Left ? -1 : 1;
+    return parking_side_query_() == ParkingSide::Left ? -1 : 1;
 }
 
 void MotionService::sync_runtime_config() {
-    if (!runtime_config_provider_) {
+    if (!runtime_config_query_) {
         return;
     }
-    const auto runtime_cfg = runtime_config_provider_();
+    const auto runtime_cfg = runtime_config_query_();
     cfg_.clean_speed_rpm = static_cast<float>(runtime_cfg.clean_speed_rpm);
     cfg_.return_speed_rpm = static_cast<float>(runtime_cfg.return_speed_rpm);
     cfg_.brush_rpm = runtime_cfg.brush_rpm;

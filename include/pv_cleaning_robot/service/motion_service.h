@@ -47,10 +47,10 @@ class MotionService : public middleware::IRunnable {
                   middleware::EventBus& bus,
                   Config cfg);
 
-    /// 以“停机位在右侧”为运动方向基线；provider 返回 Left 时整体取反。
-    void set_parking_side_provider(std::function<ParkingSide()> provider);
+    /// 以“停机位在右侧”为运动方向基线；查询返回 Left 时整体取反。
+    void set_parking_side_query(std::function<ParkingSide()> query);
     /// 新任务启动前从 active runtime 同步速度/滚刷参数。
-    void set_runtime_config_provider(std::function<TbRuntimeConfig()> provider);
+    void set_runtime_config_query(std::function<TbRuntimeConfig()> query);
 
     // ── 运动控制 ──────────────────────────────────────────────────────────
     /// 开始清扫前进（使能行走 + 滚刷，启用姿态纠偏）
@@ -79,8 +79,8 @@ class MotionService : public middleware::IRunnable {
     std::shared_ptr<device::ImuDevice> imu_;
     middleware::EventBus& bus_;
     Config cfg_;
-    std::function<ParkingSide()> parking_side_provider_;
-    std::function<TbRuntimeConfig()> runtime_config_provider_;
+    std::function<ParkingSide()> parking_side_query_;
+    std::function<TbRuntimeConfig()> runtime_config_query_;
     HeadingCorrector heading_corrector_{};
     device::WalkMotorGroup::SpeedCmd base_speed_cmd_{};
     bool walk_command_active_{false};

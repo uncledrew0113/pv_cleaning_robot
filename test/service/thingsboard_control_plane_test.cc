@@ -111,7 +111,7 @@ struct Fixture {
         std::make_shared<robot::device::WalkMotorGroup>(can)};
     std::shared_ptr<MockSerialPort> brush_serial{std::make_shared<MockSerialPort>()};
     std::shared_ptr<robot::device::BrushMotor> brush{
-        std::make_shared<robot::device::BrushMotor>(brush_serial, 0, 8192.0f, true, 0.5f)};
+        std::make_shared<robot::device::BrushMotor>(brush_serial, 0)};
     std::shared_ptr<MockSerialPort> imu_serial{std::make_shared<MockSerialPort>()};
     std::shared_ptr<robot::device::ImuDevice> imu{
         std::make_shared<robot::device::ImuDevice>(imu_serial)};
@@ -168,9 +168,9 @@ struct Fixture {
         MotionService::Config motion_cfg;
         motion_cfg.heading_pid_en = false;
         motion = std::make_shared<MotionService>(group, brush, nullptr, bus, motion_cfg);
-        motion->set_parking_side_provider(
+        motion->set_parking_side_query(
             [this]() { return tb_cfg->active_config().parking_side; });
-        motion->set_runtime_config_provider([this]() { return tb_cfg->active_config(); });
+        motion->set_runtime_config_query([this]() { return tb_cfg->active_config(); });
         nav = std::make_shared<NavService>(group, imu, gps);
         fsm = std::make_shared<robot::app::RobotFsm>(motion, nav, fault, bus);
         supervisor = std::make_shared<robot::app::RobotSupervisor>(

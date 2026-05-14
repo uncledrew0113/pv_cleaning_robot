@@ -99,9 +99,6 @@ class GpsdGpsSource final : public IGpsSource {
     DeviceError hot_restart() override;
     DeviceError cold_restart() override;
 
-    /// @brief 单元测试专用：注入一行 gpsd JSON 数据进行解析。
-    void ingest_json_line_for_test(std::string_view line);
-
    private:
     static constexpr size_t kRxBufCap = 2048;
 

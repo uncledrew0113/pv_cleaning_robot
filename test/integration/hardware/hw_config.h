@@ -87,9 +87,6 @@ struct HwParams {
     std::string brush_port = "/dev/ttyACM0";
     int brush_baud = 115200;
     uint8_t brush_axis = 0u;
-    float brush_counts_per_rev = 8192.0f;
-    bool brush_watchdog_enabled = false;
-    float brush_watchdog_timeout_s = 0.5f;
     std::string gpsd_host = "127.0.0.1";
     int gpsd_port = 2947;
     std::string gpsd_watch = "?WATCH={\"enable\":true,\"json\":true};";
@@ -122,7 +119,7 @@ struct HwParams {
     std::string pid_jsonl_path = "/tmp/hw_pid_test_metrics.jsonl";  ///< PID 指标 JSONL 路径
     float pid_max_drift_deg = 15.0f;  ///< pid_combined: 全程最大 yaw 漂移警告阈值（°）
 
-    /// 姿态纠偏参数，与 HeadingPidController::Params 字段一一对应
+    /// 姿态纠偏参数，与 HeadingCorrector::Params 字段一一对应
     struct PidParams {
         float pitch_alpha{0.2f};
         float roll_alpha{0.2f};
@@ -180,12 +177,6 @@ inline HwParams load_hw_test_config() {
         p.brush_baud = cfg.get<int>("hardware.brush_baud", p.brush_baud);
         p.brush_axis = static_cast<uint8_t>(
             cfg.get<int>("hardware.brush_axis", static_cast<int>(p.brush_axis)));
-        p.brush_counts_per_rev =
-            cfg.get<float>("hardware.brush_counts_per_rev", p.brush_counts_per_rev);
-        p.brush_watchdog_enabled =
-            cfg.get<bool>("hardware.brush_watchdog_enabled", p.brush_watchdog_enabled);
-        p.brush_watchdog_timeout_s =
-            cfg.get<float>("hardware.brush_watchdog_timeout_s", p.brush_watchdog_timeout_s);
         p.gpsd_host = cfg.get<std::string>("hardware.gpsd_host", p.gpsd_host);
         p.gpsd_port = cfg.get<int>("hardware.gpsd_port", p.gpsd_port);
         p.gpsd_watch = cfg.get<std::string>("hardware.gpsd_watch", p.gpsd_watch);
@@ -354,11 +345,7 @@ struct FullSystemFixture : DeviceFixture, IGracefulShutdown {
             mock_brush_serial = std::make_shared<MockSerialPort>();
             brush_serial = mock_brush_serial;
         }
-        brush = std::make_shared<device::BrushMotor>(brush_serial,
-                                                     p.brush_axis,
-                                                     p.brush_counts_per_rev,
-                                                     p.brush_watchdog_enabled,
-                                                     p.brush_watchdog_timeout_s);
+        brush = std::make_shared<device::BrushMotor>(brush_serial, p.brush_axis);
 
         // SafetyMonitor 构造时内部绑定 LimitSwitch 回调
         safety =
@@ -456,8 +443,6 @@ struct FullSystemFixture : DeviceFixture, IGracefulShutdown {
         } else if (use_real_brush_) {
             if (brush->clear_fault() != DeviceError::OK)
                 spdlog::warn("[FullSystemFixture] 真实滚刷 clear_fault 失败");
-            if (brush->set_mode_speed() != DeviceError::OK)
-                spdlog::warn("[FullSystemFixture] 真实滚刷 set_mode_speed 失败");
         }
 
         // 限位开关：gpiochip5 不支持 IRQ，使用 1ms 软件轮询；测试中不设 RT 优先级，无 CPU 绑定
@@ -613,7 +598,7 @@ struct ImuGpsHealthFixture {
         walk_group = std::make_shared<device::WalkMotorGroup>(mock_can, 1u, 200u, false, 1u, 2u);
 
         mock_brush_serial = std::make_shared<MockSerialPort>();
-        brush = std::make_shared<device::BrushMotor>(mock_brush_serial, 0u, 8192.0f, false, 0.5f);
+        brush = std::make_shared<device::BrushMotor>(mock_brush_serial, 0u);
 
         mock_bms_serial = std::make_shared<MockSerialPort>();
         bms = std::make_shared<device::BMS>(mock_bms_serial, 95.0f, 15.0f);
@@ -706,9 +691,7 @@ struct ThingsBoardRuntimeFixture : FullSystemFixture {
     bool init_thingsboard_runtime(const std::string& health_jsonl_path = "") {
         tb_paths = tb_test_support::find_repo_paths();
         if (!tb_paths.has_value()) {
-            spdlog::error(
-                "[ThingsBoardRuntimeFixture] 未找到 config.runtime.json/config.fixed.json 或旧 "
-                "config.json");
+            spdlog::error("[ThingsBoardRuntimeFixture] 未找到 config.runtime.json/config.fixed.json");
             return false;
         }
 
@@ -745,9 +728,9 @@ struct ThingsBoardRuntimeFixture : FullSystemFixture {
             std::make_shared<robot::service::ThingsBoardConfigManager>(*tb_cfg_file, scheduler);
         command_tracker = std::make_shared<robot::service::CommandTracker>();
         if (motion) {
-            motion->set_parking_side_provider(
+            motion->set_parking_side_query(
                 [this]() { return tb_cfg->active_config().parking_side; });
-            motion->set_runtime_config_provider([this]() { return tb_cfg->active_config(); });
+            motion->set_runtime_config_query([this]() { return tb_cfg->active_config(); });
         }
         supervisor =
             std::make_shared<robot::app::RobotSupervisor>(fsm, tb_cfg, command_tracker, fault, nav);

@@ -68,14 +68,6 @@ size_t encode_set_velocity(uint8_t axis, float counts_per_sec, char* out, size_t
     return encode_line(out, cap, "v %u %.3f 0\n", static_cast<unsigned>(axis), counts_per_sec);
 }
 
-size_t encode_set_torque(uint8_t axis, float torque_nm, char* out, size_t cap) noexcept {
-    return encode_line(out, cap, "c %u %.3f\n", static_cast<unsigned>(axis), torque_nm);
-}
-
-size_t encode_watchdog_feed(uint8_t axis, char* out, size_t cap) noexcept {
-    return encode_line(out, cap, "u %u\n", static_cast<unsigned>(axis));
-}
-
 size_t encode_feedback_request(uint8_t axis, char* out, size_t cap) noexcept {
     return encode_line(out, cap, "f %u\n", static_cast<unsigned>(axis));
 }
@@ -86,38 +78,6 @@ size_t encode_clear_errors(char* out, size_t cap) noexcept {
 
 size_t encode_restart(char* out, size_t cap) noexcept {
     return encode_line(out, cap, "sr\n");
-}
-
-size_t encode_set_control_mode(uint8_t axis,
-                               OdriveControlMode mode,
-                               char* out,
-                               size_t cap) noexcept {
-    return encode_line(out,
-                       cap,
-                       "w axis%u.controller.config.control_mode %u\n",
-                       static_cast<unsigned>(axis),
-                       static_cast<unsigned>(mode));
-}
-
-size_t encode_set_requested_state(uint8_t axis, uint32_t state, char* out, size_t cap) noexcept {
-    return encode_line(
-        out, cap, "w axis%u.requested_state %u\n", static_cast<unsigned>(axis), state);
-}
-
-size_t encode_set_watchdog_enabled(uint8_t axis, bool enabled, char* out, size_t cap) noexcept {
-    return encode_line(out,
-                       cap,
-                       "w axis%u.config.enable_watchdog %u\n",
-                       static_cast<unsigned>(axis),
-                       enabled ? 1u : 0u);
-}
-
-size_t encode_set_watchdog_timeout(uint8_t axis, float timeout_s, char* out, size_t cap) noexcept {
-    return encode_line(out,
-                       cap,
-                       "w axis%u.config.watchdog_timeout %.3f\n",
-                       static_cast<unsigned>(axis),
-                       timeout_s);
 }
 
 size_t encode_read_property(OdriveReadProperty property,

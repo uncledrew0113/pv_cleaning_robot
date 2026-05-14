@@ -41,7 +41,7 @@ struct FsmFixture {
     std::shared_ptr<WalkMotorGroup> group{std::make_shared<WalkMotorGroup>(can)};
     std::shared_ptr<MockSerialPort> brush_serial{std::make_shared<MockSerialPort>()};
     std::shared_ptr<BrushMotor> brush{
-        std::make_shared<BrushMotor>(brush_serial, 0, 8192.0f, true, 0.5f)};
+        std::make_shared<BrushMotor>(brush_serial, 0)};
     std::shared_ptr<MockSerialPort> imu_serial{std::make_shared<MockSerialPort>()};
     std::shared_ptr<ImuDevice> imu{std::make_shared<ImuDevice>(imu_serial)};
     std::shared_ptr<MockSerialPort> gps_serial{std::make_shared<MockSerialPort>()};

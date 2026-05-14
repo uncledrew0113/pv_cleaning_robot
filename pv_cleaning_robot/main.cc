@@ -3,7 +3,7 @@
  * @brief PV 清扫机器人主程序入口（配置文件驱动依赖注入）
  *
  * 启动流程：
- *   1. 优先加载 split config（runtime + fixed），失败时回退旧 config/config.json
+ *   1. 加载 split config（runtime + fixed）
  *   2. 初始化日志
  *   3. 构造 HAL / Driver / Device 对象
  *   4. 构造 Middleware / Service / App 对象
@@ -172,24 +172,15 @@ void register_scheduler_start(
 
 int main() {
     // ── 1. 配置服务 ────────────────────────────────────────────────────
-    // 优先尝试 split 配置文件；ConfigService::get() 会先读 runtime，再回退到 fixed。
+    // ConfigService::get() 会先读 runtime，再回退到 fixed。
     auto cfg_ptr = std::make_unique<robot::service::ConfigService>(
         "/opt/robot/config/config.runtime.json", "/opt/robot/config/config.fixed.json");
     if (!cfg_ptr->load()) {
         cfg_ptr = std::make_unique<robot::service::ConfigService>("config/config.runtime.json",
                                                                   "config/config.fixed.json");
         if (!cfg_ptr->load()) {
-            cfg_ptr =
-                std::make_unique<robot::service::ConfigService>("/opt/robot/config/config.json");
-            if (!cfg_ptr->load()) {
-                cfg_ptr = std::make_unique<robot::service::ConfigService>("config/config.json");
-                if (!cfg_ptr->load()) {
-                    fprintf(stderr,
-                            "[FATAL] 无法加载 config.runtime.json/config.fixed.json 或旧 "
-                            "config.json\n");
-                    return 1;
-                }
-            }
+            fprintf(stderr, "[FATAL] 无法加载 config.runtime.json/config.fixed.json\n");
+            return 1;
         }
     }
     auto& cfg = *cfg_ptr;
@@ -226,7 +217,8 @@ int main() {
     auto can_bus = std::make_shared<robot::driver::LinuxCanSocket>(
         cfg.get<std::string>("can.interface", "can0"));
 
-    // WalkMotorGroup：4轮统一控制，含通信超时/航向PID/边缘覆盖功能
+    // WalkMotorGroup：4轮统一控制，含通信超时与锁存式 emergency override；
+    // 航向纠偏由 MotionService 持有的 HeadingCorrector 负责
     // comm_timeout=200ms（update() 20ms 周期的 10 倍），允许错过 9 帧不停车
     auto walk_group = std::make_shared<robot::device::WalkMotorGroup>(
         can_bus,
@@ -247,15 +239,12 @@ int main() {
 
     auto brush_motor = std::make_shared<robot::device::BrushMotor>(
         brush_serial,
-        cfg.get<uint8_t>("serial.brush.axis", 0u),
-        cfg.get<float>("serial.brush.counts_per_rev", 8192.0f),
-        cfg.get<bool>("serial.brush.watchdog_enabled", true),
-        cfg.get<float>("serial.brush.watchdog_timeout_s", 0.5f));
+        cfg.get<uint8_t>("serial.brush.axis", 0u));
 
     auto bms = std::make_shared<robot::device::BMS>(
         bms_serial,
-        cfg.get<float>("robot.charge_stop_soc", cfg.get<float>("robot.battery_full_soc", 95.0f)),
-        cfg.get<float>("robot.charge_start_soc", cfg.get<float>("robot.battery_low_soc", 15.0f)));
+        cfg.get<float>("robot.charge_stop_soc", 95.0f),
+        cfg.get<float>("robot.charge_start_soc", 15.0f));
 
     // ── 7. UART 驱动 ──────────────────────────────────────────────────
     auto imu_serial = std::make_shared<robot::driver::LibSerialPort>(
@@ -278,10 +267,8 @@ int main() {
         }
 
         auto gps_serial = std::make_shared<robot::driver::LibSerialPort>(
-            cfg.get<std::string>("gps.serial.port",
-                                 cfg.get<std::string>("serial.gps.port", "/dev/ttyS2")),
-            robot::hal::UartConfig{
-                cfg.get<int>("gps.serial.baudrate", cfg.get<int>("serial.gps.baudrate", 9600))});
+            cfg.get<std::string>("gps.serial.port", "/dev/ttyS2"),
+            robot::hal::UartConfig{cfg.get<int>("gps.serial.baudrate", 9600)});
         gps = std::make_shared<robot::device::GpsDevice>(gps_serial);
     }
 
@@ -474,9 +461,9 @@ int main() {
         std::make_shared<robot::app::RobotSupervisor>(fsm, tb_cfg, command_tracker, fault, nav);
     auto tb_control = std::make_shared<robot::service::ThingsBoardControlPlane>(
         cfg, cloud, tb_cfg, command_tracker, supervisor);
-    motion->set_parking_side_provider(
+    motion->set_parking_side_query(
         [tb_control]() { return tb_control->active_config().parking_side; });
-    motion->set_runtime_config_provider([tb_control]() { return tb_control->active_config(); });
+    motion->set_runtime_config_query([tb_control]() { return tb_control->active_config(); });
     const auto physical_limit_facts_for =
         [&left_switch, &right_switch, &left_open_ok, &right_open_ok](
             robot::service::ParkingSide parking_side) {
@@ -559,24 +546,27 @@ int main() {
 
     // ── 15. 上报服务 ───────────────────────────────────────────────────
     std::string diag_mode = cfg.get<std::string>("diagnostics.mode", "production");
+    const bool cloud_upload = cfg.get<bool>("diagnostics.cloud_upload", true);
+    const bool local_log = cfg.get<bool>("diagnostics.local_log", true);
     // HealthService 已内嵌 DiagnosticsCollector 逻辑：
     //   production  -> Mode::HEALTH      （精简状态字段）
     //   development -> Mode::DIAGNOSTICS （完整诊断字段）
     // local_log_path 非空时额外把每帧 JSON payload 以 JSONL 追加到本地文件，
     // 离线调试阶段可直接 cat/grep 查看，完全独立于 MQTT/LoRaWAN。
-    std::string local_tel_path = cfg.get<std::string>(
-        "diagnostics.local_log_path", cfg.get<std::string>("diagnostics.local_path", ""));
+    std::string local_tel_path =
+        local_log ? cfg.get<std::string>("diagnostics.local_log_path", "") : "";
     const size_t local_log_max_bytes = static_cast<size_t>(
         std::max(1, cfg.get<int>("diagnostics.local_log_max_bytes", 10 * 1024 * 1024)));
     const size_t local_log_max_files =
         static_cast<size_t>(std::max(1, cfg.get<int>("diagnostics.local_log_max_files", 3)));
+    std::shared_ptr<robot::service::CloudService> health_cloud = cloud_upload ? cloud : nullptr;
     auto reporter = std::make_shared<robot::service::HealthService>(
         walk_group,
         brush_motor,
         bms,
         imu,
         gps,
-        cloud,
+        health_cloud,
         diag_mode == "development" ? robot::service::HealthService::Mode::DIAGNOSTICS
                                    : robot::service::HealthService::Mode::HEALTH,
         local_tel_path,
@@ -626,16 +616,20 @@ int main() {
         [&watchdog, bms_wd]() { watchdog.heartbeat(bms_wd); }));
 
     // 云端上报线程：绑定 LITTLE 核 CPU 0-3（低功耗后台）
-    int report_period = cfg.get<int>("diagnostics.publish_interval_ms", 1000);
     const int active_report_period =
-        std::max(1, cfg.get<int>("diagnostics.publish_interval_active_ms", report_period));
+        std::max(1, cfg.get<int>("diagnostics.publish_interval_active_ms", 1000));
     const int idle_report_period =
         std::max(1, cfg.get<int>("diagnostics.publish_interval_idle_ms", 300000));
-    robot::middleware::ThreadExecutor cloud_exec({"cloud", report_period, SCHED_OTHER, 0, 0x0F});
-    cloud_exec.add_runnable(reporter);
-    cloud_exec.add_runnable(std::make_shared<robot::middleware::RunnableAdapter>(
-        [tb_control]() { tb_control->publish_business_telemetry(); }));
-    cloud_exec.add_runnable(cloud);
+    robot::middleware::ThreadExecutor cloud_exec(
+        {"cloud", active_report_period, SCHED_OTHER, 0, 0x0F});
+    if (cloud_upload || local_log) {
+        cloud_exec.add_runnable(reporter);
+    }
+    if (cloud_upload) {
+        cloud_exec.add_runnable(std::make_shared<robot::middleware::RunnableAdapter>(
+            [tb_control]() { tb_control->publish_business_telemetry(); }));
+        cloud_exec.add_runnable(cloud);
+    }
     int cloud_wd = watchdog.register_thread("cloud", 310000);
     cloud_exec.add_runnable(std::make_shared<robot::middleware::RunnableAdapter>(
         [&watchdog, cloud_wd]() { watchdog.heartbeat(cloud_wd); }));
