@@ -37,7 +37,6 @@ using robot::service::FaultService;
 using robot::service::MotionService;
 using robot::service::NavService;
 using robot::service::SchedulerService;
-using robot::service::ThingsBoardConfigManager;
 namespace fs = std::filesystem;
 
 namespace {
@@ -63,7 +62,6 @@ struct SupervisorFixture {
     ConfigService cfg{paths.runtime_path.string(), paths.fixed_path.string()};
     SchedulerService scheduler;
     std::vector<FaultService::FaultEvent> fault_events;
-    std::shared_ptr<ThingsBoardConfigManager> tb_cfg;
     std::shared_ptr<CommandTracker> command_tracker{std::make_shared<CommandTracker>()};
     std::shared_ptr<RobotFsm> fsm;
     std::shared_ptr<RobotSupervisor> supervisor;
@@ -104,15 +102,15 @@ struct SupervisorFixture {
         REQUIRE(cfg.load());
         bus.subscribe<FaultService::FaultEvent>(
             [this](const FaultService::FaultEvent& evt) { fault_events.push_back(evt); });
-        tb_cfg = std::make_shared<ThingsBoardConfigManager>(cfg, scheduler);
+        cfg.apply_active_runtime_schedules(scheduler);
         motion->set_parking_side_query(
-            [this]() { return tb_cfg->active_config().parking_side; });
+            [this]() { return cfg.active_runtime_config().parking_side; });
         motion->set_runtime_config_query(
-            [this]() { return tb_cfg->active_config(); });
+            [this]() { return cfg.active_runtime_config(); });
         fsm = std::make_shared<RobotFsm>(motion, nav, fault, bus);
         fsm->dispatch(EvInitDone{});
         supervisor =
-            std::make_shared<RobotSupervisor>(fsm, tb_cfg, command_tracker, fault, nav);
+            std::make_shared<RobotSupervisor>(fsm, cfg, command_tracker, fault, nav);
     }
 
     ~SupervisorFixture() {
@@ -156,26 +154,42 @@ TEST_CASE("RobotSupervisor rpc start can begin task away from parking side",
     REQUIRE(f.fsm->current_state() == "CleanFwd");
 }
 
+TEST_CASE("RobotSupervisor startup assessment requests return when robot is at no endpoint",
+          "[app][robot_supervisor]") {
+    SupervisorFixture f;
+    const auto result = f.supervisor->handle_startup_position(false, false);
+    REQUIRE(result.facts.no_endpoint_active);
+    REQUIRE(result.should_request_return);
+    REQUIRE(std::string(result.status_reason) == "robot_not_at_any_endpoint");
+    REQUIRE(f.fsm->current_state() == "Returning");
+}
+
+TEST_CASE("RobotSupervisor scheduler entry uses start parking side facts", "[app][robot_supervisor]") {
+    SupervisorFixture f;
+    REQUIRE(f.supervisor->handle_scheduler_window_hit(true, false, 60.0f));
+    REQUIRE(f.fsm->current_state() == "CleanFwd");
+}
+
 TEST_CASE("RobotSupervisor promotes pending config before task start", "[app][robot_supervisor]") {
     SupervisorFixture f;
     auto attrs = parse_json(R"({"passes":3.0})");
-    REQUIRE(f.tb_cfg->apply_shared_attributes(attrs).accepted);
-    REQUIRE(f.tb_cfg->has_pending_config());
+    REQUIRE(f.cfg.apply_runtime_patch(attrs).accepted);
+    REQUIRE(f.cfg.has_pending_runtime_config());
 
     REQUIRE(f.supervisor->start_task(true, true, 60.0f));
-    REQUIRE(f.tb_cfg->active_config().passes == Approx(3.0));
+    REQUIRE(f.cfg.active_runtime_config().passes == Approx(3.0));
 }
 
 TEST_CASE("RobotSupervisor start uses promoted runtime speed config", "[app][robot_supervisor]") {
     SupervisorFixture f;
     auto attrs = parse_json(
         R"({"clean_speed_rpm":360.0,"brush_rpm":1500,"return_brush_rpm":900})");
-    REQUIRE(f.tb_cfg->apply_shared_attributes(attrs).accepted);
-    REQUIRE(f.tb_cfg->has_pending_config());
+    REQUIRE(f.cfg.apply_runtime_patch(attrs).accepted);
+    REQUIRE(f.cfg.has_pending_runtime_config());
 
     REQUIRE(f.supervisor->start_task(true, true, 60.0f));
-    REQUIRE(f.tb_cfg->active_config().clean_speed_rpm == Approx(360.0));
-    REQUIRE(f.tb_cfg->active_config().return_brush_rpm == 900);
+    REQUIRE(f.cfg.active_runtime_config().clean_speed_rpm == Approx(360.0));
+    REQUIRE(f.cfg.active_runtime_config().return_brush_rpm == 900);
     f.motion->update();
     const auto diag = f.group->get_group_diagnostics();
     REQUIRE(diag.wheel[0].target_value == Approx(-210.0f));

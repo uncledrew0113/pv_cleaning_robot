@@ -107,7 +107,7 @@ TEST_CASE("MotionService start_cleaning flips walk direction for left parking si
             1u, -210.0f, -210.0f, 210.0f, 210.0f)));
 }
 
-TEST_CASE("MotionService start_cleaning switches brush to speed mode and sets rpm",
+TEST_CASE("MotionService start_cleaning commands brush rpm with current direction model",
           "[service][motion]") {
     MotionFixture f;
     f.serial->clear_tx();
@@ -115,8 +115,7 @@ TEST_CASE("MotionService start_cleaning switches brush to speed mode and sets rp
     f.motion.start_cleaning();
 
     const auto tx = f.serial->take_tx_text();
-    REQUIRE(tx.find("w axis0.controller.config.control_mode 2\n") != std::string::npos);
-    REQUIRE(tx.find("v 0 20.000 0\n") != std::string::npos);
+    REQUIRE(tx.find("v 0 -20.000 0\n") != std::string::npos);
 }
 
 TEST_CASE("MotionService start_cleaning flips brush direction for left parking side",
@@ -128,15 +127,15 @@ TEST_CASE("MotionService start_cleaning flips brush direction for left parking s
     f.motion.start_cleaning();
 
     const auto tx = f.serial->take_tx_text();
-    REQUIRE(tx.find("v 0 -20.000 0\n") != std::string::npos);
+    REQUIRE(tx.find("v 0 20.000 0\n") != std::string::npos);
 }
 
-TEST_CASE("MotionService start_cleaning preserves signed brush rpm from runtime config",
+TEST_CASE("MotionService start_cleaning normalizes signed runtime brush rpm to absolute value",
           "[service][motion]") {
     MotionFixture f;
     f.motion.set_parking_side_query([] { return robot::service::ParkingSide::Right; });
     f.motion.set_runtime_config_query([] {
-        robot::service::TbRuntimeConfig cfg;
+        robot::service::RuntimeConfig cfg;
         cfg.clean_speed_rpm = 300.0;
         cfg.return_speed_rpm = 300.0;
         cfg.brush_rpm = -1200;
@@ -168,7 +167,7 @@ TEST_CASE("MotionService start_returning reverses brush direction", "[service][m
 
     REQUIRE(f.motion.start_returning());
 
-    REQUIRE(f.serial->take_tx_text().find("v 0 -20.000 0\n") != std::string::npos);
+    REQUIRE(f.serial->take_tx_text().find("v 0 20.000 0\n") != std::string::npos);
 }
 
 TEST_CASE("MotionService start_returning flips walk and brush direction for left parking side",
@@ -185,14 +184,14 @@ TEST_CASE("MotionService start_returning flips walk and brush direction for left
         f.can->sent_frames,
         robot::protocol::WalkMotorCanCodec::encode_group_speed(
             1u, 210.0f, 210.0f, -210.0f, -210.0f)));
-    REQUIRE(f.serial->take_tx_text().find("v 0 20.000 0\n") != std::string::npos);
+    REQUIRE(f.serial->take_tx_text().find("v 0 -20.000 0\n") != std::string::npos);
 }
 
 TEST_CASE("MotionService start_cleaning syncs runtime config before sending commands",
           "[service][motion]") {
     MotionFixture f;
     f.motion.set_runtime_config_query([] {
-        robot::service::TbRuntimeConfig cfg;
+        robot::service::RuntimeConfig cfg;
         cfg.clean_speed_rpm = 360.0;
         cfg.return_speed_rpm = 420.0;
         cfg.brush_rpm = 1500;
@@ -209,14 +208,14 @@ TEST_CASE("MotionService start_cleaning syncs runtime config before sending comm
     REQUIRE(diag.wheel[1].target_value == Approx(210.0f));
     REQUIRE(diag.wheel[2].target_value == Approx(-210.0f));
     REQUIRE(diag.wheel[3].target_value == Approx(-210.0f));
-    REQUIRE(f.serial->take_tx_text().find("v 0 25.000 0\n") != std::string::npos);
+    REQUIRE(f.serial->take_tx_text().find("v 0 -25.000 0\n") != std::string::npos);
 }
 
 TEST_CASE("MotionService start_returning syncs runtime return brush rpm before sending commands",
           "[service][motion]") {
     MotionFixture f;
     f.motion.set_runtime_config_query([] {
-        robot::service::TbRuntimeConfig cfg;
+        robot::service::RuntimeConfig cfg;
         cfg.clean_speed_rpm = 300.0;
         cfg.return_speed_rpm = 420.0;
         cfg.brush_rpm = 1500;
@@ -233,6 +232,41 @@ TEST_CASE("MotionService start_returning syncs runtime return brush rpm before s
     REQUIRE(diag.wheel[1].target_value == Approx(-210.0f));
     REQUIRE(diag.wheel[2].target_value == Approx(210.0f));
     REQUIRE(diag.wheel[3].target_value == Approx(210.0f));
+    REQUIRE(f.serial->take_tx_text().find("v 0 15.000 0\n") != std::string::npos);
+}
+
+TEST_CASE("MotionService runtime speed config uses absolute values for wheel direction model",
+          "[service][motion]") {
+    MotionFixture f;
+    f.motion.set_parking_side_query([] { return robot::service::ParkingSide::Left; });
+    f.motion.set_runtime_config_query([] {
+        robot::service::RuntimeConfig cfg;
+        cfg.clean_speed_rpm = -360.0;
+        cfg.return_speed_rpm = -420.0;
+        cfg.brush_rpm = -1500;
+        cfg.return_brush_rpm = -900;
+        cfg.parking_side = robot::service::ParkingSide::Left;
+        return cfg;
+    });
+    f.serial->clear_tx();
+
+    REQUIRE(f.motion.start_cleaning());
+    f.motion.update();
+    auto diag = f.group->get_group_diagnostics();
+    REQUIRE(diag.wheel[0].target_value == Approx(-210.0f));
+    REQUIRE(diag.wheel[1].target_value == Approx(-210.0f));
+    REQUIRE(diag.wheel[2].target_value == Approx(210.0f));
+    REQUIRE(diag.wheel[3].target_value == Approx(210.0f));
+    REQUIRE(f.serial->take_tx_text().find("v 0 25.000 0\n") != std::string::npos);
+
+    f.serial->clear_tx();
+    REQUIRE(f.motion.start_returning());
+    f.motion.update();
+    diag = f.group->get_group_diagnostics();
+    REQUIRE(diag.wheel[0].target_value == Approx(210.0f));
+    REQUIRE(diag.wheel[1].target_value == Approx(210.0f));
+    REQUIRE(diag.wheel[2].target_value == Approx(-210.0f));
+    REQUIRE(diag.wheel[3].target_value == Approx(-210.0f));
     REQUIRE(f.serial->take_tx_text().find("v 0 -15.000 0\n") != std::string::npos);
 }
 
@@ -257,7 +291,7 @@ TEST_CASE("MotionService emergency_stop idles brush", "[service][motion]") {
 
     f.motion.emergency_stop();
 
-    REQUIRE(f.serial->take_tx_text().find("w axis0.requested_state 1\n") != std::string::npos);
+    REQUIRE(f.serial->take_tx_text().find("v 0 0.000 0\n") != std::string::npos);
     REQUIRE_FALSE(f.can->sent_frames.empty());
 }
 

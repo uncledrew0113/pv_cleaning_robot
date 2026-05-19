@@ -240,7 +240,7 @@ TEST_CASE("清扫过程 BMS 数据持续有效", "[hw_cycle][bms_valid]") {
 // [hw_cycle][imu_valid] — 清扫过程中 IMU 数据持续有效
 // ────────────────────────────────────────────────────────────────────────────
 TEST_CASE("清扫过程 IMU 数据持续有效", "[hw_cycle][imu_valid]") {
-    hw::FullSystemFixture fx(true /* pid_on，IMU 数据为 PID 必要条件 */);
+    hw::FullSystemFixture fx(true /* pid_on，视觉 PID 开启，不依赖 IMU 姿态闭环 */);
     REQUIRE(fx.init());
     REQUIRE(fx.wait_state("Idle", 2s));
 

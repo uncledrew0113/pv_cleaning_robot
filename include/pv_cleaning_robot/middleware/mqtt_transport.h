@@ -41,7 +41,8 @@ inline bool mqtt_topic_matches(const std::string& filter, const std::string& top
             return tnext == std::string::npos;
         }
         if (tnext == std::string::npos) {
-            return false;
+            // MQTT 规则：尾段 "/#" 可以匹配“当前层级到此结束”的 topic。
+            return filter.compare(fnext, filter.size() - fnext, "/#") == 0;
         }
 
         fi = fnext + 1;

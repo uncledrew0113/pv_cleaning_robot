@@ -113,29 +113,29 @@ struct HwParams {
     float limit_test_rpm = 10.0f;
     float brush_test_rpm = 3000.0f;  ///< ODrive 滚刷硬件测试目标转速
     float combined_passes = 50.0f;   ///< combined 测试趟数（1=一来回，2=两来回…）
+    robot::service::ParkingSide parking_side =
+        robot::service::ParkingSide::Right;  ///< 硬件测试运行时停机位配置
     std::string health_jsonl_path = "/tmp/hw_system_test_health.jsonl";
     size_t health_log_max_bytes = 10u * 1024u * 1024u;  ///< HealthService 本地轮转单文件上限
     size_t health_log_max_files = 3u;  ///< HealthService 本地轮转保留文件数
-    std::string pid_jsonl_path = "/tmp/hw_pid_test_metrics.jsonl";  ///< PID 指标 JSONL 路径
-    float pid_max_drift_deg = 15.0f;  ///< pid_combined: 全程最大 yaw 漂移警告阈值（°）
+    std::string pid_jsonl_path = "/tmp/hw_pid_test_metrics.jsonl";  ///< 预留调试输出路径
+    float pid_max_drift_deg = 15.0f;  ///< 预留调试阈值
 
-    /// 姿态纠偏参数，与 HeadingCorrector::Params 字段一一对应
+    /// 视觉纠偏参数，与 HeadingCorrector::Params 字段一一对应
     struct PidParams {
-        float pitch_alpha{0.2f};
-        float roll_alpha{0.2f};
-        float gyro_alpha{0.2f};
-        float pitch_drop_threshold{0.12f};
-        float roll_threshold{0.6f};
-        float learn_improve_eps{0.03f};
-        float best_decay_per_s{0.01f};
-        float freeze_gyro_z_threshold{30.0f};
-        float freeze_pitch_rate_threshold{20.0f};
-        float freeze_roll_rate_threshold{20.0f};
+        std::string uds_path{"/tmp/pv_edge_tracker.sock"};
+        int reconnect_interval_ms{500};
+        int result_timeout_ms{500};
+        float min_confidence{0.60f};
+        float deadband_slope{0.02f};
+        float kp{60.0f};
+        float ki{0.0f};
+        float kd{0.0f};
+        float integral_limit{1.0f};
         float max_output{30.0f};
         float min_effective_output{0.0f};
-        int warmup_ms{400};
-        int hold_ms{400};
-        int freeze_release_ms{300};
+        float slope_alpha{0.35f};
+        float output_sign{1.0f};
     } pid;
 };
 
@@ -207,6 +207,20 @@ inline HwParams load_hw_test_config() {
         p.limit_test_rpm = cfg.get<float>("behavior.limit_test_rpm", p.limit_test_rpm);
         p.brush_test_rpm = cfg.get<float>("behavior.brush_test_rpm", p.brush_test_rpm);
         p.combined_passes = cfg.get<float>("behavior.combined_passes", p.combined_passes);
+        {
+            const auto parking_side =
+                cfg.get<std::string>("behavior.parking_side", "right");
+            if (parking_side == "left") {
+                p.parking_side = robot::service::ParkingSide::Left;
+            } else if (parking_side == "right") {
+                p.parking_side = robot::service::ParkingSide::Right;
+            } else {
+                spdlog::warn(
+                    "[hw_config] invalid behavior.parking_side='{}', fallback to right",
+                    parking_side);
+                p.parking_side = robot::service::ParkingSide::Right;
+            }
+        }
         p.health_jsonl_path =
             cfg.get<std::string>("behavior.health_jsonl_path", p.health_jsonl_path);
         p.health_log_max_bytes = static_cast<size_t>(cfg.get<int>(
@@ -215,27 +229,26 @@ inline HwParams load_hw_test_config() {
             "behavior.health_log_max_files", static_cast<int>(p.health_log_max_files)));
         p.pid_jsonl_path = cfg.get<std::string>("behavior.pid_jsonl_path", p.pid_jsonl_path);
         p.pid_max_drift_deg = cfg.get<float>("behavior.pid_max_drift_deg", p.pid_max_drift_deg);
-        p.pid.pitch_alpha = cfg.get<float>("pid.pitch_alpha", p.pid.pitch_alpha);
-        p.pid.roll_alpha = cfg.get<float>("pid.roll_alpha", p.pid.roll_alpha);
-        p.pid.gyro_alpha = cfg.get<float>("pid.gyro_alpha", p.pid.gyro_alpha);
-        p.pid.pitch_drop_threshold =
-            cfg.get<float>("pid.pitch_drop_threshold", p.pid.pitch_drop_threshold);
-        p.pid.roll_threshold = cfg.get<float>("pid.roll_threshold", p.pid.roll_threshold);
-        p.pid.learn_improve_eps =
-            cfg.get<float>("pid.learn_improve_eps", p.pid.learn_improve_eps);
-        p.pid.best_decay_per_s = cfg.get<float>("pid.best_decay_per_s", p.pid.best_decay_per_s);
-        p.pid.freeze_gyro_z_threshold =
-            cfg.get<float>("pid.freeze_gyro_z_threshold", p.pid.freeze_gyro_z_threshold);
-        p.pid.freeze_pitch_rate_threshold = cfg.get<float>(
-            "pid.freeze_pitch_rate_threshold", p.pid.freeze_pitch_rate_threshold);
-        p.pid.freeze_roll_rate_threshold =
-            cfg.get<float>("pid.freeze_roll_rate_threshold", p.pid.freeze_roll_rate_threshold);
+        p.pid.uds_path = cfg.get<std::string>("pid.uds_path", p.pid.uds_path);
+        p.pid.reconnect_interval_ms =
+            cfg.get<int>("pid.reconnect_interval_ms", p.pid.reconnect_interval_ms);
+        p.pid.result_timeout_ms =
+            cfg.get<int>("pid.result_timeout_ms", p.pid.result_timeout_ms);
+        p.pid.min_confidence = cfg.get<float>("pid.min_confidence", p.pid.min_confidence);
+        p.pid.deadband_slope =
+            cfg.get<float>("pid.deadband_slope",
+                           cfg.get<float>("pid.deadband_norm", p.pid.deadband_slope));
+        p.pid.kp = cfg.get<float>("pid.kp", p.pid.kp);
+        p.pid.ki = cfg.get<float>("pid.ki", p.pid.ki);
+        p.pid.kd = cfg.get<float>("pid.kd", p.pid.kd);
+        p.pid.integral_limit = cfg.get<float>("pid.integral_limit", p.pid.integral_limit);
         p.pid.max_output = cfg.get<float>("pid.max_output", p.pid.max_output);
         p.pid.min_effective_output =
             cfg.get<float>("pid.min_effective_output", p.pid.min_effective_output);
-        p.pid.warmup_ms = cfg.get<int>("pid.warmup_ms", p.pid.warmup_ms);
-        p.pid.hold_ms = cfg.get<int>("pid.hold_ms", p.pid.hold_ms);
-        p.pid.freeze_release_ms = cfg.get<int>("pid.freeze_release_ms", p.pid.freeze_release_ms);
+        p.pid.slope_alpha =
+            cfg.get<float>("pid.slope_alpha",
+                           cfg.get<float>("pid.offset_alpha", p.pid.slope_alpha));
+        p.pid.output_sign = cfg.get<float>("pid.output_sign", p.pid.output_sign);
         spdlog::debug("[hw_config] Loaded config: {}", path);
     } catch (const std::exception& e) {
         spdlog::warn("[hw_config] Exception loading config {}: {} — using built-in defaults",
@@ -318,6 +331,7 @@ struct FullSystemFixture : DeviceFixture, IGracefulShutdown {
     std::shared_ptr<robot::app::RobotFsm> fsm;
     std::shared_ptr<robot::app::FaultHandler> fault_handler;
     std::vector<robot::service::FaultService::FaultEvent> dispatched_faults;
+    robot::service::RuntimeConfig runtime_cfg_;
 
     static robot::hal::UartConfig build_brush_uart_config_(const HwParams& p) {
         robot::hal::UartConfig cfg;
@@ -329,7 +343,7 @@ struct FullSystemFixture : DeviceFixture, IGracefulShutdown {
         return cfg;
     }
 
-    /// @param pid_enabled 是否开启航向 PID（clean_cycle 测试按场景传入）
+    /// @param pid_enabled 是否开启视觉纠偏
     /// @param use_real_brush 是否接入真实 ODrive 滚刷链路
     explicit FullSystemFixture(bool pid_enabled = false, bool use_real_brush = false)
         : DeviceFixture()
@@ -367,25 +381,31 @@ struct FullSystemFixture : DeviceFixture, IGracefulShutdown {
             use_real_brush_ ? static_cast<int>(std::lround(p.brush_test_rpm)) : 0;
         motion_cfg.edge_reverse_rpm = 0.0f;
         motion_cfg.heading_pid_en = pid_enabled;
-        // 将配置文件中的姿态纠偏参数传入（无论是否使能，均写入供 start_cleaning 时生效）
-        motion_cfg.pid.pitch_alpha = p.pid.pitch_alpha;
-        motion_cfg.pid.roll_alpha = p.pid.roll_alpha;
-        motion_cfg.pid.gyro_alpha = p.pid.gyro_alpha;
-        motion_cfg.pid.pitch_drop_threshold = p.pid.pitch_drop_threshold;
-        motion_cfg.pid.roll_threshold = p.pid.roll_threshold;
-        motion_cfg.pid.learn_improve_eps = p.pid.learn_improve_eps;
-        motion_cfg.pid.best_decay_per_s = p.pid.best_decay_per_s;
-        motion_cfg.pid.freeze_gyro_z_threshold = p.pid.freeze_gyro_z_threshold;
-        motion_cfg.pid.freeze_pitch_rate_threshold = p.pid.freeze_pitch_rate_threshold;
-        motion_cfg.pid.freeze_roll_rate_threshold = p.pid.freeze_roll_rate_threshold;
+        // 将配置文件中的视觉纠偏参数传入（无论是否使能，均写入供 start_cleaning 时生效）
+        motion_cfg.pid.uds_path = p.pid.uds_path;
+        motion_cfg.pid.reconnect_interval_ms = p.pid.reconnect_interval_ms;
+        motion_cfg.pid.result_timeout_ms = p.pid.result_timeout_ms;
+        motion_cfg.pid.min_confidence = p.pid.min_confidence;
+        motion_cfg.pid.deadband_slope = p.pid.deadband_slope;
+        motion_cfg.pid.kp = p.pid.kp;
+        motion_cfg.pid.ki = p.pid.ki;
+        motion_cfg.pid.kd = p.pid.kd;
+        motion_cfg.pid.integral_limit = p.pid.integral_limit;
         motion_cfg.pid.max_output = p.pid.max_output;
         motion_cfg.pid.min_effective_output = p.pid.min_effective_output;
-        motion_cfg.pid.warmup_ms = p.pid.warmup_ms;
-        motion_cfg.pid.hold_ms = p.pid.hold_ms;
-        motion_cfg.pid.freeze_release_ms = p.pid.freeze_release_ms;
+        motion_cfg.pid.slope_alpha = p.pid.slope_alpha;
+        motion_cfg.pid.output_sign = p.pid.output_sign;
 
         motion =
             std::make_shared<service::MotionService>(walk_group, brush, imu, event_bus, motion_cfg);
+        runtime_cfg_.passes = 1.0f;
+        runtime_cfg_.clean_speed_rpm = motion_cfg.clean_speed_rpm;
+        runtime_cfg_.return_speed_rpm = motion_cfg.return_speed_rpm;
+        runtime_cfg_.brush_rpm = motion_cfg.brush_rpm;
+        runtime_cfg_.return_brush_rpm = motion_cfg.return_brush_rpm;
+        runtime_cfg_.parking_side = p.parking_side;
+        motion->set_parking_side_query([this]() { return runtime_cfg_.parking_side; });
+        motion->set_runtime_config_query([this]() { return runtime_cfg_; });
         fault = std::make_shared<service::FaultService>(event_bus);
 
         // WatchdogMgr：路径为空 = 不操作 /dev/watchdog
@@ -396,10 +416,16 @@ struct FullSystemFixture : DeviceFixture, IGracefulShutdown {
         // SafetyMonitor LimitSettledEvent → RobotFsm
         event_bus.subscribe<middleware::SafetyMonitor::LimitSettledEvent>(
             [this](const middleware::SafetyMonitor::LimitSettledEvent& evt) {
-                if (evt.side == device::LimitSide::LEFT)
-                    fsm->dispatch(app::EvFarEndLimitSettled{});
-                else
+                const bool parking_side_hit =
+                    (runtime_cfg_.parking_side == service::ParkingSide::Left &&
+                     evt.side == device::LimitSide::LEFT) ||
+                    (runtime_cfg_.parking_side == service::ParkingSide::Right &&
+                     evt.side == device::LimitSide::RIGHT);
+                if (parking_side_hit) {
                     fsm->dispatch(app::EvParkingSideLimitSettled{});
+                } else {
+                    fsm->dispatch(app::EvFarEndLimitSettled{});
+                }
             });
 
         // FaultHandler: P0→emergency_stop+EvFaultP0，P1→stop+EvFaultP1；同时记录 dispatched_faults
@@ -656,7 +682,6 @@ struct ThingsBoardRuntimeFixture : FullSystemFixture {
     std::shared_ptr<robot::middleware::NetworkManager> net_mgr;
     std::shared_ptr<robot::middleware::DataCache> data_cache;
     std::shared_ptr<robot::service::CloudService> cloud;
-    std::shared_ptr<robot::service::ThingsBoardConfigManager> tb_cfg;
     std::shared_ptr<robot::service::CommandTracker> command_tracker;
     std::shared_ptr<robot::app::RobotSupervisor> supervisor;
     std::shared_ptr<robot::service::ThingsBoardControlPlane> tb_control;
@@ -675,7 +700,8 @@ struct ThingsBoardRuntimeFixture : FullSystemFixture {
         const bool left_sensor_active = left_limit_active();
         const bool right_sensor_active = right_limit_active();
         return robot::app::ParkingSideRuntime::from_physical_limits(
-            tb_cfg ? tb_cfg->active_config().parking_side : robot::service::ParkingSide::Left,
+            tb_cfg_file ? tb_cfg_file->active_runtime_config().parking_side
+                        : robot::service::ParkingSide::Left,
             left_sensor_active,
             right_sensor_active);
     }
@@ -724,18 +750,17 @@ struct ThingsBoardRuntimeFixture : FullSystemFixture {
         net_mgr = std::make_shared<robot::middleware::NetworkManager>(
             mqtt, nullptr, robot::middleware::NetworkManager::Mode::MQTT_ONLY);
         cloud = std::make_shared<robot::service::CloudService>(net_mgr, data_cache);
-        tb_cfg =
-            std::make_shared<robot::service::ThingsBoardConfigManager>(*tb_cfg_file, scheduler);
+        tb_cfg_file->apply_active_runtime_schedules(scheduler);
         command_tracker = std::make_shared<robot::service::CommandTracker>();
         if (motion) {
             motion->set_parking_side_query(
-                [this]() { return tb_cfg->active_config().parking_side; });
-            motion->set_runtime_config_query([this]() { return tb_cfg->active_config(); });
+                [this]() { return tb_cfg_file->active_runtime_config().parking_side; });
+            motion->set_runtime_config_query([this]() { return tb_cfg_file->active_runtime_config(); });
         }
         supervisor =
-            std::make_shared<robot::app::RobotSupervisor>(fsm, tb_cfg, command_tracker, fault, nav);
+            std::make_shared<robot::app::RobotSupervisor>(fsm, *tb_cfg_file, command_tracker, fault, nav);
         tb_control = std::make_shared<robot::service::ThingsBoardControlPlane>(
-            *tb_cfg_file, cloud, tb_cfg, command_tracker, supervisor);
+            *tb_cfg_file, &scheduler, cloud, command_tracker, supervisor);
 
         tb_control->subscribe_shared_attributes();
         tb_control->register_rpc_handlers(

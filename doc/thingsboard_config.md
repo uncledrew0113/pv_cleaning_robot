@@ -363,7 +363,6 @@ RPC 处理逻辑见 [thingsboard_control_plane.cc](/home/tronlong/pv_cleaning_ro
 
 - 未接入主程序的历史控制面
 - 未使用的旧业务字段
-- OTA 控制面
 - LoRaWAN 控制面
 - 更复杂的调度策略
 

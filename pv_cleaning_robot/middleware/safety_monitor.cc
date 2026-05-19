@@ -12,6 +12,8 @@ inline uint64_t now_ms() {
             std::chrono::steady_clock::now().time_since_epoch())
         .count());
 }
+
+constexpr uint64_t kReleaseStableMs = 300u;
 }  // namespace
 
 namespace robot::middleware {
@@ -73,9 +75,14 @@ void SafetyMonitor::on_limit_trigger(device::LimitSide side)
     // ============================================================
     std::atomic<uint64_t>& pending_ts =
         side == device::LimitSide::LEFT ? pending_left_ts_ : pending_right_ts_;
+    std::atomic<bool>& wait_release =
+        side == device::LimitSide::LEFT ? left_wait_release_ : right_wait_release_;
+    std::atomic<uint64_t>& release_ts =
+        side == device::LimitSide::LEFT ? left_release_ts_ : right_release_ts_;
     auto& limit_switch = side == device::LimitSide::LEFT ? left_switch_ : right_switch_;
 
-    if (pending_ts.load(std::memory_order_acquire) != 0) {
+    if (wait_release.load(std::memory_order_acquire) ||
+        pending_ts.load(std::memory_order_acquire) != 0) {
         limit_switch->clear_trigger();
         return;
     }
@@ -83,6 +90,8 @@ void SafetyMonitor::on_limit_trigger(device::LimitSide side)
     limit_switch->clear_trigger();
     walk_group_->emergency_override(0.0f);
     pending_ts.store(now_ms(), std::memory_order_release);
+    wait_release.store(true, std::memory_order_release);
+    release_ts.store(0, std::memory_order_release);
 }
 
 void SafetyMonitor::monitor_loop()
@@ -117,7 +126,35 @@ void SafetyMonitor::monitor_loop()
         }
     };
 
+    auto check_release = [&](std::atomic<bool>& wait_release,
+                             std::atomic<uint64_t>& release_ts,
+                             std::shared_ptr<device::LimitSwitch>& sw) {
+        if (!wait_release.load(std::memory_order_acquire)) {
+            return;
+        }
+        // 感应式限位低有效：电平回高才允许同侧重新 armed。
+        if (!sw->read_current_level()) {
+            release_ts.store(0, std::memory_order_release);
+            return;
+        }
+
+        const uint64_t now = now_ms();
+        uint64_t candidate_ts = release_ts.load(std::memory_order_acquire);
+        if (candidate_ts == 0) {
+            release_ts.store(now, std::memory_order_release);
+            return;
+        }
+        if (now - candidate_ts >= kReleaseStableMs) {
+            sw->clear_trigger();
+            wait_release.store(false, std::memory_order_release);
+            release_ts.store(0, std::memory_order_release);
+        }
+    };
+
     while (running_.load()) {
+        check_release(left_wait_release_, left_release_ts_, left_switch_);
+        check_release(right_wait_release_, right_release_ts_, right_switch_);
+
         // ── 非阻塞并行防抖检查（前后端独立计时）──────────────────────
         check_settled(pending_left_ts_, device::LimitSide::LEFT);
         check_settled(pending_right_ts_, device::LimitSide::RIGHT);

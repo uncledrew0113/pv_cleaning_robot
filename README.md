@@ -12,7 +12,7 @@ RK3576 / PREEMPT_RT Linux / aarch64 / C++17。当前主分支聚焦实际在用�
   - `config/config.runtime.pending.json`
   - `config/config.runtime.backup.json`
 - 默认产品构建包含 `pv_cleaning_robot`、`unit_tests`、`hw_tests`。
-- OTA 代码仍在仓库中，但默认不参与产品构建。
+- OTA 由独立系统进程负责，不属于 `pv_cleaning_robot` 控制进程。
 
 ## 构建
 

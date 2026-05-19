@@ -4,11 +4,13 @@
  * @LastEditors: UncleDrew
  * @LastEditTime: 2026-05-12 12:13:29
  * @FilePath: /pv_cleaning_robot/pv_cleaning_robot/service/motion_service.cc
- * @Description: 运动服务——集成 WalkMotorGroup + IMU 姿态纠偏 + 边缘触发覆盖
+ * @Description: 运动服务——集成 WalkMotorGroup + 视觉纠偏 + 边缘触发覆盖
  *
  * Copyright (c) 2026 by UncleDrew, All Rights Reserved.
  */
 #include "pv_cleaning_robot/service/motion_service.h"
+
+#include <cmath>
 
 namespace robot::service {
 
@@ -42,7 +44,7 @@ void MotionService::set_parking_side_query(std::function<ParkingSide()> query) {
     parking_side_query_ = std::move(query);
 }
 
-void MotionService::set_runtime_config_query(std::function<TbRuntimeConfig()> query) {
+void MotionService::set_runtime_config_query(std::function<RuntimeConfig()> query) {
     runtime_config_query_ = std::move(query);
 }
 
@@ -57,10 +59,10 @@ void MotionService::sync_runtime_config() {
         return;
     }
     const auto runtime_cfg = runtime_config_query_();
-    cfg_.clean_speed_rpm = static_cast<float>(runtime_cfg.clean_speed_rpm);
-    cfg_.return_speed_rpm = static_cast<float>(runtime_cfg.return_speed_rpm);
-    cfg_.brush_rpm = runtime_cfg.brush_rpm;
-    cfg_.return_brush_rpm = runtime_cfg.return_brush_rpm;
+    cfg_.clean_speed_rpm = std::abs(static_cast<float>(runtime_cfg.clean_speed_rpm));
+    cfg_.return_speed_rpm = std::abs(static_cast<float>(runtime_cfg.return_speed_rpm));
+    cfg_.brush_rpm = std::abs(runtime_cfg.brush_rpm);
+    cfg_.return_brush_rpm = std::abs(runtime_cfg.return_brush_rpm);
 }
 
 bool MotionService::enable_speed_mode() {
@@ -97,7 +99,7 @@ bool MotionService::start_returning_impl(bool run_brush) {
     const int dir = task_direction_sign();
     if (run_brush) {
         // 返程刷反向转，用 return_brush_rpm 单独表达返程刷速。
-        brush_->set_rpm(cfg_.return_brush_rpm * dir);
+        brush_->set_rpm(std::abs(cfg_.return_brush_rpm) * dir);
     } else {
         brush_->stop();
     }
@@ -107,11 +109,12 @@ bool MotionService::start_returning_impl(bool run_brush) {
         return false;
     }
 
-    const float spd = cfg_.return_speed_rpm * static_cast<float>(dir);
+    const float spd = std::abs(cfg_.return_speed_rpm) * static_cast<float>(dir);
     const device::WalkMotorGroup::SpeedCmd cmd{-spd, -spd, +spd, +spd};
     if (group_->set_speeds(cmd) != device::DeviceError::OK) {
         return false;
     }
+    motion_phase_ = HeadingCorrector::MotionPhase::Returning;
     set_base_speed_command(cmd);
     return true;
 }
@@ -128,19 +131,20 @@ bool MotionService::start_cleaning() {
         return false;
     }
 
-    // 清扫和返程都使用同一套 IMU 姿态纠偏，只是轮速方向不同。
+    // 清扫和返程都使用同一套视觉纠偏，只是轮速方向不同。
     sync_heading_pid_enabled();
 
     // 物理安装：LT/RT 正转=前进，LB/RB 因安装方向相反，负转=前进
     // 车辆前进：LT=+spd, RT=+spd, LB=-spd, RB=-spd
     const int dir = task_direction_sign();
-    const float spd = cfg_.clean_speed_rpm * static_cast<float>(dir);
+    const float spd = std::abs(cfg_.clean_speed_rpm) * static_cast<float>(dir);
     const device::WalkMotorGroup::SpeedCmd cmd{spd, spd, -spd, -spd};
     if (group_->set_speeds(cmd) != device::DeviceError::OK)
         return false;
+    motion_phase_ = HeadingCorrector::MotionPhase::CleanFwd;
     set_base_speed_command(cmd);
 
-    brush_->set_rpm(-cfg_.brush_rpm * dir);
+    brush_->set_rpm(-std::abs(cfg_.brush_rpm) * dir);
     return true;
 }
 
@@ -172,21 +176,16 @@ void MotionService::emergency_stop() {
 // ── 周期心跳（50 ms，由 ThreadExecutor 调用）──────────────────────────────
 
 void MotionService::update() {
-    device::ImuDevice::ImuData imu_data{};
-    if (imu_) {
-        imu_data = imu_->get_latest();
-    }
     const bool override_active = group_->is_override_active();
 
     if (walk_command_active_ && cfg_.heading_pid_en && !override_active) {
         HeadingCorrector::Input input;
-        input.raw_pitch_deg = imu_data.pitch_deg;
-        input.raw_roll_deg = imu_data.roll_deg;
-        input.raw_yaw_deg = imu_data.yaw_deg;
-        input.raw_gyro_z_dps = imu_data.gyro[2] * (180.0f / 3.14159265f);
         input.dt_s = 0.02f;
         input.has_base_command = true;
         input.base_command = to_corrector_command(base_speed_cmd_);
+        input.motion_phase = motion_phase_;
+        input.parking_side =
+            parking_side_query_ ? parking_side_query_() : ParkingSide::Right;
 
         const auto status = group_->get_group_status();
         const auto diagnostics = group_->get_group_diagnostics();
@@ -221,6 +220,10 @@ void MotionService::update() {
     // 原因：Modbus RTU 读取寄存器需 5~10ms 阻塞 I/O，放在 walk_ctrl(FIFO 80, 20ms)
     // 中将占用 25%~50% 控制周期时间预算。BrushMotor 状态 50~500ms 周期变化，
     // 移至低优先级 bms_exec 线程可完全消除对运动控制周期的干扰。
+}
+
+HeadingCorrector::DebugState MotionService::heading_pid_debug_state() const {
+    return heading_corrector_.debug_state();
 }
 
 }  // namespace robot::service

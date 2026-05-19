@@ -106,7 +106,7 @@ TEST_CASE("FSM RPC override start can begin cleaning away from parking side", "[
     f.brush_serial->clear_tx();
     f.fsm.dispatch(EvFarEndLimitSettled{});
     REQUIRE(f.fsm.current_state() == "CleanReturn");
-    REQUIRE(f.brush_serial->take_tx_text().find("v 0 -20.000 0\n") != std::string::npos);
+    REQUIRE(f.brush_serial->take_tx_text().find("v 0 20.000 0\n") != std::string::npos);
 
     f.fsm.dispatch(EvParkingSideLimitSettled{true});
     REQUIRE(f.fsm.current_state() == "Charging");

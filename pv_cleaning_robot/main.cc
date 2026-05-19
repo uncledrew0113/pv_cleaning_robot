@@ -79,93 +79,28 @@ static void signal_handler(int /*sig*/) {
 
 namespace {
 
-robot::app::ParkingSideFacts read_parking_side_facts(
-    robot::service::ParkingSide parking_side,
-    const std::shared_ptr<robot::device::LimitSwitch>& left_switch,
-    const std::shared_ptr<robot::device::LimitSwitch>& right_switch,
-    bool left_open_ok,
-    bool right_open_ok) {
-    const bool left_sensor_active = left_open_ok && !left_switch->read_current_level();
-    const bool right_sensor_active = right_open_ok && !right_switch->read_current_level();
-    return robot::app::ParkingSideRuntime::from_physical_limits(
-        parking_side, left_sensor_active, right_sensor_active);
-}
-
 void publish_startup_position_status(
     const std::shared_ptr<robot::service::ThingsBoardControlPlane>& tb_control,
-    const std::shared_ptr<robot::app::RobotFsm>& fsm,
+    const std::shared_ptr<robot::app::RobotSupervisor>& supervisor,
     const std::shared_ptr<spdlog::logger>& log,
-    const robot::app::ParkingSideFacts& startup_position_facts) {
-    if (startup_position_facts.dual_endpoint_active) {
+    const robot::app::RobotSupervisor::StartupPositionAssessment& startup_position) {
+    if (startup_position.facts.dual_endpoint_active) {
         tb_control->publish_status_event("startup_position_invalid", false, "dual_endpoint_active");
         log->warn("[Main] 启动位置异常：左右端点同时触发，禁止启动清扫");
         return;
     }
-    if (startup_position_facts.no_endpoint_active) {
+    if (startup_position.facts.no_endpoint_active) {
         tb_control->publish_status_event(
             "startup_position_invalid", false, "robot_not_at_any_endpoint");
         log->warn("[Main] 启动位置异常：当前不在任一端点，尝试返回停机位");
-        if (fsm->current_state() == "Idle") {
-            fsm->dispatch(robot::app::EvManualReturn{});
-        }
+        (void)supervisor;
         return;
     }
-    if (!startup_position_facts.at_parking_side) {
+    if (!startup_position.facts.at_parking_side) {
         tb_control->publish_status_event(
             "startup_position_invalid", false, "robot_not_at_parking_side");
         log->warn("[Main] 启动位置异常：当前不在停机位，禁止自动启动清扫");
     }
-}
-
-void register_limit_settled_bridge(
-    robot::middleware::EventBus& event_bus,
-    const std::shared_ptr<robot::app::RobotFsm>& fsm,
-    const std::shared_ptr<spdlog::logger>& log,
-    const std::shared_ptr<robot::service::ThingsBoardControlPlane>& tb_control,
-    std::function<float()> current_battery_soc) {
-    // SafetyMonitor 只给出“哪一侧物理限位稳定了”，
-    // 这里再根据当前 active parking_side 翻译成业务事件，
-    // 这样停车位语义始终只在一处桥接。
-    event_bus.subscribe<robot::middleware::SafetyMonitor::LimitSettledEvent>(
-        [fsm, log, tb_control, current_battery_soc = std::move(current_battery_soc)](
-            const robot::middleware::SafetyMonitor::LimitSettledEvent& evt) {
-            const bool parking_left =
-                tb_control->active_config().parking_side == robot::service::ParkingSide::Left;
-            const bool parking_side_hit =
-                (parking_left && evt.side == robot::device::LimitSide::LEFT) ||
-                (!parking_left && evt.side == robot::device::LimitSide::RIGHT);
-
-            if (parking_side_hit) {
-                log->info("[Limit] 停机侧防抖完成，调度 EvParkingSideLimitSettled");
-                const bool should_charge =
-                    current_battery_soc() <
-                    static_cast<float>(tb_control->active_config().charge_start_soc);
-                fsm->dispatch(robot::app::EvParkingSideLimitSettled{should_charge});
-                return;
-            }
-
-            log->info("[Limit] 对侧防抖完成，调度 EvFarEndLimitSettled");
-            fsm->dispatch(robot::app::EvFarEndLimitSettled{});
-        });
-}
-
-void register_scheduler_start(
-    robot::service::SchedulerService& scheduler,
-    const std::shared_ptr<robot::app::RobotSupervisor>& supervisor,
-    const std::shared_ptr<spdlog::logger>& log,
-    std::function<robot::app::ParkingSideFacts()> current_start_parking_facts,
-    std::function<float()> current_battery_soc) {
-    scheduler.set_on_window_hit([supervisor,
-                                 log,
-                                 current_start_parking_facts =
-                                     std::move(current_start_parking_facts),
-                                 current_battery_soc = std::move(current_battery_soc)]() {
-        const auto facts = current_start_parking_facts();
-        if (!supervisor->start_task(
-                facts.at_parking_side, facts.is_valid_start_position(), current_battery_soc())) {
-            log->warn("[Main] 调度启动被拒绝");
-        }
-    });
 }
 
 }  // namespace
@@ -218,7 +153,7 @@ int main() {
         cfg.get<std::string>("can.interface", "can0"));
 
     // WalkMotorGroup：4轮统一控制，含通信超时与锁存式 emergency override；
-    // 航向纠偏由 MotionService 持有的 HeadingCorrector 负责
+    // 视觉纠偏由 MotionService 持有的 HeadingCorrector 负责
     // comm_timeout=200ms（update() 20ms 周期的 10 倍），允许错过 9 帧不停车
     auto walk_group = std::make_shared<robot::device::WalkMotorGroup>(
         can_bus,
@@ -327,33 +262,6 @@ int main() {
     if (!right_open_ok)
         log->warn("[Main] 右限位开关初始化失败");
 
-    // ── 上电自检：确认设备在当前配置的停机位，且对侧无遮挡 ───────────────────────
-    // left_limit 实际对应左侧传感器，right_limit 实际对应右侧传感器。
-    const auto configured_parking_side_text = cfg.get<std::string>("robot.parking_side", "left");
-    const auto configured_parking_side = configured_parking_side_text == "right"
-                                             ? robot::service::ParkingSide::Right
-                                             : robot::service::ParkingSide::Left;
-    const auto startup_facts = read_parking_side_facts(
-        configured_parking_side, left_switch, right_switch, left_open_ok, right_open_ok);
-    if (!startup_facts.at_parking_side) {
-        log->warn(
-            "[Main] [自检警告] 当前未检测到停机位一侧限位触发，"
-            "设备可能不在配置停机位（parking_side={}），请手动归位再启动",
-            configured_parking_side_text);
-    }
-    if (startup_facts.at_far_end) {
-        log->warn(
-            "[Main] [自检警告] 对侧限位当前处于触发状态，"
-            "可能有遮挡或传感器异常，请检查环境");
-    }
-    log->info(
-        "[Main] 上电自检：parking_side={} at_parking_side={} at_far_end={} (left_sensor={} "
-        "right_sensor={})",
-        configured_parking_side_text,
-        startup_facts.at_parking_side,
-        startup_facts.at_far_end,
-        startup_facts.left_limit_active,
-        startup_facts.right_limit_active);
     if (!brush_motor->open())
         log->warn("[Main] 滚刷电机 RS485 初始化失败");
     if (bms->open() != robot::device::DeviceError::OK)
@@ -417,39 +325,36 @@ int main() {
     motion_cfg.return_brush_rpm = cfg.get<int>("robot.return_brush_rpm", 1000);
     motion_cfg.edge_reverse_rpm = cfg.get<float>("robot.edge_reverse_rpm", 0.0f);
     motion_cfg.heading_pid_en = cfg.get<bool>("robot.heading_pid_en", false);
-    // 姿态纠偏参数从 robot.pid.* 读取；未配置时使用控制器头文件默认值。
-    motion_cfg.pid.pitch_alpha =
-        cfg.get<float>("robot.pid.pitch_alpha", motion_cfg.pid.pitch_alpha);
-    motion_cfg.pid.roll_alpha = cfg.get<float>("robot.pid.roll_alpha", motion_cfg.pid.roll_alpha);
-    motion_cfg.pid.gyro_alpha = cfg.get<float>("robot.pid.gyro_alpha", motion_cfg.pid.gyro_alpha);
-    motion_cfg.pid.pitch_drop_threshold =
-        cfg.get<float>("robot.pid.pitch_drop_threshold", motion_cfg.pid.pitch_drop_threshold);
-    motion_cfg.pid.roll_threshold =
-        cfg.get<float>("robot.pid.roll_threshold", motion_cfg.pid.roll_threshold);
-    motion_cfg.pid.learn_improve_eps =
-        cfg.get<float>("robot.pid.learn_improve_eps", motion_cfg.pid.learn_improve_eps);
-    motion_cfg.pid.best_decay_per_s =
-        cfg.get<float>("robot.pid.best_decay_per_s", motion_cfg.pid.best_decay_per_s);
-    motion_cfg.pid.freeze_gyro_z_threshold =
-        cfg.get<float>("robot.pid.freeze_gyro_z_threshold", motion_cfg.pid.freeze_gyro_z_threshold);
-    motion_cfg.pid.freeze_pitch_rate_threshold = cfg.get<float>(
-        "robot.pid.freeze_pitch_rate_threshold", motion_cfg.pid.freeze_pitch_rate_threshold);
-    motion_cfg.pid.freeze_roll_rate_threshold = cfg.get<float>(
-        "robot.pid.freeze_roll_rate_threshold", motion_cfg.pid.freeze_roll_rate_threshold);
+    // 视觉纠偏参数从 robot.pid.* 读取；未配置时使用控制器头文件默认值。
+    motion_cfg.pid.uds_path = cfg.get<std::string>("robot.pid.uds_path", motion_cfg.pid.uds_path);
+    motion_cfg.pid.reconnect_interval_ms =
+        cfg.get<int>("robot.pid.reconnect_interval_ms", motion_cfg.pid.reconnect_interval_ms);
+    motion_cfg.pid.result_timeout_ms =
+        cfg.get<int>("robot.pid.result_timeout_ms", motion_cfg.pid.result_timeout_ms);
+    motion_cfg.pid.min_confidence =
+        cfg.get<float>("robot.pid.min_confidence", motion_cfg.pid.min_confidence);
+    motion_cfg.pid.deadband_slope =
+        cfg.get<float>("robot.pid.deadband_slope",
+                       cfg.get<float>("robot.pid.deadband_norm", motion_cfg.pid.deadband_slope));
+    motion_cfg.pid.kp = cfg.get<float>("robot.pid.kp", motion_cfg.pid.kp);
+    motion_cfg.pid.ki = cfg.get<float>("robot.pid.ki", motion_cfg.pid.ki);
+    motion_cfg.pid.kd = cfg.get<float>("robot.pid.kd", motion_cfg.pid.kd);
+    motion_cfg.pid.integral_limit =
+        cfg.get<float>("robot.pid.integral_limit", motion_cfg.pid.integral_limit);
     motion_cfg.pid.max_output = cfg.get<float>("robot.pid.max_output", motion_cfg.pid.max_output);
     motion_cfg.pid.min_effective_output =
         cfg.get<float>("robot.pid.min_effective_output", motion_cfg.pid.min_effective_output);
-    motion_cfg.pid.warmup_ms = cfg.get<int>("robot.pid.warmup_ms", motion_cfg.pid.warmup_ms);
-    motion_cfg.pid.hold_ms = cfg.get<int>("robot.pid.hold_ms", motion_cfg.pid.hold_ms);
-    motion_cfg.pid.freeze_release_ms =
-        cfg.get<int>("robot.pid.freeze_release_ms", motion_cfg.pid.freeze_release_ms);
+    motion_cfg.pid.slope_alpha =
+        cfg.get<float>("robot.pid.slope_alpha",
+                       cfg.get<float>("robot.pid.offset_alpha", motion_cfg.pid.slope_alpha));
+    motion_cfg.pid.output_sign =
+        cfg.get<float>("robot.pid.output_sign", motion_cfg.pid.output_sign);
 
     auto motion = std::make_shared<robot::service::MotionService>(
         walk_group, brush_motor, imu, event_bus, motion_cfg);
     auto nav = std::make_shared<robot::service::NavService>(walk_group, imu, gps);
     robot::service::SchedulerService scheduler;
     auto cloud = std::make_shared<robot::service::CloudService>(net_mgr, data_cache);
-    auto tb_cfg = std::make_shared<robot::service::ThingsBoardConfigManager>(cfg, scheduler);
     auto command_tracker = std::make_shared<robot::service::CommandTracker>();
 
     auto fault = std::make_shared<robot::service::FaultService>(event_bus);
@@ -458,28 +363,52 @@ int main() {
     auto fsm = std::make_shared<robot::app::RobotFsm>(motion, nav, fault, event_bus);
     fsm->dispatch(robot::app::EvInitDone{});
     auto supervisor =
-        std::make_shared<robot::app::RobotSupervisor>(fsm, tb_cfg, command_tracker, fault, nav);
+        std::make_shared<robot::app::RobotSupervisor>(fsm, cfg, command_tracker, fault, nav);
     auto tb_control = std::make_shared<robot::service::ThingsBoardControlPlane>(
-        cfg, cloud, tb_cfg, command_tracker, supervisor);
+        cfg, &scheduler, cloud, command_tracker, supervisor);
+    cfg.apply_active_runtime_schedules(scheduler);
     motion->set_parking_side_query(
-        [tb_control]() { return tb_control->active_config().parking_side; });
-    motion->set_runtime_config_query([tb_control]() { return tb_control->active_config(); });
-    const auto physical_limit_facts_for =
-        [&left_switch, &right_switch, &left_open_ok, &right_open_ok](
-            robot::service::ParkingSide parking_side) {
-            return read_parking_side_facts(
-                parking_side, left_switch, right_switch, left_open_ok, right_open_ok);
-        };
-    const auto current_active_parking_facts = [&tb_control, physical_limit_facts_for]() {
-        return physical_limit_facts_for(tb_control->active_config().parking_side);
-    };
-    const auto current_start_parking_facts = [&tb_control, physical_limit_facts_for]() {
-        const auto pending = tb_control->pending_config();
-        const auto parking_side =
-            pending ? pending->parking_side : tb_control->active_config().parking_side;
-        return physical_limit_facts_for(parking_side);
-    };
+        [&cfg]() { return cfg.active_runtime_config().parking_side; });
+    motion->set_runtime_config_query([&cfg]() { return cfg.active_runtime_config(); });
     const auto current_battery_soc = [&bms]() { return bms->get_data().soc_pct; };
+    const auto current_limit_levels =
+        [&left_switch, &right_switch, left_open_ok, right_open_ok]() -> std::pair<bool, bool> {
+            const bool left_sensor_active = left_open_ok && !left_switch->read_current_level();
+            const bool right_sensor_active = right_open_ok && !right_switch->read_current_level();
+            return {left_sensor_active, right_sensor_active};
+        };
+    const auto current_active_parking_facts = [supervisor, current_limit_levels]() {
+        const auto [left_sensor_active, right_sensor_active] = current_limit_levels();
+        return supervisor->active_parking_facts(left_sensor_active, right_sensor_active);
+    };
+    const auto current_start_parking_facts = [supervisor, current_limit_levels]() {
+        const auto [left_sensor_active, right_sensor_active] = current_limit_levels();
+        return supervisor->start_parking_facts(left_sensor_active, right_sensor_active);
+    };
+    const auto configured_parking_side_text = robot::service::parking_side_config_string(
+        cfg.active_runtime_config().parking_side);
+    const auto [startup_left_limit_active, startup_right_limit_active] = current_limit_levels();
+    const auto startup_facts =
+        supervisor->active_parking_facts(startup_left_limit_active, startup_right_limit_active);
+    if (!startup_facts.at_parking_side) {
+        log->warn(
+            "[Main] [自检警告] 当前未检测到停机位一侧限位触发，"
+            "设备可能不在配置停机位（parking_side={}），请手动归位再启动",
+            configured_parking_side_text);
+    }
+    if (startup_facts.at_far_end) {
+        log->warn(
+            "[Main] [自检警告] 对侧限位当前处于触发状态，"
+            "可能有遮挡或传感器异常，请检查环境");
+    }
+    log->info(
+        "[Main] 上电自检：parking_side={} at_parking_side={} at_far_end={} (left_sensor={} "
+        "right_sensor={})",
+        configured_parking_side_text,
+        startup_facts.at_parking_side,
+        startup_facts.at_far_end,
+        startup_facts.left_limit_active,
+        startup_facts.right_limit_active);
     tb_control->subscribe_shared_attributes();
     // 在 connect() 前完成 shared attributes / RPC 注册，避免首个云端下行消息丢失。
     tb_control->register_rpc_handlers(
@@ -513,16 +442,17 @@ int main() {
         log->info("[Main] 设备静态属性已发布至云端");
     }
 
-    publish_startup_position_status(tb_control, fsm, log, current_active_parking_facts());
+    publish_startup_position_status(
+        tb_control,
+        supervisor,
+        log,
+        supervisor->handle_startup_position(startup_left_limit_active, startup_right_limit_active));
 
-    // ── 限位开关防抖事件订阅：LimitSettledEvent → FSM ──────────────────
-    // SafetyMonitor::monitor_loop (SCHED_FIFO 94) 在急停后延迟 180ms 发布此事件。
-    // 回调在 monitor_loop 线程上执行，必须极短（不阻塞，不持锁调 I/O）。
-    register_limit_settled_bridge(event_bus, fsm, log, tb_control, current_battery_soc);
+    // ── 应用层桥接：限位业务事件 / 调度窗口启动 ──────────────────────────
+    supervisor->register_limit_settled_bridge(event_bus, current_battery_soc);
 
     // ── 调度服务：定时触发清扫任务（读取 active runtime 的 scheduler.windows） ─────
-    register_scheduler_start(
-        scheduler, supervisor, log, current_start_parking_facts, current_battery_soc);
+    supervisor->register_scheduler_window(scheduler, current_limit_levels, current_battery_soc);
 
     robot::app::FaultHandler fault_handler(
         motion, event_bus, [fsm](const robot::service::FaultService::FaultEvent& evt) {
@@ -658,7 +588,7 @@ int main() {
         supervisor->tick_safety();
         if (current_state == "Charging" &&
             current_battery_soc() >=
-                static_cast<float>(tb_control->active_config().charge_stop_soc)) {
+                static_cast<float>(cfg.active_runtime_config().charge_stop_soc)) {
             fsm->dispatch(robot::app::EvChargeDone{});
         }
 

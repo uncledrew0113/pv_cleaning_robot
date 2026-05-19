@@ -161,7 +161,7 @@ bool wait_until(Pred pred, std::chrono::seconds timeout)
     return pred();
 }
 
-SharedAttrTarget choose_legal_target(const std::optional<robot::service::TbRuntimeConfig>& current)
+SharedAttrTarget choose_legal_target(const std::optional<robot::service::RuntimeConfig>& current)
 {
     const SharedAttrTarget target_a{
         2.0, 320.0, robot::service::ParkingSide::Left, "left"};
@@ -185,7 +185,6 @@ struct RealThingsBoardFixture {
 
     robot::service::ConfigService cfg;
     robot::service::SchedulerService scheduler;
-    std::unique_ptr<robot::service::ThingsBoardConfigManager> tb_cfg;
     std::shared_ptr<robot::middleware::MqttTransport> mqtt;
     std::shared_ptr<robot::middleware::NetworkManager> net;
     std::shared_ptr<robot::middleware::DataCache> cache;
@@ -206,7 +205,7 @@ struct RealThingsBoardFixture {
             override_diagnostics_mode(this->paths, diagnostics_mode_override);
         }
         REQUIRE(cfg.load());
-        tb_cfg = std::make_unique<robot::service::ThingsBoardConfigManager>(cfg, scheduler);
+        cfg.apply_active_runtime_schedules(scheduler);
         auto mqtt_cfg = tb_test_support::build_mqtt_config(cfg, repo_root, client_id_suffix);
         REQUIRE_FALSE(mqtt_cfg.broker_uri.empty());
         spdlog::info(
@@ -224,9 +223,13 @@ struct RealThingsBoardFixture {
         REQUIRE(cache->open());
         cloud = std::make_shared<robot::service::CloudService>(net, cache);
         // 真实 shared attributes 联调测试需要在 connect() 前把下行回调接好，
-        // 否则平台侧更新虽然发送到了设备，测试里的 tb_cfg 不会收到也不会更新。
+        // 否则平台侧更新虽然发送到了设备，测试里的 cfg 不会收到也不会更新。
         cloud->subscribe_shared_attributes([this](const rapidjson::Document& attrs) {
-            const auto result = tb_cfg->apply_shared_attributes(attrs);
+            const auto before = cfg.active_runtime_config();
+            const auto result = cfg.apply_runtime_patch(attrs);
+            if (result.accepted && cfg.active_runtime_config().schedules != before.schedules) {
+                cfg.apply_active_runtime_schedules(scheduler);
+            }
             {
                 std::lock_guard<std::mutex> lk(shared_attr_result_mtx);
                 last_shared_attr_result = result;
@@ -440,7 +443,7 @@ TEST_CASE("Real ThingsBoard mutual TLS connection", "[integration][thingsboard][
     CHECK(f.net->is_connected());
 }
 
-TEST_CASE("Real ThingsBoard production health stays connected while development diagnostics disconnects",
+TEST_CASE("Real ThingsBoard health and diagnostics modes stay connected after first telemetry publish",
           "[integration][thingsboard][real][mqtt_stability][health_service_mode]") {
     if (!real_tb_test_enabled()) {
         SUCCEED("Set TB_REAL_TEST=1 to enable real ThingsBoard health mode stability test");
@@ -473,7 +476,7 @@ TEST_CASE("Real ThingsBoard production health stays connected while development 
         }
     }
 
-    SECTION("development diagnostics disconnects after first telemetry publish") {
+    SECTION("development diagnostics stays connected after first telemetry publish") {
         RealThingsBoardFixture f(*paths, "_health_mode_diag_itest", "development");
         REQUIRE(f.connect_and_request_shared_snapshot());
         REQUIRE(f.net->is_connected());
@@ -481,25 +484,19 @@ TEST_CASE("Real ThingsBoard production health stays connected while development 
         const auto payload = build_sample_diagnostics_payload();
         REQUIRE(f.cloud->publish_telemetry(payload));
 
-        const auto timeout = std::chrono::seconds(10);
+        const auto hold_time = std::chrono::seconds(10);
         const auto sample_period = std::chrono::milliseconds(200);
         const auto start = std::chrono::steady_clock::now();
-        const auto deadline = start + timeout;
+        const auto deadline = start + hold_time;
 
-        bool disconnected = false;
         while (std::chrono::steady_clock::now() < deadline) {
-            if (!f.net->is_connected()) {
-                disconnected = true;
-                break;
-            }
+            INFO("mode=development elapsed_ms="
+                 << std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - start)
+                        .count());
+            REQUIRE(f.net->is_connected());
             std::this_thread::sleep_for(sample_period);
         }
-
-        INFO("mode=development elapsed_ms="
-             << std::chrono::duration_cast<std::chrono::milliseconds>(
-                    std::chrono::steady_clock::now() - start)
-                    .count());
-        REQUIRE(disconnected);
     }
 }
 
@@ -553,7 +550,11 @@ TEST_CASE("Real ThingsBoard stays stable when shared attributes callback publish
     RealThingsBoardFixture f(*paths);
 
     f.cloud->subscribe_shared_attributes([&f](const rapidjson::Document& attrs) {
-        const auto result = f.tb_cfg->apply_shared_attributes(attrs);
+        const auto before = f.cfg.active_runtime_config();
+        const auto result = f.cfg.apply_runtime_patch(attrs);
+        if (result.accepted && f.cfg.active_runtime_config().schedules != before.schedules) {
+            f.cfg.apply_active_runtime_schedules(f.scheduler);
+        }
         {
             std::lock_guard<std::mutex> lk(f.shared_attr_result_mtx);
             f.last_shared_attr_result = result;
@@ -602,7 +603,7 @@ TEST_CASE("Real ThingsBoard stays stable when shared attributes callback publish
             robot::app::RobotRuntimeSnapshot snap;
             snap.device_state = "Idle";
             snap.task_state = "IdleTask";
-            snap.active_config = f.tb_cfg->active_config();
+            snap.active_config = f.cfg.active_runtime_config();
             snap.active_config_version = publisher_ticks.fetch_add(1, std::memory_order_relaxed) + 1;
 
             std::array<char, 4096> telemetry_buf{};
@@ -743,7 +744,7 @@ TEST_CASE("Real ThingsBoard publish startup attributes and telemetry",
     robot::app::RobotRuntimeSnapshot snap;
     snap.device_state = "Idle";
     snap.task_state = "IdleTask";
-    snap.active_config = f.tb_cfg->active_config();
+    snap.active_config = f.cfg.active_runtime_config();
     snap.active_config_version = 1;
 
     std::array<char, 4096> telemetry_buf{};
@@ -768,7 +769,7 @@ TEST_CASE("Real ThingsBoard shared attributes update local pending config",
     REQUIRE(f.wait_for_initial_snapshot());
 
     const auto pending_cfg_path = f.paths.pending_path;
-    const auto before_pending = f.tb_cfg->pending_config();
+    const auto before_pending = f.cfg.pending_runtime_config();
     const int before_attr_count = f.shared_attr_updates();
     const auto target = choose_legal_target(before_pending);
 
@@ -783,7 +784,7 @@ TEST_CASE("Real ThingsBoard shared attributes update local pending config",
             if (f.shared_attr_updates() <= before_attr_count) {
                 return false;
             }
-            const auto pending = f.tb_cfg->pending_config();
+            const auto pending = f.cfg.pending_runtime_config();
             return pending.has_value() &&
                    pending->passes == Approx(target.passes) &&
                    pending->clean_speed_rpm == Approx(target.clean_speed_rpm) &&
@@ -792,7 +793,7 @@ TEST_CASE("Real ThingsBoard shared attributes update local pending config",
         std::chrono::seconds(120)));
 
     REQUIRE(fs::exists(pending_cfg_path));
-    const auto pending = f.tb_cfg->pending_config();
+    const auto pending = f.cfg.pending_runtime_config();
     REQUIRE(pending.has_value());
     CHECK(pending->passes == Approx(target.passes));
     CHECK(pending->clean_speed_rpm == Approx(target.clean_speed_rpm));
@@ -813,8 +814,8 @@ TEST_CASE("Real ThingsBoard rejects unsupported shared attributes",
     REQUIRE(f.connect_and_request_shared_snapshot());
     REQUIRE(f.wait_for_initial_snapshot());
 
-    const auto before_active = f.tb_cfg->active_config();
-    const auto before_pending = f.tb_cfg->pending_config();
+    const auto before_active = f.cfg.active_runtime_config();
+    const auto before_pending = f.cfg.pending_runtime_config();
     const int before_attr_count = f.shared_attr_updates();
 
     spdlog::warn("[TB real test] ACTION REQUIRED: in ThingsBoard shared attributes, set "
@@ -825,8 +826,8 @@ TEST_CASE("Real ThingsBoard rejects unsupported shared attributes",
             if (f.shared_attr_updates() <= before_attr_count) {
                 return false;
             }
-            return f.tb_cfg->active_config() == before_active &&
-                   f.tb_cfg->pending_config() == before_pending;
+            return f.cfg.active_runtime_config() == before_active &&
+                   f.cfg.pending_runtime_config() == before_pending;
         },
         std::chrono::seconds(120)));
 
@@ -834,8 +835,8 @@ TEST_CASE("Real ThingsBoard rejects unsupported shared attributes",
     REQUIRE(result.has_value());
     CHECK_FALSE(result->accepted);
     CHECK(result->reason == "passes must be a positive integer");
-    CHECK(f.tb_cfg->active_config() == before_active);
-    CHECK(f.tb_cfg->pending_config() == before_pending);
+    CHECK(f.cfg.active_runtime_config() == before_active);
+    CHECK(f.cfg.pending_runtime_config() == before_pending);
 }
 
 TEST_CASE("Real ThingsBoard shared attributes modified while device offline are delivered on reconnect",
@@ -850,7 +851,7 @@ TEST_CASE("Real ThingsBoard shared attributes modified while device offline are 
     spdlog::info("[TB real test] using runtime config: {}", paths->runtime_config_path.string());
     RealThingsBoardFixture f(*paths);
 
-    const auto before_pending = f.tb_cfg->pending_config();
+    const auto before_pending = f.cfg.pending_runtime_config();
     const int before_attr_count = f.shared_attr_updates();
     const auto target = choose_legal_target(before_pending);
 
@@ -867,7 +868,7 @@ TEST_CASE("Real ThingsBoard shared attributes modified while device offline are 
             if (f.shared_attr_updates() <= before_attr_count) {
                 return false;
             }
-            const auto pending = f.tb_cfg->pending_config();
+            const auto pending = f.cfg.pending_runtime_config();
             return pending.has_value() &&
                    pending->passes == Approx(target.passes) &&
                    pending->clean_speed_rpm == Approx(target.clean_speed_rpm) &&
@@ -875,7 +876,7 @@ TEST_CASE("Real ThingsBoard shared attributes modified while device offline are 
         },
         std::chrono::seconds(120)));
 
-    const auto pending = f.tb_cfg->pending_config();
+    const auto pending = f.cfg.pending_runtime_config();
     REQUIRE(pending.has_value());
     CHECK(pending->passes == Approx(target.passes));
     CHECK(pending->clean_speed_rpm == Approx(target.clean_speed_rpm));

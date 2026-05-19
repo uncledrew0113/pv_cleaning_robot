@@ -8,8 +8,8 @@
 #include "pv_cleaning_robot/device/walk_motor_group.h"
 #include "pv_cleaning_robot/middleware/event_bus.h"
 #include "pv_cleaning_robot/middleware/thread_executor.h"
+#include "pv_cleaning_robot/service/config_service.h"
 #include "pv_cleaning_robot/service/heading_corrector.h"
-#include "pv_cleaning_robot/service/thingsboard_control_plane.h"
 
 namespace robot::service {
 
@@ -20,25 +20,25 @@ namespace robot::service {
 ///      给每台电机；update() 每 20ms 重发设定值维持心跳，超时自停
 ///   2. 主动上报+温度查询：反馈方式使用主动上报（100Hz），
 ///      无法上报温度时由 WalkMotorGroup::update() 定期发 0x107 查询补采
-///   3. IMU 姿态纠偏：MotionService 持有 HeadingCorrector，
-///      update() 每 20ms 计算最终4轮目标速度并下发给 WalkMotorGroup
+///   3. 视觉纠偏：MotionService 持有 HeadingCorrector，
+///      update() 每 20ms 根据视觉 UDS 最新结果修正上下轮组目标速度
 ///   4. 冲突保护：override 激活期间 WalkMotorGroup::update() 跳过心跳重发，
 ///      防止控制心跳干扰边缘停车指令
 class MotionService : public middleware::IRunnable {
    public:
     struct Config {
-        float clean_speed_rpm{30.0f};   ///< 清扫行进速度（RPM）
-        float return_speed_rpm{30.0f};  ///< 返回速度（RPM，快速）
-        int brush_rpm{1200};            ///< 滚刷正向转速
-        int return_brush_rpm{1200};     ///< 滚刷返程转速（绝对值，实际方向取反）
+        float clean_speed_rpm{30.0f};   ///< 清扫行进速度（绝对值 RPM）
+        float return_speed_rpm{30.0f};  ///< 返回速度（绝对值 RPM）
+        int brush_rpm{1200};            ///< 滚刷转速绝对值
+        int return_brush_rpm{1200};     ///< 滚刷返程转速绝对值（实际方向由停机位/动作决定）
         float edge_reverse_rpm{30.0f};  ///< 边缘触发后反转速度（RPM，0=原地停）
-        bool heading_pid_en{true};      ///< 是否使能姿态纠偏
-        HeadingCorrector::Params pid{};  ///< 姿态纠偏参数
+        bool heading_pid_en{true};      ///< 是否使能视觉纠偏
+        HeadingCorrector::Params pid{};  ///< 视觉纠偏参数
     };
 
     /// @param group    4轮行走电机组（构造时已配置 comm_timeout_ms）
     /// @param brush    滚刷电机
-    /// @param imu      IMU 设备（提供 pitch/roll/yaw/gyro）
+    /// @param imu      IMU 设备（当前保留构造依赖，视觉纠偏不直接使用）
     /// @param bus      事件总线
     /// @param cfg      运动配置
     MotionService(std::shared_ptr<device::WalkMotorGroup> group,
@@ -49,8 +49,8 @@ class MotionService : public middleware::IRunnable {
 
     /// 以“停机位在右侧”为运动方向基线；查询返回 Left 时整体取反。
     void set_parking_side_query(std::function<ParkingSide()> query);
-    /// 新任务启动前从 active runtime 同步速度/滚刷参数。
-    void set_runtime_config_query(std::function<TbRuntimeConfig()> query);
+    /// 新任务启动前从 active runtime 同步速度/滚刷参数；所有速度配置统一按绝对值解释。
+    void set_runtime_config_query(std::function<RuntimeConfig()> query);
 
     // ── 运动控制 ──────────────────────────────────────────────────────────
     /// 开始清扫前进（使能行走 + 滚刷，启用姿态纠偏）
@@ -72,6 +72,7 @@ class MotionService : public middleware::IRunnable {
     void emergency_stop();
 
     void update() override;  ///< 由 ThreadExecutor 20ms 调用（50Hz 姿态纠偏）
+    HeadingCorrector::DebugState heading_pid_debug_state() const;
 
    private:
     std::shared_ptr<device::WalkMotorGroup> group_;
@@ -80,10 +81,11 @@ class MotionService : public middleware::IRunnable {
     middleware::EventBus& bus_;
     Config cfg_;
     std::function<ParkingSide()> parking_side_query_;
-    std::function<TbRuntimeConfig()> runtime_config_query_;
+    std::function<RuntimeConfig()> runtime_config_query_;
     HeadingCorrector heading_corrector_{};
     device::WalkMotorGroup::SpeedCmd base_speed_cmd_{};
     bool walk_command_active_{false};
+    HeadingCorrector::MotionPhase motion_phase_{HeadingCorrector::MotionPhase::CleanFwd};
     uint32_t last_override_clear_generation_{0};
 
     int task_direction_sign() const;

@@ -334,7 +334,6 @@
 
 仓库中仍有一些代码存在，但不属于当前 `main` 的默认运行路径：
 
-- OTA manager：默认不参与产品构建
 - 距离传感器模块：当前 `main` 未实例化
 - LoRaWAN：仅在 `network.transport_mode` 切到对应模式时参与网络层
 

@@ -20,14 +20,14 @@ rapidjson::Document parse_json(const char* data, size_t len)
 TEST_CASE("ThingsBoardJsonCodec emits periodic business telemetry into caller buffer",
           "[service][tb_json_codec]") {
     robot::app::RobotRuntimeSnapshot snap;
-    snap.device_state = "Paused";
-    snap.task_state = "PausedTask";
+    snap.device_state = "Stopped";
+    snap.task_state = "StoppedTask";
     snap.target_passes = 2;
     snap.completed_passes = 0;
     snap.clean_count = 7;
     snap.active_config_version = 42;
 
-    robot::service::TbRuntimeConfig active_config;
+    robot::service::RuntimeConfig active_config;
     active_config.passes = 2.0;
     active_config.clean_speed_rpm = 180.0;
     active_config.return_speed_rpm = 120.0;
@@ -36,7 +36,7 @@ TEST_CASE("ThingsBoardJsonCodec emits periodic business telemetry into caller bu
     active_config.schedules = {{8, 30}};
     snap.active_config = active_config;
 
-    robot::service::TbRuntimeConfig pending_config = active_config;
+    robot::service::RuntimeConfig pending_config = active_config;
     pending_config.parking_side = robot::service::ParkingSide::Left;
     snap.pending_config = pending_config;
 
@@ -52,10 +52,8 @@ TEST_CASE("ThingsBoardJsonCodec emits periodic business telemetry into caller bu
 
     REQUIRE(len > 0);
     const auto payload = parse_json(out, len);
-    CHECK(std::string(payload["device_state"].GetString()) == "Paused");
+    CHECK(std::string(payload["device_state"].GetString()) == "Stopped");
+    CHECK(std::string(payload["task_state"].GetString()) == "StoppedTask");
     CHECK(payload["active_config_version"].GetUint64() == 42);
-    CHECK(payload["active_config"]["passes"].GetDouble() == Approx(2.0));
-    CHECK(std::string(payload["active_config"]["parking_side"].GetString()) == "right");
-    CHECK(std::string(payload["pending_config"]["parking_side"].GetString()) == "left");
-    CHECK(std::string(payload["active_command"]["id"].GetString()) == "cmd-2");
+    CHECK(payload.MemberCount() == 3);
 }

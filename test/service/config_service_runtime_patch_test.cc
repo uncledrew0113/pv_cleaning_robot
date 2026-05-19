@@ -12,7 +12,6 @@
 using robot::service::ConfigService;
 using robot::service::ParkingSide;
 using robot::service::SchedulerService;
-using robot::service::ThingsBoardConfigManager;
 namespace fs = std::filesystem;
 
 namespace {
@@ -27,11 +26,9 @@ rapidjson::Document parse_json(const char* text)
 
 struct Fixture {
     tb_test_support::TempSplitConfigPaths paths{
-        tb_test_support::make_temp_split_config_paths("test_tb_config_manager")};
+        tb_test_support::make_temp_split_config_paths("test_runtime_config_patch")};
     ConfigService cfg{paths.runtime_path.string(), paths.fixed_path.string()};
     SchedulerService scheduler;
-    std::unique_ptr<ThingsBoardConfigManager> manager;
-
     Fixture() {
         tb_test_support::write_split_config(paths,
                                             R"({
@@ -51,9 +48,7 @@ struct Fixture {
 })",
                                             R"({})");
         REQUIRE(cfg.load());
-        scheduler.clear_windows();
-        scheduler.add_window({8, 0});
-        manager = std::make_unique<ThingsBoardConfigManager>(cfg, scheduler);
+        cfg.apply_active_runtime_schedules(scheduler);
     }
 
     ~Fixture() {
@@ -63,33 +58,34 @@ struct Fixture {
 
 }  // namespace
 
-TEST_CASE("ThingsBoardConfigManager: invalid speed rejects whole update", "[service][tb_config]") {
+TEST_CASE("ConfigService runtime patch: invalid speed rejects whole update", "[service][tb_config]") {
     Fixture f;
-    const auto before = f.manager->active_config();
+    const auto before = f.cfg.active_runtime_config();
 
     auto attrs = parse_json(R"({"clean_speed_rpm":30,"brush_rpm":0})");
 
-    const auto result = f.manager->apply_shared_attributes(attrs);
+    const auto result = f.cfg.apply_runtime_patch(attrs);
     CHECK_FALSE(result.accepted);
-    CHECK(f.manager->active_config() == before);
-    CHECK_FALSE(f.manager->pending_config().has_value());
+    CHECK(f.cfg.active_runtime_config() == before);
+    CHECK_FALSE(f.cfg.pending_runtime_config().has_value());
 }
 
-TEST_CASE("ThingsBoardConfigManager: schedule applies immediately, passes stay pending",
+TEST_CASE("ConfigService runtime patch: schedule applies immediately, passes stay pending",
           "[service][tb_config]") {
     Fixture f;
     auto attrs = parse_json(R"({"schedules":[{"hour":7,"minute":30}],"passes":2.0})");
 
-    const auto result = f.manager->apply_shared_attributes(attrs);
+    const auto result = f.cfg.apply_runtime_patch(attrs);
     REQUIRE(result.accepted);
+    f.cfg.apply_active_runtime_schedules(f.scheduler);
 
-    const auto active = f.manager->active_config();
-    const robot::service::TbScheduleEntry expected_schedule{7, 30};
+    const auto active = f.cfg.active_runtime_config();
+    const robot::service::RuntimeScheduleEntry expected_schedule{7, 30};
     REQUIRE(active.schedules.size() == 1);
     CHECK(active.schedules[0] == expected_schedule);
     CHECK(active.passes == Approx(1.0));
 
-    const auto pending = f.manager->pending_config();
+    const auto pending = f.cfg.pending_runtime_config();
     REQUIRE(pending.has_value());
     CHECK(pending->passes == Approx(2.0));
     CHECK(pending->schedules[0] == expected_schedule);
@@ -100,89 +96,89 @@ TEST_CASE("ThingsBoardConfigManager: schedule applies immediately, passes stay p
     CHECK(windows[0].minute == 30);
 }
 
-TEST_CASE("ThingsBoardConfigManager: battery thresholds stay pending until next task",
+TEST_CASE("ConfigService runtime patch: battery thresholds stay pending until next task",
           "[service][tb_config]") {
     Fixture f;
-    const auto before = f.manager->active_config();
+    const auto before = f.cfg.active_runtime_config();
     auto attrs =
         parse_json(R"({"start_battery_soc":40.0,"charge_start_soc":20.0,"charge_stop_soc":90.0})");
 
-    const auto result = f.manager->apply_shared_attributes(attrs);
+    const auto result = f.cfg.apply_runtime_patch(attrs);
     REQUIRE(result.accepted);
 
-    const auto active = f.manager->active_config();
+    const auto active = f.cfg.active_runtime_config();
     CHECK(active.start_battery_soc == Approx(before.start_battery_soc));
     CHECK(active.charge_start_soc == Approx(before.charge_start_soc));
     CHECK(active.charge_stop_soc == Approx(before.charge_stop_soc));
 
-    const auto pending = f.manager->pending_config();
+    const auto pending = f.cfg.pending_runtime_config();
     REQUIRE(pending.has_value());
     CHECK(pending->start_battery_soc == Approx(40.0));
     CHECK(pending->charge_start_soc == Approx(20.0));
     CHECK(pending->charge_stop_soc == Approx(90.0));
 }
 
-TEST_CASE("ThingsBoardConfigManager: return_brush_rpm stays pending until next task",
+TEST_CASE("ConfigService runtime patch: return_brush_rpm stays pending until next task",
           "[service][tb_config]") {
     Fixture f;
-    const auto before = f.manager->active_config();
+    const auto before = f.cfg.active_runtime_config();
     auto attrs = parse_json(R"({"return_brush_rpm":900})");
 
-    const auto result = f.manager->apply_shared_attributes(attrs);
+    const auto result = f.cfg.apply_runtime_patch(attrs);
     REQUIRE(result.accepted);
 
-    const auto active = f.manager->active_config();
+    const auto active = f.cfg.active_runtime_config();
     CHECK(active.return_brush_rpm == before.return_brush_rpm);
 
-    const auto pending = f.manager->pending_config();
+    const auto pending = f.cfg.pending_runtime_config();
     REQUIRE(pending.has_value());
     CHECK(pending->return_brush_rpm == 900);
 }
 
-TEST_CASE("ThingsBoardConfigManager: promote_pending_to_active applies next-task config",
+TEST_CASE("ConfigService runtime patch: promote_pending_to_active applies next-task config",
           "[service][tb_config]") {
     Fixture f;
     auto attrs = parse_json(R"({"passes":2.0})");
-    REQUIRE(f.manager->apply_shared_attributes(attrs).accepted);
-    REQUIRE(f.manager->has_pending_config());
+    REQUIRE(f.cfg.apply_runtime_patch(attrs).accepted);
+    REQUIRE(f.cfg.has_pending_runtime_config());
 
-    REQUIRE(f.manager->promote_pending_to_active());
-    CHECK_FALSE(f.manager->has_pending_config());
-    CHECK(f.manager->active_config().passes == Approx(2.0));
+    REQUIRE(f.cfg.promote_pending_runtime_to_active());
+    CHECK_FALSE(f.cfg.has_pending_runtime_config());
+    CHECK(f.cfg.active_runtime_config().passes == Approx(2.0));
     CHECK_FALSE(fs::exists(f.paths.pending_path));
 }
 
-TEST_CASE("ThingsBoardConfigManager: rejects passes=0.5", "[service][tb_config]") {
+TEST_CASE("ConfigService runtime patch: rejects passes=0.5", "[service][tb_config]") {
     Fixture f;
-    const auto before = f.manager->active_config();
+    const auto before = f.cfg.active_runtime_config();
 
     auto attrs = parse_json(R"({"passes":0.5})");
-    const auto result = f.manager->apply_shared_attributes(attrs);
+    const auto result = f.cfg.apply_runtime_patch(attrs);
 
     CHECK_FALSE(result.accepted);
     CHECK(result.reason == "passes must be a positive integer");
-    CHECK(f.manager->active_config() == before);
-    CHECK_FALSE(f.manager->pending_config().has_value());
+    CHECK(f.cfg.active_runtime_config() == before);
+    CHECK_FALSE(f.cfg.pending_runtime_config().has_value());
 }
 
-TEST_CASE("ThingsBoardConfigManager: accepts parking_side left and right only",
+TEST_CASE("ConfigService runtime patch: accepts parking_side left and right only",
           "[service][tb_config]") {
     Fixture f;
 
     auto left_attrs = parse_json(R"({"parking_side":"left","passes":2.0})");
-    const auto left_result = f.manager->apply_shared_attributes(left_attrs);
+    const auto left_result = f.cfg.apply_runtime_patch(left_attrs);
     REQUIRE(left_result.accepted);
-    REQUIRE(f.manager->pending_config().has_value());
-    CHECK(f.manager->pending_config()->parking_side == ParkingSide::Left);
+    REQUIRE(f.cfg.pending_runtime_config().has_value());
+    CHECK(f.cfg.pending_runtime_config()->parking_side == ParkingSide::Left);
 
     auto right_attrs = parse_json(R"({"parking_side":"right"})");
-    const auto right_result = f.manager->apply_shared_attributes(right_attrs);
+    const auto right_result = f.cfg.apply_runtime_patch(right_attrs);
     REQUIRE(right_result.accepted);
-    REQUIRE(f.manager->pending_config().has_value());
-    CHECK(f.manager->pending_config()->parking_side == ParkingSide::Right);
+    REQUIRE(f.cfg.pending_runtime_config().has_value());
+    CHECK(f.cfg.pending_runtime_config()->parking_side == ParkingSide::Right);
 
     auto bad_attrs = parse_json(R"({"parking_side":"both"})");
-    const auto bad_result = f.manager->apply_shared_attributes(bad_attrs);
+    const auto bad_result = f.cfg.apply_runtime_patch(bad_attrs);
 
     CHECK_FALSE(bad_result.accepted);
     CHECK(bad_result.reason == "parking_side must be left or right");

@@ -24,167 +24,6 @@ namespace {
 // - 将调度窗口同步到 SchedulerService
 // - 生成 JSON 负载并通过 CloudService 发布
 
-bool is_supported_field(const std::string& key) {
-    // 仅允许 ThingsBoard shared attribute 更新这些字段。
-    return key == "passes" || key == "clean_speed_rpm" || key == "return_speed_rpm" ||
-           key == "brush_rpm" || key == "return_brush_rpm" || key == "parking_side" ||
-           key == "start_battery_soc" || key == "charge_start_soc" || key == "charge_stop_soc" ||
-           key == "schedules";
-}
-
-bool is_integer_passes(double value) {
-    // passes 必须是正整数。
-    return std::isfinite(value) && value > 0.0 && std::floor(value) == value;
-}
-
-ParkingSide parse_parking_side_string(const std::string& value) {
-    // 将字符串映射到 ParkingSide 枚举，支持 left/right。
-    if (value == parking_side_config_string(ParkingSide::Left)) {
-        return ParkingSide::Left;
-    }
-    if (value == parking_side_config_string(ParkingSide::Right)) {
-        return ParkingSide::Right;
-    }
-    throw std::runtime_error("parking_side must be left or right");
-}
-
-void validate_runtime_config(const TbRuntimeConfig& cfg) {
-    // 验证运行时配置的基础约束。
-    if (!is_integer_passes(cfg.passes)) {
-        throw std::runtime_error("passes must be a positive integer");
-    }
-    const auto valid_soc = [](double value) {
-        return std::isfinite(value) && value >= 0.0 && value <= 100.0;
-    };
-    if (!valid_soc(cfg.start_battery_soc)) {
-        throw std::runtime_error("start_battery_soc must be within [0,100]");
-    }
-    if (!valid_soc(cfg.charge_start_soc)) {
-        throw std::runtime_error("charge_start_soc must be within [0,100]");
-    }
-    if (!valid_soc(cfg.charge_stop_soc)) {
-        throw std::runtime_error("charge_stop_soc must be within [0,100]");
-    }
-    if (!(cfg.charge_start_soc < cfg.charge_stop_soc)) {
-        throw std::runtime_error("charge_start_soc must be less than charge_stop_soc");
-    }
-}
-
-rapidjson::Document clone_document(const rapidjson::Value& value) {
-    // 复制一个 JSON 片段到新的 Document 中，保留其结构和值。
-    rapidjson::Document out;
-    out.CopyFrom(value, out.GetAllocator());
-    return out;
-}
-
-rapidjson::Document make_empty_root() {
-    // 创建一个空的 JSON 根对象。
-    rapidjson::Document out;
-    out.SetObject();
-    return out;
-}
-
-rapidjson::Value* ensure_object_member(rapidjson::Value& parent,
-                                       const char* key,
-                                       rapidjson::Document::AllocatorType& alloc) {
-    // 确保 parent 对象包含 key 字段，并且该字段是一个对象。
-    // 如果不存在，则创建一个空对象；如果存在但不是对象，则覆盖为对象。
-    if (!parent.IsObject()) {
-        parent.SetObject();
-    }
-    auto it = parent.FindMember(key);
-    if (it == parent.MemberEnd()) {
-        rapidjson::Value name(key, alloc);
-        rapidjson::Value child(rapidjson::kObjectType);
-        parent.AddMember(name, child, alloc);
-        it = parent.FindMember(key);
-    } else if (!it->value.IsObject()) {
-        it->value.SetObject();
-    }
-    return &it->value;
-}
-
-void set_double_member(rapidjson::Value& parent,
-                       const char* key,
-                       double value,
-                       rapidjson::Document::AllocatorType& alloc) {
-    // 写入或更新父对象中指定的 double 值成员。
-    auto it = parent.FindMember(key);
-    if (it == parent.MemberEnd()) {
-        rapidjson::Value name(key, alloc);
-        parent.AddMember(name, rapidjson::Value(value), alloc);
-    } else {
-        it->value.SetDouble(value);
-    }
-}
-
-void set_int_member(rapidjson::Value& parent,
-                    const char* key,
-                    int value,
-                    rapidjson::Document::AllocatorType& alloc) {
-    // 写入或更新父对象中指定的 int 值成员。
-    auto it = parent.FindMember(key);
-    if (it == parent.MemberEnd()) {
-        rapidjson::Value name(key, alloc);
-        parent.AddMember(name, rapidjson::Value(value), alloc);
-    } else {
-        it->value.SetInt(value);
-    }
-}
-
-void set_string_member(rapidjson::Value& parent,
-                       const char* key,
-                       const char* value,
-                       rapidjson::Document::AllocatorType& alloc) {
-    // 写入或更新父对象中指定的字符串成员。
-    auto it = parent.FindMember(key);
-    if (it == parent.MemberEnd()) {
-        rapidjson::Value name(key, alloc);
-        rapidjson::Value str(value, alloc);
-        parent.AddMember(name, str, alloc);
-    } else {
-        it->value.SetString(value, alloc);
-    }
-}
-
-void merge_object_members(rapidjson::Value& dst,
-                          const rapidjson::Value& src,
-                          rapidjson::Document::AllocatorType& alloc) {
-    // 递归合并 src 到 dst：
-    // - 不存在的字段直接拷贝
-    // - 两端都是对象时递归合并
-    // - 否则直接覆盖 dst 的值
-    if (!src.IsObject()) {
-        return;
-    }
-    if (!dst.IsObject()) {
-        dst.SetObject();
-    }
-
-    for (auto it = src.MemberBegin(); it != src.MemberEnd(); ++it) {
-        auto dst_it = dst.FindMember(it->name.GetString());
-        if (dst_it == dst.MemberEnd()) {
-            rapidjson::Value key(it->name.GetString(), alloc);
-            rapidjson::Value value;
-            value.CopyFrom(it->value, alloc);
-            dst.AddMember(key, value, alloc);
-        } else if (dst_it->value.IsObject() && it->value.IsObject()) {
-            merge_object_members(dst_it->value, it->value, alloc);
-        } else {
-            dst_it->value.CopyFrom(it->value, alloc);
-        }
-    }
-}
-
-rapidjson::Document merge_runtime_root(const rapidjson::Value& active_root,
-                                       const rapidjson::Value& pending_patch) {
-    // 将 active_root 与 pending_patch 合并成一个新的 Document，返回合并结果。
-    // pending_patch 的值会覆盖 active_root 中对应字段。
-    auto merged = clone_document(active_root);
-    merge_object_members(merged, pending_patch, merged.GetAllocator());
-    return merged;
-}
-
 // 用于将 rapidjson 输出写入固定长度缓冲区，避免动态分配。
 // 如果输出超出 cap，则 overflow_ 置位，调用方可以通过 size()==0 判断失败。
 class RapidJsonFixedBufferStream {
@@ -278,7 +117,7 @@ void write_command_fields(WriterT& writer, const CommandSnapshot& command) {
 }
 
 template <typename WriterT>
-void write_schedule_entries(const std::vector<TbScheduleEntry>& schedules, WriterT& writer) {
+void write_schedule_entries(const std::vector<RuntimeScheduleEntry>& schedules, WriterT& writer) {
     // 将调度窗口列表写为 JSON 数组。
     writer.StartArray();
     for (const auto& schedule : schedules) {
@@ -293,8 +132,8 @@ void write_schedule_entries(const std::vector<TbScheduleEntry>& schedules, Write
 }
 
 template <typename WriterT>
-void write_runtime_config(const char* key, const TbRuntimeConfig& config, WriterT& writer) {
-    // 将 TbRuntimeConfig 序列化为 JSON 对象，键名由调用方指定。
+void write_runtime_config(const char* key, const RuntimeConfig& config, WriterT& writer) {
+    // 将 RuntimeConfig 序列化为 JSON 对象，键名由调用方指定。
     writer.Key(key);
     writer.StartObject();
     writer.Key("passes");
@@ -344,371 +183,6 @@ void write_command_snapshot(const char* key, const CommandSnapshot& command, Wri
 
 }  // namespace
 
-ThingsBoardConfigManager::ThingsBoardConfigManager(ConfigService& config,
-                                                   SchedulerService& scheduler)
-    : config_(config), scheduler_(scheduler), active_(parse_runtime_config(config.snapshot())) {
-    // 构造函数读取当前 active 配置并初始化调度窗口。
-    apply_scheduler_windows(active_.schedules);
-    if (const auto pending_root = config_.load_pending()) {
-        // 读取 pending 配置并与 active 配置合并为 pending_ 配置视图。
-        pending_ = parse_runtime_config(merge_runtime_root(config.snapshot(), *pending_root));
-    }
-}
-
-SharedAttrApplyResult ThingsBoardConfigManager::apply_shared_attributes(
-    const rapidjson::Value& attrs) {
-    // 处理来自 ThingsBoard 的共享属性更新。
-    // 只允许受支持的字段，并将更新写入 pending 或 active 配置。
-    if (!attrs.IsObject()) {
-        return {false, "attributes_must_be_object"};
-    }
-
-    const auto active_root_before = config_.snapshot();
-    const auto pending_root_before = config_.load_pending();
-    auto active_root_after = clone_document(active_root_before);
-    auto pending_root_after =
-        pending_root_before ? clone_document(*pending_root_before) : make_empty_root();
-
-    bool touches_active = false;
-    bool touches_pending = false;
-    bool touched_supported = false;
-
-    for (auto it = attrs.MemberBegin(); it != attrs.MemberEnd(); ++it) {
-        const std::string key = it->name.GetString();
-        if (!is_supported_field(key)) {
-            spdlog::warn("[TBConfig] 忽略不支持的字段: {}", key);
-            continue;
-        }
-        touched_supported = true;
-    }
-
-    if (!touched_supported) {
-        return {false, "no_supported_fields"};
-    }
-
-    try {
-        if (const auto it = attrs.FindMember("schedules"); it != attrs.MemberEnd()) {
-            const auto& schedules_json = it->value;
-            // schedules 生效在 active 配置中，并且同时会立即更新调度器。
-            parse_schedule_entries(schedules_json);
-            apply_schedule_json(active_root_after, schedules_json);
-            touches_active = true;
-        }
-
-        auto* robot =
-            ensure_object_member(pending_root_after, "robot", pending_root_after.GetAllocator());
-
-        if (const auto it = attrs.FindMember("passes"); it != attrs.MemberEnd()) {
-            if (!it->value.IsNumber()) {
-                throw std::runtime_error("passes must be a positive integer");
-            }
-            const double value = it->value.GetDouble();
-            if (!is_integer_passes(value)) {
-                throw std::runtime_error("passes must be a positive integer");
-            }
-            set_double_member(*robot, "passes", value, pending_root_after.GetAllocator());
-            touches_pending = true;
-        }
-
-        if (const auto it = attrs.FindMember("clean_speed_rpm"); it != attrs.MemberEnd()) {
-            if (!it->value.IsNumber()) {
-                throw std::runtime_error("clean_speed_rpm must be a positive finite number");
-            }
-            const double value = it->value.GetDouble();
-            if (!std::isfinite(value) || value <= 0.0) {
-                throw std::runtime_error("clean_speed_rpm must be a positive finite number");
-            }
-            set_double_member(*robot, "clean_speed_rpm", value, pending_root_after.GetAllocator());
-            touches_pending = true;
-        }
-
-        if (const auto it = attrs.FindMember("return_speed_rpm"); it != attrs.MemberEnd()) {
-            if (!it->value.IsNumber()) {
-                throw std::runtime_error("return_speed_rpm must be a positive finite number");
-            }
-            const double value = it->value.GetDouble();
-            if (!std::isfinite(value) || value <= 0.0) {
-                throw std::runtime_error("return_speed_rpm must be a positive finite number");
-            }
-            set_double_member(*robot, "return_speed_rpm", value, pending_root_after.GetAllocator());
-            touches_pending = true;
-        }
-
-        if (const auto it = attrs.FindMember("brush_rpm"); it != attrs.MemberEnd()) {
-            if (!it->value.IsInt()) {
-                throw std::runtime_error("brush_rpm must be > 0");
-            }
-            const int value = it->value.GetInt();
-            if (value <= 0) {
-                throw std::runtime_error("brush_rpm must be > 0");
-            }
-            set_int_member(*robot, "brush_rpm", value, pending_root_after.GetAllocator());
-            touches_pending = true;
-        }
-
-        if (const auto it = attrs.FindMember("return_brush_rpm"); it != attrs.MemberEnd()) {
-            if (!it->value.IsInt()) {
-                throw std::runtime_error("return_brush_rpm must be > 0");
-            }
-            const int value = it->value.GetInt();
-            if (value <= 0) {
-                throw std::runtime_error("return_brush_rpm must be > 0");
-            }
-            set_int_member(*robot, "return_brush_rpm", value, pending_root_after.GetAllocator());
-            touches_pending = true;
-        }
-
-        if (const auto it = attrs.FindMember("parking_side"); it != attrs.MemberEnd()) {
-            if (!it->value.IsString()) {
-                throw std::runtime_error("parking_side must be left or right");
-            }
-            const auto side = parse_parking_side_string(it->value.GetString());
-            set_string_member(*robot,
-                              "parking_side",
-                              parking_side_config_string(side),
-                              pending_root_after.GetAllocator());
-            touches_pending = true;
-        }
-
-        const auto apply_pending_soc = [&](const char* key, const char* error_message) {
-            const auto it = attrs.FindMember(key);
-            if (it == attrs.MemberEnd()) {
-                return;
-            }
-            if (!it->value.IsNumber()) {
-                throw std::runtime_error(error_message);
-            }
-            const double value = it->value.GetDouble();
-            if (!std::isfinite(value) || value < 0.0 || value > 100.0) {
-                throw std::runtime_error(error_message);
-            }
-            set_double_member(*robot, key, value, pending_root_after.GetAllocator());
-            touches_pending = true;
-        };
-        apply_pending_soc("start_battery_soc", "start_battery_soc must be within [0,100]");
-        apply_pending_soc("charge_start_soc", "charge_start_soc must be within [0,100]");
-        apply_pending_soc("charge_stop_soc", "charge_stop_soc must be within [0,100]");
-
-        if (touches_pending) {
-            // 如果 pending 配置发生变化，则先验证 active+pending 合并后的结果。
-            validate_runtime_config(
-                parse_runtime_config(merge_runtime_root(active_root_after, pending_root_after)));
-        }
-        if (touches_active) {
-            // 如果 active 配置发生变化，则验证 active 配置本身。
-            validate_runtime_config(parse_runtime_config(active_root_after));
-        }
-    } catch (const std::exception& ex) {
-        spdlog::warn("[TBConfig] 拒绝共享属性更新: {}", ex.what());
-        return {false, ex.what()};
-    }
-
-    if (touches_pending && !config_.save_pending(pending_root_after)) {
-        return {false, "persist_pending_failed"};
-    }
-
-    if (touches_active && !config_.replace_and_save(active_root_after)) {
-        if (pending_root_before) {
-            config_.save_pending(*pending_root_before);
-        } else if (touches_pending) {
-            config_.clear_pending();
-        }
-        return {false, "persist_active_failed"};
-    }
-
-    {
-        std::lock_guard<std::mutex> lk(mtx_);
-        if (touches_active) {
-            active_ = parse_runtime_config(active_root_after);
-        }
-        if (touches_pending) {
-            pending_ =
-                parse_runtime_config(merge_runtime_root(active_root_after, pending_root_after));
-        }
-    }
-
-    if (touches_active) {
-        apply_scheduler_windows(parse_runtime_config(active_root_after).schedules);
-    }
-
-    return {true, {}};
-}
-
-bool ThingsBoardConfigManager::promote_pending_to_active() {
-    // 将 pending 配置提升为 active 配置。
-    // 仅在存在 pending 配置时执行，执行过程为：
-    // 1. 合并 active 根和 pending 根
-    // 2. 清除 pending 配置
-    // 3. 写入并保存新的 active 配置
-    // 4. 更新内存中的 active_/pending_ 视图并同步调度窗口
-    const auto pending_root = config_.load_pending();
-    if (!pending_root) {
-        return true;
-    }
-
-    const auto active_root = config_.snapshot();
-    const auto merged_root = merge_runtime_root(active_root, *pending_root);
-
-    if (!config_.clear_pending()) {
-        return false;
-    }
-    if (!config_.replace_and_save(merged_root)) {
-        config_.save_pending(*pending_root);
-        return false;
-    }
-
-    const auto new_active = parse_runtime_config(merged_root);
-    apply_scheduler_windows(new_active.schedules);
-
-    {
-        std::lock_guard<std::mutex> lk(mtx_);
-        active_ = new_active;
-        pending_.reset();
-    }
-    return true;
-}
-
-TbRuntimeConfig ThingsBoardConfigManager::active_config() const {
-    // 返回当前可见 active 运行时配置快照。
-    std::lock_guard<std::mutex> lk(mtx_);
-    return active_;
-}
-
-std::optional<TbRuntimeConfig> ThingsBoardConfigManager::pending_config() const {
-    // 返回当前 pending 配置视图，供上层查询。
-    std::lock_guard<std::mutex> lk(mtx_);
-    return pending_;
-}
-
-bool ThingsBoardConfigManager::has_pending_config() const {
-    std::lock_guard<std::mutex> lk(mtx_);
-    return pending_.has_value();
-}
-
-TbRuntimeConfig ThingsBoardConfigManager::parse_runtime_config(const rapidjson::Value& root) {
-    // 从 JSON 根对象解析出 TbRuntimeConfig，支持 robot 和 scheduler 两个子树。
-    TbRuntimeConfig cfg;
-
-    if (root.IsObject()) {
-        if (const auto robot_it = root.FindMember("robot");
-            robot_it != root.MemberEnd() && robot_it->value.IsObject()) {
-            const auto& robot = robot_it->value;
-            if (const auto it = robot.FindMember("passes");
-                it != robot.MemberEnd() && it->value.IsNumber()) {
-                cfg.passes = it->value.GetDouble();
-            }
-            if (const auto it = robot.FindMember("clean_speed_rpm");
-                it != robot.MemberEnd() && it->value.IsNumber()) {
-                cfg.clean_speed_rpm = it->value.GetDouble();
-            }
-            if (const auto it = robot.FindMember("return_speed_rpm");
-                it != robot.MemberEnd() && it->value.IsNumber()) {
-                cfg.return_speed_rpm = it->value.GetDouble();
-            }
-            if (const auto it = robot.FindMember("brush_rpm");
-                it != robot.MemberEnd() && it->value.IsInt()) {
-                cfg.brush_rpm = it->value.GetInt();
-            }
-            if (const auto it = robot.FindMember("return_brush_rpm");
-                it != robot.MemberEnd() && it->value.IsInt()) {
-                cfg.return_brush_rpm = it->value.GetInt();
-            }
-            if (const auto it = robot.FindMember("parking_side");
-                it != robot.MemberEnd() && it->value.IsString()) {
-                cfg.parking_side = parse_parking_side_string(it->value.GetString());
-            }
-            if (const auto it = robot.FindMember("start_battery_soc");
-                it != robot.MemberEnd() && it->value.IsNumber()) {
-                cfg.start_battery_soc = it->value.GetDouble();
-            }
-            if (const auto it = robot.FindMember("charge_start_soc");
-                it != robot.MemberEnd() && it->value.IsNumber()) {
-                cfg.charge_start_soc = it->value.GetDouble();
-            }
-            if (const auto it = robot.FindMember("charge_stop_soc");
-                it != robot.MemberEnd() && it->value.IsNumber()) {
-                cfg.charge_stop_soc = it->value.GetDouble();
-            }
-        }
-
-        if (const auto scheduler_it = root.FindMember("scheduler");
-            scheduler_it != root.MemberEnd() && scheduler_it->value.IsObject()) {
-            if (const auto windows_it = scheduler_it->value.FindMember("windows");
-                windows_it != scheduler_it->value.MemberEnd()) {
-                cfg.schedules = parse_schedule_entries(windows_it->value);
-            }
-        }
-    }
-
-    validate_runtime_config(cfg);
-    return cfg;
-}
-
-void ThingsBoardConfigManager::apply_schedule_json(rapidjson::Document& root,
-                                                   const rapidjson::Value& schedules_json) {
-    // 将 schedules_json 写入 root 的 scheduler.windows 节点。
-    auto* scheduler = ensure_object_member(root, "scheduler", root.GetAllocator());
-    rapidjson::Value windows(rapidjson::kArrayType);
-    for (const auto& w : schedules_json.GetArray()) {
-        rapidjson::Value entry(rapidjson::kObjectType);
-        entry.AddMember("hour", w.FindMember("hour")->value.GetInt(), root.GetAllocator());
-        entry.AddMember("minute", w.FindMember("minute")->value.GetInt(), root.GetAllocator());
-        windows.PushBack(entry, root.GetAllocator());
-    }
-
-    auto it = scheduler->FindMember("windows");
-    if (it == scheduler->MemberEnd()) {
-        rapidjson::Value key("windows", root.GetAllocator());
-        scheduler->AddMember(key, windows, root.GetAllocator());
-    } else {
-        it->value = std::move(windows);
-    }
-}
-
-std::vector<TbScheduleEntry> ThingsBoardConfigManager::parse_schedule_entries(
-    const rapidjson::Value& schedules_json) {
-    // 解析 schedule 数组，并校验每一项为合法时间，且没有重复项。
-    if (!schedules_json.IsArray()) {
-        throw std::runtime_error("schedules must be an array");
-    }
-
-    std::set<std::pair<int, int>> seen;
-    std::vector<TbScheduleEntry> out;
-    for (const auto& w : schedules_json.GetArray()) {
-        if (!w.IsObject()) {
-            throw std::runtime_error("schedule entry must be an object");
-        }
-
-        const auto hour_it = w.FindMember("hour");
-        const auto minute_it = w.FindMember("minute");
-        if (hour_it == w.MemberEnd() || minute_it == w.MemberEnd() || !hour_it->value.IsInt() ||
-            !minute_it->value.IsInt()) {
-            throw std::runtime_error("schedule hour/minute must be integers");
-        }
-
-        const int hour = hour_it->value.GetInt();
-        const int minute = minute_it->value.GetInt();
-        if (hour < 0 || hour > 23 || minute < 0 || minute > 59) {
-            throw std::runtime_error("schedule hour/minute out of range");
-        }
-        if (!seen.insert({hour, minute}).second) {
-            throw std::runtime_error("duplicate schedule entry");
-        }
-
-        out.push_back(TbScheduleEntry{hour, minute});
-    }
-
-    return out;
-}
-
-void ThingsBoardConfigManager::apply_scheduler_windows(
-    const std::vector<TbScheduleEntry>& schedules) {
-    scheduler_.clear_windows();
-    for (const auto& schedule : schedules) {
-        scheduler_.add_window(SchedulerService::TimeWindow{schedule.hour, schedule.minute});
-    }
-}
-
 size_t ThingsBoardJsonCodec::build_startup_attributes(const StartupAttributesView& view,
                                                       char* out,
                                                       size_t cap) noexcept {
@@ -723,15 +197,6 @@ size_t ThingsBoardJsonCodec::build_startup_attributes(const StartupAttributesVie
     writer.String(view.device_model ? view.device_model : "");
     writer.Key("device_id");
     writer.String(view.device_id ? view.device_id : "");
-    writer.Key("supported_rpc_methods");
-    writer.StartArray();
-    writer.String("start");
-    writer.String("stop");
-    writer.String("return");
-    writer.String("reset");
-    writer.EndArray();
-    writer.Key("config_schema_version");
-    writer.String("thingsboard-v1");
     writer.EndObject();
     return stream.overflow() ? 0u : stream.size();
 }
@@ -779,72 +244,32 @@ size_t ThingsBoardJsonCodec::build_business_telemetry(const app::RobotRuntimeSna
     writer.String(view.device_state.c_str());
     writer.Key("task_state");
     writer.String(view.task_state.c_str());
-    writer.Key("target_passes");
-    writer.Int(view.target_passes);
-    writer.Key("completed_passes");
-    writer.Int(view.completed_passes);
-    writer.Key("clean_count");
-    writer.Int(view.clean_count);
     writer.Key("active_config_version");
     writer.Uint64(view.active_config_version);
-
-    if (view.active_config) {
-        write_runtime_config("active_config", *view.active_config, writer);
-    }
-    if (view.pending_config) {
-        write_runtime_config("pending_config", *view.pending_config, writer);
-    }
-    if (view.active_command) {
-        write_command_snapshot("active_command", *view.active_command, writer);
-    }
-    if (view.last_command) {
-        write_command_snapshot("last_command", *view.last_command, writer);
-    }
 
     writer.EndObject();
     return stream.overflow() ? 0u : stream.size();
 }
 
 ThingsBoardControlPlane::ThingsBoardControlPlane(ConfigService& config,
+                                                 SchedulerService* scheduler,
                                                  std::shared_ptr<CloudService> cloud,
-                                                 std::shared_ptr<ThingsBoardConfigManager> tb_cfg,
                                                  std::shared_ptr<CommandTracker> command_tracker,
                                                  std::shared_ptr<app::RobotSupervisor> supervisor)
     : config_(config)
+    , scheduler_(scheduler)
     , cloud_(std::move(cloud))
-    , tb_cfg_(std::move(tb_cfg))
     , command_tracker_(std::move(command_tracker))
     , supervisor_(std::move(supervisor)) {
     business_payload_cache_.reserve(kBusinessPayloadBufferBytes);
     event_payload_cache_.reserve(kEventPayloadBufferBytes);
 }
 
-SharedAttrApplyResult ThingsBoardControlPlane::apply_shared_attributes(
-    const rapidjson::Value& attrs) {
-    return tb_cfg_->apply_shared_attributes(attrs);
-}
-
-bool ThingsBoardControlPlane::promote_pending_to_active() {
-    return tb_cfg_->promote_pending_to_active();
-}
-
-TbRuntimeConfig ThingsBoardControlPlane::active_config() const {
-    return tb_cfg_->active_config();
-}
-
-std::optional<TbRuntimeConfig> ThingsBoardControlPlane::pending_config() const {
-    return tb_cfg_->pending_config();
-}
-
-bool ThingsBoardControlPlane::has_pending_config() const {
-    return tb_cfg_->has_pending_config();
-}
-
 void ThingsBoardControlPlane::subscribe_shared_attributes() {
     // 订阅 ThingsBoard shared attributes 更新回调。
     // 每次 cloud 收到共享属性变化后，将调用 apply_shared_attributes 进行校验和持久化。
     cloud_->subscribe_shared_attributes([this](const rapidjson::Document& attrs) {
-        const auto result = apply_shared_attributes(attrs);
+        const auto result = config_.apply_runtime_patch(attrs, scheduler_);
         const auto reason = result.reason.empty() ? "ok" : result.reason;
         publish_status_event("shared_attr_update", result.accepted, reason.c_str());
         if (!result.accepted) {
@@ -897,7 +322,9 @@ void ThingsBoardControlPlane::register_rpc_handlers(
                 battery_soc);
 
             if (!supervisor_->start_task_from_current_position(position_valid, battery_soc)) {
-                const auto runtime_cfg = has_pending_config() ? *pending_config() : active_config();
+                const auto runtime_cfg = config_.has_pending_runtime_config()
+                                             ? *config_.pending_runtime_config()
+                                             : config_.active_runtime_config();
                 const std::string reason =
                     (state != "Idle" && state != "Charging" && state != "Stopped")
                         ? "start_not_allowed_in_current_state"
@@ -1087,25 +514,21 @@ bool ThingsBoardControlPlane::publish_business_payload(size_t len,
 std::string ThingsBoardControlPlane::reject_rpc_command(const char* command_name,
                                                         const std::string& request_id,
                                                         const char* reason) {
-    // 记录命令被拒绝并上报命令事件。
+    // 保留本地命令真相，但不再发布高频 command event。
     command_tracker_->reject(command_name, request_id, reason);
-    publish_command_event("command_rejected", *command_tracker_->last_completed());
     return rpc_reply(false, reason);
 }
 
 std::string ThingsBoardControlPlane::complete_rpc_command(const char* command_name,
                                                           const std::string& request_id,
                                                           const char* completion_reason) {
-    // 处理命令成功完成的完整流程：接受、发布 accepted 事件、标记运行、完成、发布 completed 事件。
+    // 保留本地命令生命周期真相，但不再发布高频 command event。
     spdlog::info("[ThingsBoardControlPlane] complete_rpc_command begin: command='{}' reason='{}'",
                  command_name,
                  completion_reason);
     const auto cmd_id = command_tracker_->accept(command_name, request_id);
     spdlog::info(
         "[ThingsBoardControlPlane] command accepted: command='{}' cmd_id={}", command_name, cmd_id);
-    publish_command_event("command_accepted", *command_tracker_->active());
-    spdlog::info("[ThingsBoardControlPlane] command_accepted event published: command='{}'",
-                 command_name);
     command_tracker_->mark_running(cmd_id);
     spdlog::info("[ThingsBoardControlPlane] command marked running: command='{}' cmd_id={}",
                  command_name,
@@ -1116,9 +539,6 @@ std::string ThingsBoardControlPlane::complete_rpc_command(const char* command_na
         command_name,
         cmd_id,
         completion_reason);
-    publish_command_event("command_completed", *command_tracker_->last_completed());
-    spdlog::info("[ThingsBoardControlPlane] command_completed event published: command='{}'",
-                 command_name);
     return rpc_reply(true);
 }
 

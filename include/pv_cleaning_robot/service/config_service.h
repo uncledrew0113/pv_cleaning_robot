@@ -3,11 +3,69 @@
 #include <mutex>
 #include <optional>
 #include <rapidjson/document.h>
+#include <cstdint>
 #include <string>
 #include <type_traits>
 #include <vector>
 
 namespace robot::service {
+
+class SchedulerService;
+
+enum class ParkingSide {
+    Left,
+    Right,
+};
+
+inline const char* parking_side_config_string(ParkingSide value) noexcept {
+    switch (value) {
+    case ParkingSide::Left:
+        return "left";
+    case ParkingSide::Right:
+        return "right";
+    }
+    return "left";
+}
+
+struct RuntimeScheduleEntry {
+    int hour{0};
+    int minute{0};
+
+    bool operator==(const RuntimeScheduleEntry& other) const {
+        return hour == other.hour && minute == other.minute;
+    }
+};
+
+struct RuntimeConfig {
+    double passes{1.0};
+    double clean_speed_rpm{300.0};
+    double return_speed_rpm{300.0};
+    int brush_rpm{1000};
+    int return_brush_rpm{1000};
+    ParkingSide parking_side{ParkingSide::Left};
+    double start_battery_soc{30.0};
+    double charge_start_soc{15.0};
+    double charge_stop_soc{95.0};
+    std::vector<RuntimeScheduleEntry> schedules;
+
+    bool operator==(const RuntimeConfig& other) const {
+        return passes == other.passes &&
+               clean_speed_rpm == other.clean_speed_rpm &&
+               return_speed_rpm == other.return_speed_rpm &&
+               brush_rpm == other.brush_rpm &&
+               return_brush_rpm == other.return_brush_rpm &&
+               parking_side == other.parking_side &&
+               start_battery_soc == other.start_battery_soc &&
+               charge_start_soc == other.charge_start_soc &&
+               charge_stop_soc == other.charge_stop_soc &&
+               schedules == other.schedules;
+    }
+};
+
+struct SharedAttrApplyResult {
+    bool accepted{false};
+    std::string reason;
+};
 
 /// @brief 全局配置服务（RapidJSON，多文件配置驱动）
 ///
@@ -124,6 +182,30 @@ public:
     /// 读取待生效配置；不存在或解析失败时返回 nullopt
     std::optional<rapidjson::Document> load_pending() const;
 
+    /// 解析当前 active runtime 配置
+    RuntimeConfig active_runtime_config() const;
+
+    /// 解析当前 pending runtime 配置（基于 active + pending patch 合并视图）
+    std::optional<RuntimeConfig> pending_runtime_config() const;
+
+    bool has_pending_runtime_config() const;
+
+    /// 将云端 shared attributes patch 应用到 runtime(active/pending) 配置语义
+    SharedAttrApplyResult apply_runtime_patch(const rapidjson::Value& attrs,
+                                              SchedulerService* scheduler = nullptr);
+
+    /// 按 RuntimeConfig 结构体形式写入 pending 配置
+    bool save_pending_runtime_config(const RuntimeConfig& pending) const;
+
+    /// 将 pending runtime 提升为 active runtime 并清除 pending 文件
+    bool promote_pending_runtime_to_active();
+
+    /// 计算 runtime 配置版本号，用于业务 telemetry 最小真相
+    uint64_t runtime_config_version(const RuntimeConfig& config) const;
+
+    /// 将当前 active runtime 的调度窗口同步到调度器。
+    void apply_active_runtime_schedules(SchedulerService& scheduler) const;
+
     /// 清除待生效配置
     bool clear_pending() const;
 
@@ -187,6 +269,14 @@ private:
     }
 
     static std::vector<std::string> split_path(const std::string& path);
+    static ParkingSide parse_parking_side_string(const std::string& value);
+    static RuntimeConfig parse_runtime_config(const rapidjson::Value& root);
+    static std::vector<RuntimeScheduleEntry> parse_schedule_entries(
+        const rapidjson::Value& schedules_json);
+    static void validate_runtime_config(const RuntimeConfig& cfg);
+    static void apply_schedule_json(rapidjson::Document& root,
+                                    const rapidjson::Value& schedules_json);
+    static rapidjson::Document runtime_config_to_pending_root(const RuntimeConfig& config);
     static std::string derive_companion_path(const std::string& active_path, const char* suffix);
     static std::string derive_fixed_path(const std::string& runtime_path);
     std::string backup_path() const;

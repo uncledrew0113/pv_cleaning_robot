@@ -8,7 +8,7 @@
 #include <string>
 
 #include "pv_cleaning_robot/service/command_tracker.h"
-#include "pv_cleaning_robot/service/thingsboard_control_plane.h"
+#include "pv_cleaning_robot/service/config_service.h"
 
 namespace robot::app {
 
@@ -26,9 +26,9 @@ struct RobotRuntimeSnapshot {
     /// 当前激活运行配置的版本号
     uint64_t active_config_version{0};
     /// 当前正在使用的云端运行时配置
-    std::optional<robot::service::TbRuntimeConfig> active_config;
+    std::optional<robot::service::RuntimeConfig> active_config;
     /// 当前待生效的云端运行时配置
-    std::optional<robot::service::TbRuntimeConfig> pending_config;
+    std::optional<robot::service::RuntimeConfig> pending_config;
     /// 当前处于进行中的命令快照
     std::optional<robot::service::CommandSnapshot> active_command;
     /// 最近完成的命令快照

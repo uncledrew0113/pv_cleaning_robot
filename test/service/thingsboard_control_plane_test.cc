@@ -38,7 +38,6 @@ using robot::service::FaultService;
 using robot::service::MotionService;
 using robot::service::NavService;
 using robot::service::SchedulerService;
-using robot::service::ThingsBoardConfigManager;
 using robot::service::ThingsBoardControlPlane;
 namespace fs = std::filesystem;
 
@@ -103,7 +102,6 @@ struct Fixture {
         std::make_shared<NetworkManager>(mqtt, nullptr, NetworkManager::Mode::MQTT_ONLY)};
     std::shared_ptr<DataCache> cache{std::make_shared<DataCache>(paths.cache_path.string())};
     std::shared_ptr<CloudService> cloud{std::make_shared<CloudService>(net, cache)};
-    std::shared_ptr<ThingsBoardConfigManager> tb_cfg;
     std::shared_ptr<CommandTracker> command_tracker{std::make_shared<CommandTracker>()};
 
     std::shared_ptr<MockCanBus> can{std::make_shared<MockCanBus>()};
@@ -163,18 +161,18 @@ struct Fixture {
         cache->open();
         REQUIRE(net->connect());
 
-        tb_cfg = std::make_shared<ThingsBoardConfigManager>(cfg, scheduler);
+        cfg.apply_active_runtime_schedules(scheduler);
 
         MotionService::Config motion_cfg;
         motion_cfg.heading_pid_en = false;
         motion = std::make_shared<MotionService>(group, brush, nullptr, bus, motion_cfg);
         motion->set_parking_side_query(
-            [this]() { return tb_cfg->active_config().parking_side; });
-        motion->set_runtime_config_query([this]() { return tb_cfg->active_config(); });
+            [this]() { return cfg.active_runtime_config().parking_side; });
+        motion->set_runtime_config_query([this]() { return cfg.active_runtime_config(); });
         nav = std::make_shared<NavService>(group, imu, gps);
         fsm = std::make_shared<robot::app::RobotFsm>(motion, nav, fault, bus);
         supervisor = std::make_shared<robot::app::RobotSupervisor>(
-            fsm, tb_cfg, command_tracker, fault, nav);
+            fsm, cfg, command_tracker, fault, nav);
 
         can->open_result = true;
         can->send_result = true;
@@ -184,7 +182,7 @@ struct Fixture {
         fsm->dispatch(robot::app::EvInitDone{});
 
         control_plane = std::make_shared<ThingsBoardControlPlane>(
-            cfg, cloud, tb_cfg, command_tracker, supervisor);
+            cfg, &scheduler, cloud, command_tracker, supervisor);
     }
 
     ~Fixture() {
@@ -226,7 +224,7 @@ TEST_CASE("ThingsBoardControlPlane shared attributes update pending config and e
 
     f.mqtt->emit_attributes(R"({"passes":2.0})");
 
-    const auto pending = f.tb_cfg->pending_config();
+    const auto pending = f.cfg.pending_runtime_config();
     REQUIRE(pending.has_value());
     CHECK(pending->passes == Approx(2.0));
 
@@ -235,17 +233,16 @@ TEST_CASE("ThingsBoardControlPlane shared attributes update pending config and e
     CHECK(j["accepted"].GetBool() == true);
 }
 
-TEST_CASE("ThingsBoardControlPlane publishes startup attributes and supported rpc methods",
+TEST_CASE("ThingsBoardControlPlane publishes minimal startup attributes",
           "[service][tb_control_plane]") {
     Fixture f;
     f.control_plane->publish_startup_attributes();
 
     const auto j = f.last_published_json("attributes");
     CHECK(std::string(j["software_version"].GetString()) == "2.0.0");
-    REQUIRE(j["supported_rpc_methods"].IsArray());
-    REQUIRE(j["supported_rpc_methods"].Size() == 4);
-    CHECK(std::string(j["supported_rpc_methods"][0].GetString()) == "start");
-    CHECK(std::string(j["supported_rpc_methods"][3].GetString()) == "reset");
+    CHECK(std::string(j["hardware_version"].GetString()) == "A1");
+    CHECK(std::string(j["device_model"].GetString()) == "pv_cleaning_robot_test");
+    CHECK(std::string(j["device_id"].GetString()) == "pv_robot_test_001");
 }
 
 TEST_CASE("ThingsBoardControlPlane requests current release shared attribute snapshot",
@@ -361,8 +358,7 @@ TEST_CASE("ThingsBoardControlPlane publishes business telemetry from supervisor 
     const auto j = f.last_published_json("telemetry");
     CHECK(std::string(j["device_state"].GetString()) == "CleanReturn");
     CHECK(std::string(j["task_state"].GetString()) == "RunningTask");
-    REQUIRE(j.HasMember("active_config"));
-    CHECK(j["active_config"]["start_battery_soc"].GetDouble() == Approx(30.0));
-    CHECK(j["active_config"]["charge_start_soc"].GetDouble() == Approx(15.0));
-    CHECK(j["active_config"]["charge_stop_soc"].GetDouble() == Approx(95.0));
+    REQUIRE(j.HasMember("active_config_version"));
+    CHECK(j["active_config_version"].GetUint64() > 0u);
+    CHECK(j.MemberCount() == 3);
 }

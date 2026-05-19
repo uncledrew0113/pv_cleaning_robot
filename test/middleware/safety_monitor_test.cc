@@ -46,7 +46,8 @@ struct SafetyMonitorFixture {
         can->open_result = true;
         left_pin->open_result = true;
         right_pin->open_result = true;
-        // 不调用 walk->open()，避免后台线程
+        REQUIRE(can->open());
+        // 不调用 walk->open()，避免后台线程；急停路径只依赖已打开的 CAN。
         left_sw->open();
         right_sw->open();
     }
@@ -151,7 +152,7 @@ TEST_CASE("SafetyMonitor: 短时间内多次触发只发一次 LimitSettledEvent
 // ────────────────────────────────────────────────────────────────
 // Phase G 回归：pending 标志在循环内检查，第二次触发也能发布事件
 // ────────────────────────────────────────────────────────────────
-TEST_CASE("SafetyMonitor: 第二次触发（间隔 >180ms）也能发布 LimitSettledEvent",
+TEST_CASE("SafetyMonitor: 同一侧 release 后第二次触发也能发布 LimitSettledEvent",
           "[middleware][safety_monitor]") {
     SafetyMonitorFixture f;
     int settled_count = 0;
@@ -167,11 +168,59 @@ TEST_CASE("SafetyMonitor: 第二次触发（间隔 >180ms）也能发布 LimitSe
     std::this_thread::sleep_for(std::chrono::milliseconds(250));
     REQUIRE(settled_count == 1);
 
-    // 第二次触发（pending 已被 monitor_loop 消费，可再次置位）
+    // 必须先物理释放（低有效限位回到高电平）后才能重新 armed
+    f.left_pin->read_result = true;
+    std::this_thread::sleep_for(std::chrono::milliseconds(350));
+    f.left_pin->read_result = false;
+
+    // 第二次触发（已 release，可再次置位）
     if (f.left_pin->registered_cb) f.left_pin->simulate_edge();
     std::this_thread::sleep_for(std::chrono::milliseconds(250));
     REQUIRE(settled_count == 2);
 
+    f.monitor.stop();
+}
+
+TEST_CASE("SafetyMonitor: 同一侧 settled 后未 release 不会再次急停",
+          "[middleware][safety_monitor]") {
+    SafetyMonitorFixture f;
+    f.monitor.start();
+
+    if (f.left_pin->registered_cb) f.left_pin->simulate_edge();
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+
+    const auto frames_after_first = f.can->sent_frames.size();
+    REQUIRE(frames_after_first > 0);
+
+    // 限位仍保持触发态（低电平），重复边沿不应再次 re-arm。
+    f.left_pin->read_result = false;
+    if (f.left_pin->registered_cb) f.left_pin->simulate_edge();
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+
+    REQUIRE(f.can->sent_frames.size() == frames_after_first);
+    f.monitor.stop();
+}
+
+TEST_CASE("SafetyMonitor: 短暂 release 后立刻重触发不会再次急停",
+          "[middleware][safety_monitor]") {
+    SafetyMonitorFixture f;
+    f.monitor.start();
+
+    if (f.left_pin->registered_cb) f.left_pin->simulate_edge();
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+
+    const auto frames_after_first = f.can->sent_frames.size();
+    REQUIRE(frames_after_first > 0);
+
+    // 只短暂回高，不足以清除 wait_release。
+    f.left_pin->read_result = true;
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    f.left_pin->read_result = false;
+
+    if (f.left_pin->registered_cb) f.left_pin->simulate_edge();
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+
+    REQUIRE(f.can->sent_frames.size() == frames_after_first);
     f.monitor.stop();
 }
 

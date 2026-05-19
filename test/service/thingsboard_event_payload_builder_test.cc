@@ -30,8 +30,7 @@ TEST_CASE("ThingsBoardJsonCodec emits startup attributes payload", "[service][tb
     CHECK(std::string(payload["hardware_version"].GetString()) == "A1");
     CHECK(std::string(payload["device_model"].GetString()) == "pv_cleaning_robot_test");
     CHECK(std::string(payload["device_id"].GetString()) == "pv_robot_test_001");
-    REQUIRE(payload["supported_rpc_methods"].IsArray());
-    CHECK(std::string(payload["config_schema_version"].GetString()) == "thingsboard-v1");
+    CHECK(payload.MemberCount() == 4);
 }
 
 TEST_CASE("ThingsBoardJsonCodec emits shared-attribute style status event",

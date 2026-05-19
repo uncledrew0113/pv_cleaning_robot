@@ -73,6 +73,12 @@ class SafetyMonitor {
     /// 同一侧 pending 不为 0 时，GPIO 回调与备用轮询都会忽略重复触发。
     std::atomic<uint64_t> pending_left_ts_{0};
     std::atomic<uint64_t> pending_right_ts_{0};
+    /// 同一侧触发一次后，必须先物理释放（电平回高）才允许重新 armed。
+    std::atomic<bool> left_wait_release_{false};
+    std::atomic<bool> right_wait_release_{false};
+    /// 释放候选时间戳（ms）：看到回高后开始计时，连续稳定后才清 wait_release。
+    std::atomic<uint64_t> left_release_ts_{0};
+    std::atomic<uint64_t> right_release_ts_{0};
     std::thread monitor_thread_;
 };
 

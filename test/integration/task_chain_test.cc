@@ -56,7 +56,6 @@ using robot::service::FaultService;
 using robot::service::MotionService;
 using robot::service::NavService;
 using robot::service::SchedulerService;
-using robot::service::ThingsBoardConfigManager;
 using FaultEvent = FaultService::FaultEvent;
 using FaultLevel = FaultEvent::Level;
 namespace fs = std::filesystem;
@@ -94,7 +93,6 @@ struct TaskChainFixture {
     ConfigService cfg{paths.runtime_path.string(), paths.fixed_path.string()};
     SchedulerService scheduler;
     std::shared_ptr<CommandTracker> command_tracker{std::make_shared<CommandTracker>()};
-    std::shared_ptr<ThingsBoardConfigManager> tb_cfg;
     SafetyMonitor safety_mon;
 
     // App 层
@@ -148,15 +146,15 @@ struct TaskChainFixture {
         REQUIRE(cfg.load());
         scheduler.clear_windows();
         scheduler.add_window({8, 0});
-        tb_cfg = std::make_shared<ThingsBoardConfigManager>(cfg, scheduler);
+        cfg.apply_active_runtime_schedules(scheduler);
         motion->set_parking_side_query(
-            [this]() { return tb_cfg->active_config().parking_side; });
-        motion->set_runtime_config_query([this]() { return tb_cfg->active_config(); });
+            [this]() { return cfg.active_runtime_config().parking_side; });
+        motion->set_runtime_config_query([this]() { return cfg.active_runtime_config(); });
         fault_handler.start_listening();
         fsm.dispatch(EvInitDone{});
         supervisor = std::make_shared<RobotSupervisor>(
             std::shared_ptr<RobotFsm>(&fsm, [](RobotFsm*) {}),
-            tb_cfg,
+            cfg,
             command_tracker,
             fault_svc,
             nav);
@@ -331,9 +329,9 @@ TEST_CASE("TaskChain: P0 故障复位后重新启动清扫 → CleanFwd",
 }
 
 // ────────────────────────────────────────────────────────────────
-// 场景 9：heading_pid_en=true 完整 N=1 任务链（FSM 路径不受 PID 影响）
+// 场景 9：视觉 PID 使能时，完整 N=1 任务链（FSM 路径不受 PID 影响）
 // ────────────────────────────────────────────────────────────────
-TEST_CASE("TaskChain: heading_pid_en=true 完整 N=1 任务链", "[integration][task_chain][pid]") {
+TEST_CASE("TaskChain: visual PID enabled 完整 N=1 任务链", "[integration][task_chain][pid]") {
     TaskChainFixture f;
     // 临时用 PID 使能的 MotionService 替换 Fixture 内的 motion
     f.can->opened = true;  // 允许 send_ctrl() 通过 is_open() 检查

@@ -206,7 +206,7 @@ TEST_CASE("DataCache: ack journal survives restart without full rewrite semantic
     fs::remove(path + ".tmp");
 }
 
-TEST_CASE("DataCache: journal file keeps push and ack JSONL record format",
+TEST_CASE("DataCache: fully acked journal compacts to empty snapshot",
           "[middleware][data_cache]") {
     const std::string path = "/tmp/test_dc_journal_format.jsonl";
     fs::remove(path);
@@ -223,26 +223,13 @@ TEST_CASE("DataCache: journal file keeps push and ack JSONL record format",
 
     std::ifstream in(path);
     REQUIRE(in.is_open());
+    std::string line;
+    CHECK_FALSE(std::getline(in, line));
 
-    std::string push_line;
-    std::string ack_line;
-    REQUIRE(std::getline(in, push_line));
-    REQUIRE(std::getline(in, ack_line));
-
-    rapidjson::Document push_json;
-    push_json.Parse(push_line.c_str());
-    REQUIRE_FALSE(push_json.HasParseError());
-    CHECK(std::string(push_json["op"].GetString()) == "push");
-    CHECK(push_json["id"].GetInt64() == batch[0].id);
-    CHECK(std::string(push_json["topic"].GetString()) == "topic/test");
-    CHECK(std::string(push_json["payload"].GetString()) == R"({"v":1})");
-    CHECK(push_json["ts_ms"].GetUint64() == 1234);
-
-    rapidjson::Document ack_json;
-    ack_json.Parse(ack_line.c_str());
-    REQUIRE_FALSE(ack_json.HasParseError());
-    CHECK(std::string(ack_json["op"].GetString()) == "ack");
-    CHECK(ack_json["id"].GetInt64() == batch[0].id);
+    DataCache reopened(path);
+    REQUIRE(reopened.open());
+    CHECK(reopened.size() == 0);
+    reopened.close();
 
     fs::remove(path);
     fs::remove(path + ".tmp");

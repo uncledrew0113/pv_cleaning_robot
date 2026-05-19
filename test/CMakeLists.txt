@@ -106,7 +106,7 @@ add_executable(unit_tests
   service/health_payload_builder_test.cc
   service/thingsboard_event_payload_builder_test.cc
   service/thingsboard_control_plane_test.cc
-  service/thingsboard_config_manager_test.cc
+  service/config_service_runtime_patch_test.cc
   service/scheduler_service_test.cc
   service/motion_service_test.cc
   service/heading_pid_test.cc

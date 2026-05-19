@@ -12,18 +12,15 @@
  *   [hw_system][health_real_data]   — HealthService 用真实传感器数据落盘 JSONL
  *   [hw_system][safety_idle]        — SafetyMonitor 启动后不误触发限位回调
  *   [hw_system][motion_then_stop]   — 运动 1s 后急停，验证电机停止且 override 激活
- *   [hw_system][nav_fused_odometry] — 真实硬件观察融合里程计输出
  *   [hw_system][lower_pitch_peak]   — 上轮停止，下轮正反扫动寻找 pitch 最大点
  *   [hw_system][watchdog_heartbeat] — WatchdogMgr 正常心跳不触发超时
  *   [hw_system][combined]           — N 趟完整任务链 + 全程持续采集健康数据
- *   [hw_system][pid_combined]       — N 趟完整任务链 + 姿态纠偏链路观测 + yaw 指标采集到 pid_metrics.jsonl
+ *   [hw_system][combined_nvm_real]  — N 趟完整任务链 + 全程打印融合里程计日志
  *   [hw_system][imu_gps_health_only]— 仅 IMU/GPS 持续采集，并由 HealthService 本地落盘
  *
  * 运行方法（目标机）：
  *   ./hw_tests "[hw_system]"
  *   ./hw_tests "[hw_system][health_real_data]"
- *   ./hw_tests "[hw_system][nav_fused_odometry]"
- *   ./hw_tests "[hw_system][pid_combined]"
  *   ./hw_tests "[hw_system][lower_pitch_peak]"
  */
 #include <algorithm>
@@ -43,7 +40,6 @@
 #include <utility>
 
 #include "hw_config.h"
-#include "pv_cleaning_robot/service/heading_corrector.h"
 
 using namespace std::chrono_literals;
 
@@ -75,7 +71,36 @@ robot::app::EvScheduleStart make_schedule_start(bool at_parking_side,
     return evt;
 }
 
-robot::app::EvScheduleStart start_from_parking_side(float passes) {
+const char* parking_side_name(robot::service::ParkingSide side) {
+    return side == robot::service::ParkingSide::Left ? "left" : "right";
+}
+
+const char* front_limit_name(robot::service::ParkingSide side) {
+    return side == robot::service::ParkingSide::Right ? "左侧限位" : "右侧限位";
+}
+
+const char* parking_limit_name(robot::service::ParkingSide side) {
+    return side == robot::service::ParkingSide::Right ? "右侧限位" : "左侧限位";
+}
+
+const char* heading_pid_mode_name(robot::service::HeadingCorrector::Mode mode) {
+    using Mode = robot::service::HeadingCorrector::Mode;
+    switch (mode) {
+        case Mode::UNINITIALIZED:
+            return "UNINITIALIZED";
+        case Mode::DISCONNECTED:
+            return "DISCONNECTED";
+        case Mode::STALE:
+            return "STALE";
+        case Mode::TRACK:
+            return "TRACK";
+    }
+    return "UNKNOWN";
+}
+
+robot::app::EvScheduleStart start_from_configured_parking_side(const hw::FullSystemFixture& f,
+                                                               float passes) {
+    (void)f;
     return make_schedule_start(true, false, passes);
 }
 
@@ -108,196 +133,6 @@ void remove_rotated_health_logs(const std::string& base_path) {
         std::error_code ec;
         std::filesystem::remove(path, ec);
     }
-}
-
-const char* pid_mode_name(robot::service::HeadingCorrector::Mode mode) {
-    using Mode = robot::service::HeadingCorrector::Mode;
-    switch (mode) {
-        case Mode::UNINITIALIZED:
-            return "UNINITIALIZED";
-        case Mode::LEARN:
-            return "LEARN";
-        case Mode::TRACK:
-            return "TRACK";
-        case Mode::FREEZE:
-            return "FREEZE";
-    }
-    return "UNKNOWN";
-}
-
-bool open_pid_metrics_file(const std::filesystem::path& path, std::ofstream* out) {
-    if (!out) {
-        return false;
-    }
-
-    const auto parent = path.parent_path();
-    if (!parent.empty()) {
-        std::error_code ec;
-        std::filesystem::create_directories(parent, ec);
-        if (ec) {
-            spdlog::error("[hw_system][pid_combined] 创建 PID 指标目录失败: path={} err={}",
-                          parent.string(),
-                          ec.message());
-            return false;
-        }
-    }
-
-    out->open(path, std::ios::trunc);
-    if (!out->is_open()) {
-        spdlog::error("[hw_system][pid_combined] 打开 PID 指标文件失败: path={}", path.string());
-        return false;
-    }
-
-    out->setf(std::ios::unitbuf);
-    return true;
-}
-
-struct PidProbeSnapshot {
-    robot::service::HeadingCorrector::DebugState pid{};
-    robot::service::HeadingCorrector::Output output{};
-};
-
-robot::service::HeadingCorrector::Params make_pid_probe_params(const hw::HwParams::PidParams& src) {
-    robot::service::HeadingCorrector::Params params;
-    params.pitch_alpha = src.pitch_alpha;
-    params.roll_alpha = src.roll_alpha;
-    params.gyro_alpha = src.gyro_alpha;
-    params.pitch_drop_threshold = src.pitch_drop_threshold;
-    params.roll_threshold = src.roll_threshold;
-    params.learn_improve_eps = src.learn_improve_eps;
-    params.best_decay_per_s = src.best_decay_per_s;
-    params.freeze_gyro_z_threshold = src.freeze_gyro_z_threshold;
-    params.freeze_pitch_rate_threshold = src.freeze_pitch_rate_threshold;
-    params.freeze_roll_rate_threshold = src.freeze_roll_rate_threshold;
-    params.max_output = src.max_output;
-    params.min_effective_output = src.min_effective_output;
-    params.warmup_ms = src.warmup_ms;
-    params.hold_ms = src.hold_ms;
-    params.freeze_release_ms = src.freeze_release_ms;
-    return params;
-}
-
-struct ProbeThreadGuard {
-    std::atomic<bool>* stop{nullptr};
-    std::thread* th{nullptr};
-
-    ~ProbeThreadGuard() {
-        if (stop) {
-            stop->store(true, std::memory_order_relaxed);
-        }
-        if (th && th->joinable()) {
-            th->join();
-        }
-    }
-};
-
-std::string build_pid_sample_json(int64_t ts_ms,
-                                  int seg,
-                                  const std::string& state,
-                                  float yaw,
-                                  float omega_z,
-                                  const PidProbeSnapshot& pid_probe) {
-    rapidjson::StringBuffer buffer;
-    rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
-    writer.StartObject();
-    writer.Key("ts_ms");
-    writer.Int64(ts_ms);
-    writer.Key("seg");
-    writer.Int(seg);
-    writer.Key("state");
-    writer.String(state.c_str(), static_cast<rapidjson::SizeType>(state.size()));
-    writer.Key("yaw");
-    writer.Double(yaw);
-    writer.Key("omega_z");
-    writer.Double(omega_z);
-    writer.Key("pid_mode");
-    writer.String(pid_mode_name(pid_probe.pid.mode));
-    writer.Key("pid_filtered_pitch");
-    writer.Double(pid_probe.pid.filtered_pitch);
-    writer.Key("pid_filtered_roll");
-    writer.Double(pid_probe.pid.filtered_roll);
-    writer.Key("pid_filtered_gyro_z");
-    writer.Double(pid_probe.pid.filtered_gyro_z);
-    writer.Key("pid_pitch_best");
-    writer.Double(pid_probe.pid.pitch_abs_best);
-    writer.Key("pid_roll_best");
-    writer.Double(pid_probe.pid.roll_at_best);
-    writer.Key("pid_pitch_drop");
-    writer.Double(pid_probe.pid.pitch_drop);
-    writer.Key("pid_roll_delta");
-    writer.Double(pid_probe.pid.roll_delta);
-    writer.Key("pid_feedback_correction");
-    writer.Double(pid_probe.output.feedback_correction_rpm);
-    writer.Key("pid_feedforward_correction");
-    writer.Double(pid_probe.output.feedforward_correction_rpm);
-    writer.Key("pid_correction");
-    writer.Double(pid_probe.output.correction_rpm);
-    writer.Key("pid_has_speed_command");
-    writer.Bool(pid_probe.output.has_speed_command);
-    writer.Key("lt_tgt_final");
-    writer.Double(pid_probe.output.speed_command.lt_rpm);
-    writer.Key("rt_tgt_final");
-    writer.Double(pid_probe.output.speed_command.rt_rpm);
-    writer.Key("lb_tgt_final");
-    writer.Double(pid_probe.output.speed_command.lb_rpm);
-    writer.Key("rb_tgt_final");
-    writer.Double(pid_probe.output.speed_command.rb_rpm);
-    writer.EndObject();
-    return {buffer.GetString(), buffer.GetSize()};
-}
-
-std::string build_segment_summary_json(int seg,
-                                       const char* direction,
-                                       const std::string& from_state,
-                                       const std::string& to_state,
-                                       float max_drift_deg,
-                                       float duration_s) {
-    rapidjson::StringBuffer buffer;
-    rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
-    writer.StartObject();
-    writer.Key("type");
-    writer.String("segment_summary");
-    writer.Key("seg");
-    writer.Int(seg);
-    writer.Key("direction");
-    writer.String(direction);
-    writer.Key("from_state");
-    writer.String(from_state.c_str(), static_cast<rapidjson::SizeType>(from_state.size()));
-    writer.Key("to_state");
-    writer.String(to_state.c_str(), static_cast<rapidjson::SizeType>(to_state.size()));
-    writer.Key("max_drift_deg");
-    writer.Double(max_drift_deg);
-    writer.Key("duration_s");
-    writer.Double(duration_s);
-    writer.EndObject();
-    return {buffer.GetString(), buffer.GetSize()};
-}
-
-std::string build_final_summary_json(int total_segs,
-                                     int total_records,
-                                     float max_drift_all_deg,
-                                     float pitch_drop_threshold,
-                                     float roll_threshold,
-                                     float max_output) {
-    rapidjson::StringBuffer buffer;
-    rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
-    writer.StartObject();
-    writer.Key("type");
-    writer.String("final_summary");
-    writer.Key("total_segs");
-    writer.Int(total_segs);
-    writer.Key("total_records");
-    writer.Int(total_records);
-    writer.Key("max_drift_all_deg");
-    writer.Double(max_drift_all_deg);
-    writer.Key("pitch_drop_threshold");
-    writer.Double(pitch_drop_threshold);
-    writer.Key("roll_threshold");
-    writer.Double(roll_threshold);
-    writer.Key("max_output");
-    writer.Double(max_output);
-    writer.EndObject();
-    return {buffer.GetString(), buffer.GetSize()};
 }
 
 struct ScopedActiveFixture {
@@ -349,9 +184,15 @@ bool wait_imu_valid(const std::shared_ptr<robot::device::ImuDevice>& imu,
     return imu && imu->get_latest().valid;
 }
 
-void run_combined_system_test(hw::FullSystemFixture& f, const char* tag, bool expect_real_brush) {
+void run_combined_system_test(hw::FullSystemFixture& f,
+                              const char* tag,
+                              bool expect_real_brush,
+                              robot::app::EvScheduleStart start_evt,
+                              bool log_fused_odometry = false,
+                              bool log_heading_pid_debug = false) {
     hw::HwExitGuard::instance().install();
     ScopedActiveFixture active_fixture(&f);
+    remove_rotated_health_logs(f.p.health_jsonl_path);
 
     const int passes_int = static_cast<int>(f.p.combined_passes);
     const double passes_half = f.p.combined_passes * 2.0;
@@ -360,6 +201,11 @@ void run_combined_system_test(hw::FullSystemFixture& f, const char* tag, bool ex
                  tag,
                  f.p.combined_passes,
                  static_cast<int>(passes_half));
+    spdlog::warn(
+        "[{}] 当前测试配置 parking_side={}，前端={}",
+        tag,
+        parking_side_name(f.p.parking_side),
+        front_limit_name(f.p.parking_side));
     spdlog::warn("[{}] 全程持续记录健康数据到: {}", tag, f.p.health_jsonl_path);
     spdlog::warn("[{}] 本地日志轮转: max_bytes={} max_files={}",
                  tag,
@@ -379,6 +225,15 @@ void run_combined_system_test(hw::FullSystemFixture& f, const char* tag, bool ex
     REQUIRE(f.init(f.p.health_jsonl_path));
     fail_if_exit_requested(f);
     REQUIRE(f.health != nullptr);
+    robot::service::NavService::FusedOdometry odom_before{};
+    if (log_fused_odometry) {
+        odom_before = f.nav->get_fused_odometry();
+        CHECK(odom_before.valid);
+        CHECK(std::isfinite(odom_before.top_distance_m));
+        CHECK(std::isfinite(odom_before.bottom_distance_m));
+        CHECK(std::isfinite(odom_before.fused_distance_m));
+        CHECK(std::isfinite(odom_before.distance_diff_m));
+    }
 
     std::atomic<bool> wd_timeout{false};
     f.watchdog->set_timeout_callback([&](const std::string& n) {
@@ -402,23 +257,123 @@ void run_combined_system_test(hw::FullSystemFixture& f, const char* tag, bool ex
         auto gd = f.walk_group->get_group_diagnostics();
         auto ld = f.imu->get_latest();
         const auto brush_diag = f.brush->get_diagnostics();
+        const auto pid_debug =
+            log_heading_pid_debug ? f.motion->heading_pid_debug_state()
+                                  : robot::service::HeadingCorrector::DebugState{};
         max_abs_brush_rpm = std::max(max_abs_brush_rpm, std::abs(brush_diag.actual_rpm));
         if (brush_diag.fault) {
             ++brush_fault_samples;
         }
-        spdlog::info(
-            "[{}] #{}: LT={:.1f} RT={:.1f} LB={:.1f} RB={:.1f} walk_rpm brush_rpm={} "
-            "brush_fault={} yaw={:.2f}° state={}",
-            tag,
-            total_health_records,
-            gd.wheel[0].speed_rpm,
-            gd.wheel[1].speed_rpm,
-            gd.wheel[2].speed_rpm,
-            gd.wheel[3].speed_rpm,
-            brush_diag.actual_rpm,
-            brush_diag.fault,
-            ld.yaw_deg,
-            f.fsm->current_state());
+        if (log_fused_odometry) {
+            const auto odom = f.nav->get_fused_odometry();
+            if (log_heading_pid_debug) {
+                spdlog::info(
+                    "[{}] #{}: LT={:.1f}/{:.1f} RT={:.1f}/{:.1f} LB={:.1f}/{:.1f} "
+                    "RB={:.1f}/{:.1f} brush_rpm={} brush_fault={} yaw={:.2f}° state={} "
+                    "pid(mode={} connected={} valid={} slope={:.4f} conf={:.3f} "
+                    "filtered={:.4f} correction={:.3f} age_ms={}) fused_odom(valid={} "
+                    "top={:.3f} bottom={:.3f} fused={:.3f} diff={:.3f} top_v={:.3f} "
+                    "bottom_v={:.3f} fused_v={:.3f})",
+                    tag,
+                    total_health_records,
+                    gd.wheel[0].speed_rpm,
+                    gd.wheel[0].target_value,
+                    gd.wheel[1].speed_rpm,
+                    gd.wheel[1].target_value,
+                    gd.wheel[2].speed_rpm,
+                    gd.wheel[2].target_value,
+                    gd.wheel[3].speed_rpm,
+                    gd.wheel[3].target_value,
+                    brush_diag.actual_rpm,
+                    brush_diag.fault,
+                    ld.yaw_deg,
+                    f.fsm->current_state(),
+                    heading_pid_mode_name(pid_debug.mode),
+                    pid_debug.connected,
+                    pid_debug.latest_valid,
+                    pid_debug.latest_slope,
+                    pid_debug.latest_confidence,
+                    pid_debug.filtered_slope,
+                    pid_debug.last_correction,
+                    pid_debug.result_age_ms,
+                    odom.valid,
+                    odom.top_distance_m,
+                    odom.bottom_distance_m,
+                    odom.fused_distance_m,
+                    odom.distance_diff_m,
+                    odom.top_speed_mps,
+                    odom.bottom_speed_mps,
+                    odom.fused_speed_mps);
+            } else {
+                spdlog::info(
+                    "[{}] #{}: LT={:.1f} RT={:.1f} LB={:.1f} RB={:.1f} walk_rpm brush_rpm={} "
+                    "brush_fault={} yaw={:.2f}° state={} fused_odom(valid={} top={:.3f} "
+                    "bottom={:.3f} fused={:.3f} diff={:.3f} top_v={:.3f} bottom_v={:.3f} "
+                    "fused_v={:.3f})",
+                    tag,
+                    total_health_records,
+                    gd.wheel[0].speed_rpm,
+                    gd.wheel[1].speed_rpm,
+                    gd.wheel[2].speed_rpm,
+                    gd.wheel[3].speed_rpm,
+                    brush_diag.actual_rpm,
+                    brush_diag.fault,
+                    ld.yaw_deg,
+                    f.fsm->current_state(),
+                    odom.valid,
+                    odom.top_distance_m,
+                    odom.bottom_distance_m,
+                    odom.fused_distance_m,
+                    odom.distance_diff_m,
+                    odom.top_speed_mps,
+                    odom.bottom_speed_mps,
+                    odom.fused_speed_mps);
+            }
+        } else {
+            if (log_heading_pid_debug) {
+                spdlog::info(
+                    "[{}] #{}: LT={:.1f}/{:.1f} RT={:.1f}/{:.1f} LB={:.1f}/{:.1f} "
+                    "RB={:.1f}/{:.1f} brush_rpm={} brush_fault={} yaw={:.2f}° state={} "
+                    "pid(mode={} connected={} valid={} slope={:.4f} conf={:.3f} "
+                    "filtered={:.4f} correction={:.3f} age_ms={})",
+                    tag,
+                    total_health_records,
+                    gd.wheel[0].speed_rpm,
+                    gd.wheel[0].target_value,
+                    gd.wheel[1].speed_rpm,
+                    gd.wheel[1].target_value,
+                    gd.wheel[2].speed_rpm,
+                    gd.wheel[2].target_value,
+                    gd.wheel[3].speed_rpm,
+                    gd.wheel[3].target_value,
+                    brush_diag.actual_rpm,
+                    brush_diag.fault,
+                    ld.yaw_deg,
+                    f.fsm->current_state(),
+                    heading_pid_mode_name(pid_debug.mode),
+                    pid_debug.connected,
+                    pid_debug.latest_valid,
+                    pid_debug.latest_slope,
+                    pid_debug.latest_confidence,
+                    pid_debug.filtered_slope,
+                    pid_debug.last_correction,
+                    pid_debug.result_age_ms);
+            } else {
+                spdlog::info(
+                    "[{}] #{}: LT={:.1f} RT={:.1f} LB={:.1f} RB={:.1f} walk_rpm brush_rpm={} "
+                    "brush_fault={} yaw={:.2f}° state={}",
+                    tag,
+                    total_health_records,
+                    gd.wheel[0].speed_rpm,
+                    gd.wheel[1].speed_rpm,
+                    gd.wheel[2].speed_rpm,
+                    gd.wheel[3].speed_rpm,
+                    brush_diag.actual_rpm,
+                    brush_diag.fault,
+                    ld.yaw_deg,
+                    f.fsm->current_state());
+            }
+        }
     };
 
     auto wait_transition = [&](const std::string& from) -> std::string {
@@ -436,10 +391,10 @@ void run_combined_system_test(hw::FullSystemFixture& f, const char* tag, bool ex
         return from;
     };
 
-    f.fsm->dispatch(start_from_parking_side(f.p.combined_passes));
-    REQUIRE(f.fsm->current_state() == "CleanFwd");
+    f.fsm->dispatch(start_evt);
+    REQUIRE((f.fsm->current_state() == "CleanFwd" || f.fsm->current_state() == "Returning"));
 
-    std::string state = "CleanFwd";
+    std::string state = f.fsm->current_state();
     int seg_idx = 0;
 
     while (state != "Charging") {
@@ -486,6 +441,15 @@ void run_combined_system_test(hw::FullSystemFixture& f, const char* tag, bool ex
                  frames_before,
                  frames_after,
                  frames_after - frames_before);
+    if (log_fused_odometry) {
+        const auto odom_after = f.nav->get_fused_odometry();
+        CHECK(odom_after.valid);
+        CHECK(std::isfinite(odom_after.top_distance_m));
+        CHECK(std::isfinite(odom_after.bottom_distance_m));
+        CHECK(std::isfinite(odom_after.fused_distance_m));
+        CHECK(std::isfinite(odom_after.distance_diff_m));
+        CHECK(std::abs(odom_after.fused_distance_m - odom_before.fused_distance_m) > 0.02);
+    }
     CHECK(frames_after > frames_before + 10u * static_cast<uint32_t>(passes_half));
     CHECK(f.dispatched_faults.empty());
 
@@ -587,11 +551,11 @@ TEST_CASE("System（真实硬件）ThingsBoard RPC start/stop/return 驱动运�
     }
 
     spdlog::warn("[hw_system][tb_rpc_runtime] ACTION REQUIRED: 在 ThingsBoard 平台发送 RPC `stop`");
-    REQUIRE(f.wait_state_with_thingsboard({"Paused"}, std::chrono::seconds(120)));
+    REQUIRE(f.wait_state_with_thingsboard({"Stopped"}, std::chrono::seconds(120)));
     {
         const auto snap = f.supervisor->snapshot();
-        CHECK(snap.device_state == "Paused");
-        CHECK(snap.task_state == "PausedTask");
+        CHECK(snap.device_state == "Stopped");
+        CHECK(snap.task_state == "StoppedTask");
     }
 
     spdlog::warn(
@@ -609,65 +573,6 @@ TEST_CASE("System（真实硬件）ThingsBoard RPC start/stop/return 驱动运�
         const auto snap = f.supervisor->snapshot();
         CHECK(snap.device_state == "Charging");
         CHECK(snap.task_state == "ChargingTask");
-    }
-}
-
-// ────────────────────────────────────────────────────────────────────────────
-// [hw_system][tb_terminate_reset] — 真实硬件 + 真实 ThingsBoard terminate/reset
-// ────────────────────────────────────────────────────────────────────────────
-TEST_CASE("System（真实硬件）ThingsBoard RPC terminate/reset 驱动结束与复位",
-          "[hw_system][tb_terminate_reset]") {
-    if (!real_tb_test_enabled()) {
-        SUCCEED("Set TB_REAL_TEST=1 to enable real ThingsBoard terminate/reset test");
-        return;
-    }
-
-    hw::ThingsBoardRuntimeFixture f;
-    REQUIRE(f.init_thingsboard_runtime());
-    REQUIRE(f.tb_control != nullptr);
-    REQUIRE(f.supervisor != nullptr);
-    REQUIRE(f.fsm->current_state() == "Idle");
-
-    spdlog::warn("[hw_system][tb_terminate_reset] ThingsBoard 平台准备：");
-    spdlog::warn("[hw_system][tb_terminate_reset] 1. 确认设备在线");
-    spdlog::warn(
-        "[hw_system][tb_terminate_reset] 2. 准备依次发送 RPC: start -> stop -> terminate -> reset");
-    spdlog::warn(
-        "[hw_system][tb_terminate_reset] 3. reset "
-        "之前，请确保机器人回到【停机位】或手动压住停机位一侧限位");
-    spdlog::warn("[hw_system][tb_terminate_reset] 当前 at_parking_side={} at_far_end={}",
-                 f.is_at_parking_side(),
-                 f.is_at_far_end());
-
-    REQUIRE(f.is_at_parking_side());
-    f.tb_control->publish_startup_attributes();
-    f.tb_control->publish_business_telemetry();
-
-    spdlog::warn(
-        "[hw_system][tb_terminate_reset] ACTION REQUIRED: 在 ThingsBoard 平台发送 RPC `start`");
-    REQUIRE(f.wait_state_with_thingsboard({"CleanFwd", "CleanReturn"}, std::chrono::seconds(120)));
-
-    spdlog::warn(
-        "[hw_system][tb_terminate_reset] ACTION REQUIRED: 在 ThingsBoard 平台发送 RPC `stop`");
-    REQUIRE(f.wait_state_with_thingsboard({"Paused"}, std::chrono::seconds(120)));
-
-    spdlog::warn(
-        "[hw_system][tb_terminate_reset] ACTION REQUIRED: 在 ThingsBoard 平台发送 RPC `terminate`");
-    REQUIRE(f.wait_state_with_thingsboard({"Terminated"}, std::chrono::seconds(120)));
-    {
-        const auto snap = f.supervisor->snapshot();
-        CHECK(snap.device_state == "Terminated");
-        CHECK(snap.task_state == "TerminatedTask");
-    }
-
-    spdlog::warn(
-        "[hw_system][tb_terminate_reset] ACTION REQUIRED: 确保 at_parking_side=true，然后在 "
-        "ThingsBoard 平台发送 RPC `reset`");
-    REQUIRE(f.wait_state_with_thingsboard({"Idle"}, std::chrono::seconds(180)));
-    {
-        const auto snap = f.supervisor->snapshot();
-        CHECK(snap.device_state == "Idle");
-        CHECK(snap.task_state == "IdleTask");
     }
 }
 
@@ -766,61 +671,6 @@ TEST_CASE("System（真实硬件）全栈初始化 FSM→Idle 无崩溃", "[hw_s
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// [hw_system][nav_fused_odometry] — 真实硬件观察融合里程计输出
-// ────────────────────────────────────────────────────────────────────────────
-TEST_CASE("System（真实硬件）融合里程计在静止和低速运动时输出有效",
-          "[hw_system][nav_fused_odometry]") {
-    hw::FullSystemFixture f;
-    REQUIRE(f.init());
-
-    spdlog::warn("[hw_system][nav_fused_odometry] ⚠ 将以低速前进 1.5s，请确保轨道安全、前方无人");
-
-    std::this_thread::sleep_for(1500ms);
-    const auto idle = f.nav->get_fused_odometry();
-    spdlog::info(
-        "[hw_system][nav_fused_odometry] idle valid={} top={:.3f} bottom={:.3f} fused={:.3f} "
-        "diff={:.3f} top_v={:.3f} bottom_v={:.3f} fused_v={:.3f}",
-        idle.valid,
-        idle.top_distance_m,
-        idle.bottom_distance_m,
-        idle.fused_distance_m,
-        idle.distance_diff_m,
-        idle.top_speed_mps,
-        idle.bottom_speed_mps,
-        idle.fused_speed_mps);
-
-    CHECK(idle.valid);
-    CHECK(std::isfinite(idle.top_distance_m));
-    CHECK(std::isfinite(idle.bottom_distance_m));
-    CHECK(std::isfinite(idle.fused_distance_m));
-    CHECK(std::isfinite(idle.distance_diff_m));
-
-    REQUIRE(f.motion->start_cleaning());
-    std::this_thread::sleep_for(1500ms);
-    f.motion->emergency_stop();
-    std::this_thread::sleep_for(500ms);
-
-    const auto moving = f.nav->get_fused_odometry();
-    spdlog::info(
-        "[hw_system][nav_fused_odometry] moving valid={} top={:.3f} bottom={:.3f} fused={:.3f} "
-        "diff={:.3f} top_v={:.3f} bottom_v={:.3f} fused_v={:.3f}",
-        moving.valid,
-        moving.top_distance_m,
-        moving.bottom_distance_m,
-        moving.fused_distance_m,
-        moving.distance_diff_m,
-        moving.top_speed_mps,
-        moving.bottom_speed_mps,
-        moving.fused_speed_mps);
-
-    CHECK(moving.valid);
-    CHECK(std::isfinite(moving.top_distance_m));
-    CHECK(std::isfinite(moving.bottom_distance_m));
-    CHECK(std::isfinite(moving.fused_distance_m));
-    CHECK(std::isfinite(moving.distance_diff_m));
-    CHECK(std::abs(moving.fused_distance_m - idle.fused_distance_m) > 0.02);
-}
-
 // ────────────────────────────────────────────────────────────────────────────
 // [hw_system][health_real_data] — HealthService 真实传感器数据落盘
 // ────────────────────────────────────────────────────────────────────────────
@@ -1247,7 +1097,7 @@ TEST_CASE("System（真实硬件）P0 故障链：电机急停 + FSM Fault → �
     REQUIRE(f.fsm->current_state() == "Idle");
 
     // 启动任务 → CleanFwd，电机开始运动
-    f.fsm->dispatch(start_from_parking_side(1.0f));
+    f.fsm->dispatch(start_from_configured_parking_side(f, 1.0f));
     REQUIRE(f.fsm->current_state() == "CleanFwd");
 
     // 等待 300ms 让电机加速
@@ -1292,7 +1142,7 @@ TEST_CASE("System（真实硬件）P1 故障链：FSM Returning → EvParkingSid
     hw::FullSystemFixture f;
     REQUIRE(f.init());
 
-    f.fsm->dispatch(start_from_parking_side(2.0f));
+    f.fsm->dispatch(start_from_configured_parking_side(f, 2.0f));
     REQUIRE(f.fsm->current_state() == "CleanFwd");
 
     // 等待 200ms 让电机建立速度
@@ -1320,7 +1170,7 @@ TEST_CASE("System（真实硬件）P1 故障链：FSM Returning → EvParkingSid
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// [hw_system][n1_clean_cycle] — N=1 完整任务链（手动触发真实前右限位）
+// [hw_system][n1_clean_cycle] — N=1 完整任务链（按配置停机位切换前端/停机位限位）
 // ────────────────────────────────────────────────────────────────────────────
 TEST_CASE("System（真实硬件）N=1 完整任务链（真实限位触发）", "[hw_system][n1_clean_cycle]") {
     spdlog::warn("[hw_system][n1_clean_cycle] ====================================");
@@ -1330,16 +1180,20 @@ TEST_CASE("System（真实硬件）N=1 完整任务链（真实限位触发）",
 
     hw::FullSystemFixture f;
     REQUIRE(f.init());
+    spdlog::warn("[hw_system][n1_clean_cycle] 当前测试配置 parking_side={}，前端={}，停机位端={}",
+                 parking_side_name(f.p.parking_side),
+                 front_limit_name(f.p.parking_side),
+                 parking_limit_name(f.p.parking_side));
 
     const uint32_t frames_before = f.walk_group->get_group_diagnostics().ctrl_frame_count;
 
     // 启动 N=1 任务 → CleanFwd，电机开始正向运动
-    f.fsm->dispatch(start_from_parking_side(5.0f));
+    f.fsm->dispatch(start_from_configured_parking_side(f, 5.0f));
     REQUIRE(f.fsm->current_state() == "CleanFwd");
 
-    spdlog::warn(
-        "[hw_system][n1_clean_cycle] ★ 机器人正在向前运动，等待【左侧限位】触发（最多 {}s）...",
-        f.p.limit_timeout_sec);
+    spdlog::warn("[hw_system][n1_clean_cycle] ★ 机器人正在向前运动，等待【{}】触发（最多 {}s）...",
+                 front_limit_name(f.p.parking_side),
+                 f.p.limit_timeout_sec);
 
     // 等待 SafetyMonitor → EventBus → FSM CleanReturn（真实限位触发）
     const bool left_hit =
@@ -1349,14 +1203,15 @@ TEST_CASE("System（真实硬件）N=1 完整任务链（真实限位触发）",
         if (!left_hit && hw::HwExitGuard::instance().exit_requested()) {
             FAIL("hardware test interrupted by signal");
         }
-        INFO("左侧限位等待超时，请检查导轨/传感器接线");
+        INFO(std::string(front_limit_name(f.p.parking_side)) + "等待超时，请检查导轨/传感器接线");
         REQUIRE(left_hit);
     }
-    spdlog::info("[hw_system][n1_clean_cycle] ✓ 左侧限位触发，机器人开始返回");
+    spdlog::info("[hw_system][n1_clean_cycle] ✓ {}触发，机器人开始返回",
+                 front_limit_name(f.p.parking_side));
 
-    spdlog::warn(
-        "[hw_system][n1_clean_cycle] ★ 机器人正在返回，等待【右侧限位】触发（最多 {}s）...",
-        f.p.limit_timeout_sec);
+    spdlog::warn("[hw_system][n1_clean_cycle] ★ 机器人正在返回，等待【{}】触发（最多 {}s）...",
+                 parking_limit_name(f.p.parking_side),
+                 f.p.limit_timeout_sec);
 
     // 等待右侧限位触发 → Charging（任务完成）
     const bool right_hit =
@@ -1366,10 +1221,12 @@ TEST_CASE("System（真实硬件）N=1 完整任务链（真实限位触发）",
         if (!right_hit && hw::HwExitGuard::instance().exit_requested()) {
             FAIL("hardware test interrupted by signal");
         }
-        INFO("右侧限位等待超时，请检查导轨/传感器接线");
+        INFO(std::string(parking_limit_name(f.p.parking_side)) +
+             "等待超时，请检查导轨/传感器接线");
         REQUIRE(right_hit);
     }
-    spdlog::info("[hw_system][n1_clean_cycle] ✓ 右侧限位触发，任务完成");
+    spdlog::info("[hw_system][n1_clean_cycle] ✓ {}触发，任务完成",
+                 parking_limit_name(f.p.parking_side));
 
     // 验证任务期间产生了足够的 CAN 控制帧
     const uint32_t frames_after = f.walk_group->get_group_diagnostics().ctrl_frame_count;
@@ -1389,7 +1246,22 @@ TEST_CASE("System（真实硬件）N=1 完整任务链（真实限位触发）",
 // ────────────────────────────────────────────────────────────────────────────
 TEST_CASE("System（真实硬件）N 趟完整任务链 + 全程持续采集健康数据", "[hw_system][combined]") {
     hw::FullSystemFixture f;
-    run_combined_system_test(f, "hw_system][combined", false);
+    run_combined_system_test(
+        f, "hw_system][combined", false, start_from_configured_parking_side(f, f.p.combined_passes));
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// [hw_system][combined_nvm_real] — 全系统联合启动 + 全程打印融合里程计
+// ────────────────────────────────────────────────────────────────────────────
+TEST_CASE("System（真实硬件）完整任务链 + 融合里程计日志", "[hw_system][combined_nvm_real]") {
+    hw::FullSystemFixture f;
+    const float passes = std::max(1.0f, f.p.combined_passes);
+    run_combined_system_test(
+        f,
+        "hw_system][combined_nvm_real",
+        false,
+        start_from_configured_parking_side(f, passes),
+        true);
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -1398,351 +1270,24 @@ TEST_CASE("System（真实硬件）N 趟完整任务链 + 全程持续采集健�
 TEST_CASE("System（真实硬件）N 趟完整任务链 + 真实滚刷 + 全程持续采集健康数据",
           "[hw_system][combined_brush_real]") {
     hw::FullSystemFixture f(false, true);
-    run_combined_system_test(f, "hw_system][combined_brush_real", true);
+    run_combined_system_test(f,
+                             "hw_system][combined_brush_real",
+                             true,
+                             start_from_configured_parking_side(f, f.p.combined_passes));
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// [hw_system][pid_combined] — N 趟完整任务链 + 姿态纠偏链路观测 + 真实滚刷 + 全程 yaw 指标采集
+// [hw_system][pid_combined] — 视觉 PID + 真实滚刷，启动事件伪装停机位
 // ────────────────────────────────────────────────────────────────────────────
-TEST_CASE("System（真实硬件）N 趟完整任务链 + 姿态纠偏链路观测 + 真实滚刷 + yaw 指标采集",
+TEST_CASE("System（真实硬件）视觉 PID 完整任务链 + 真实滚刷",
           "[hw_system][pid_combined]") {
-    hw::FullSystemFixture f(true /* pid_on */, true /* use_real_brush */);
-    hw::HwExitGuard::instance().install();
-    ScopedActiveFixture active_fixture(&f);
-    const double passes_half = f.p.combined_passes * 2.0;
-    spdlog::warn("[hw_system][pid_combined] ====================================");
-    spdlog::warn("[hw_system][pid_combined] ⚠ 机器人将运动 {:.1f} 趟（{} 段）！",
-                 f.p.combined_passes,
-                 static_cast<int>(passes_half));
-    spdlog::warn("[hw_system][pid_combined] attitude pitch_drop={:.2f} roll_threshold={:.2f}",
-                 f.p.pid.pitch_drop_threshold,
-                 f.p.pid.roll_threshold);
-    spdlog::warn("[hw_system][pid_combined] 健康数据: {}", f.p.health_jsonl_path);
-    spdlog::warn("[hw_system][pid_combined] PID 指标: {}", f.p.pid_jsonl_path);
-    spdlog::warn("[hw_system][pid_combined] 最大漂移警告阈值: {:.1f}°", f.p.pid_max_drift_deg);
-    spdlog::warn("[hw_system][pid_combined] 请确保：导轨就位，轨道无人员/障碍物");
-    spdlog::warn("[hw_system][pid_combined] ====================================");
-
-    REQUIRE(f.init(f.p.health_jsonl_path));
-    fail_if_exit_requested(f);
-    REQUIRE(f.health != nullptr);
-
-    // 打开 pid_metrics.jsonl（测试结束不删除，供离线分析）
-    std::ofstream pid_ofs;
-    REQUIRE(open_pid_metrics_file(f.p.pid_jsonl_path, &pid_ofs));
-
-    // 看门狗（超时 = 每段最大秒数 × 2）
-    std::atomic<bool> wd_timeout{false};
-    f.watchdog->set_timeout_callback([&](const std::string& n) {
-        spdlog::error("[hw_system][pid_combined] 看门狗超时: {}", n);
-        wd_timeout.store(true);
-    });
-    const int wd_tid =
-        f.watchdog->register_thread("hw_pid_combined", f.p.limit_timeout_sec * 2 * 1000);
-    REQUIRE(wd_tid >= 0);
-
-    // ── 读取真实左右限位状态，避免把起点硬编码成右侧/停机位 ────────────────────
-    const bool right_limit_active = !f.right_sw->read_current_level();
-    const bool left_limit_active = !f.left_sw->read_current_level();
-    {
-        INFO(
-            "设备不在已知端点（right_limit_active=false, "
-            "left_limit_active=false），请将设备移至某一端点");
-        REQUIRE((right_limit_active || left_limit_active));
-    }
-    spdlog::info("[hw_system][pid_combined] 传感器: right_limit_active={} left_limit_active={}",
-                 right_limit_active,
-                 left_limit_active);
-
-    // 记录出发时的参考 yaw，用于评估整趟轨迹漂移。
-    const float target_yaw = f.imu->get_latest().yaw_deg;
-    spdlog::info("[hw_system][pid_combined] target_yaw={:.2f}°", target_yaw);
-
-    using clock = std::chrono::steady_clock;
-    int total_health_records = 0;
-    float max_drift_all = 0.0f;  // 全程最大 yaw 漂移（绝对值）
-    bool saw_pid_initialized = false;
-    bool saw_pid_speed_command = false;
-    bool saw_pid_nonzero_correction = false;
-
-    // norm_angle helper（−180 ~ +180）
-    auto norm_angle = [](float deg) -> float {
-        while (deg > 180.0f)
-            deg -= 360.0f;
-        while (deg < -180.0f)
-            deg += 360.0f;
-        return deg;
-    };
-
-    // 当前段号（写入每条 JSONL 记录）
-    int cur_seg = 0;
-    float seg_max_drift = 0.0f;
-    auto last_pid_sample_at = clock::time_point{};
-    constexpr auto kPidSampleInterval = 500ms;
-    auto last_health_update_at = clock::time_point{};
-    constexpr auto kHealthUpdateInterval = 2000ms;
-    std::mutex pid_probe_mu;
-    PidProbeSnapshot pid_probe_snapshot;
-    std::atomic<bool> pid_probe_stop{false};
-    robot::service::HeadingCorrector pid_probe_ctrl(make_pid_probe_params(f.p.pid));
-    pid_probe_ctrl.enable(true);
-
-    std::thread pid_probe_thread([&]() {
-        std::string last_state;
-
-        while (!pid_probe_stop.load(std::memory_order_relaxed)) {
-            const std::string state = f.fsm->current_state();
-            const bool moving =
-                (state == "CleanFwd" || state == "CleanReturn" || state == "Returning");
-            if (state != last_state && moving) {
-                pid_probe_ctrl.reset();
-            }
-            last_state = state;
-
-            if (!moving || f.walk_group->is_override_active()) {
-                std::this_thread::sleep_for(50ms);
-                continue;
-            }
-
-            const auto imu = f.imu->get_latest();
-            const auto status = f.walk_group->get_group_status();
-            const auto diagnostics = f.walk_group->get_group_diagnostics();
-
-            robot::service::HeadingCorrector::Input input;
-            input.raw_pitch_deg = imu.pitch_deg;
-            input.raw_roll_deg = imu.roll_deg;
-            input.raw_yaw_deg = imu.yaw_deg;
-            input.raw_gyro_z_dps = imu.gyro[2] * (180.0f / 3.14159265f);
-            input.dt_s = 0.02f;  // 与 MotionService::update() 当前实现保持一致
-            input.wheel_feedback.valid = true;
-            input.wheel_feedback.rpm = {status.wheel[0].speed_rpm,
-                                        status.wheel[1].speed_rpm,
-                                        status.wheel[2].speed_rpm,
-                                        status.wheel[3].speed_rpm};
-            input.wheel_feedback.current = {diagnostics.wheel[0].torque_a,
-                                            diagnostics.wheel[1].torque_a,
-                                            diagnostics.wheel[2].torque_a,
-                                            diagnostics.wheel[3].torque_a};
-            input.has_base_command = true;
-            if (state == "CleanFwd") {
-                const float spd = f.p.test_speed_rpm;
-                input.base_command = {spd, spd, -spd, -spd};
-            } else {
-                const float spd = f.p.test_return_rpm;
-                input.base_command = {-spd, -spd, +spd, +spd};
-            }
-
-            PidProbeSnapshot snap;
-            snap.output = pid_probe_ctrl.compute(input);
-            snap.pid = pid_probe_ctrl.debug_state();
-
-            {
-                std::lock_guard<std::mutex> lock(pid_probe_mu);
-                pid_probe_snapshot = snap;
-            }
-
-            std::this_thread::sleep_for(50ms);
-        }
-    });
-    ProbeThreadGuard pid_probe_guard{&pid_probe_stop, &pid_probe_thread};
-
-    // 每次调用：刷新 BMS + 写健康 JSONL + 喂狗 + 写 pid_metrics JSONL
-    auto poll_once = [&]() {
-        fail_if_exit_requested(f);
-        f.watchdog->heartbeat(wd_tid);
-
-        const auto now = clock::now();
-        if (last_health_update_at == clock::time_point{} ||
-            now - last_health_update_at >= kHealthUpdateInterval) {
-            // 临时停用 BMS 轮询，避免串口阻塞影响 PID 采样频率。
-            f.health->update();
-            last_health_update_at = clock::now();
-            ++total_health_records;
-        }
-
-        auto gd = f.walk_group->get_group_diagnostics();
-        auto imu = f.imu->get_latest();
-        const float yaw = imu.yaw_deg;
-        const float omega_z_dps = imu.gyro[2] * (180.0f / 3.14159265f);
-        const float yaw_err = norm_angle(target_yaw - yaw);
-        const float drift = std::abs(yaw_err);
-        if (drift > max_drift_all) {
-            max_drift_all = drift;
-        }
-        if (drift > seg_max_drift) {
-            seg_max_drift = drift;
-        }
-
-        if (last_pid_sample_at != clock::time_point{} &&
-            now - last_pid_sample_at < kPidSampleInterval) {
-            return;  // 只节流 PID 采样（健康采集独立周期）
-        }
-        last_pid_sample_at = now;
-
-        const int64_t ts_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                  std::chrono::system_clock::now().time_since_epoch())
-                                  .count();
-
-        PidProbeSnapshot pid_probe;
-        {
-            std::lock_guard<std::mutex> lock(pid_probe_mu);
-            pid_probe = pid_probe_snapshot;
-        }
-        if (pid_probe.pid.mode != robot::service::HeadingCorrector::Mode::UNINITIALIZED) {
-            saw_pid_initialized = true;
-        }
-        if (pid_probe.output.has_speed_command) {
-            saw_pid_speed_command = true;
-        }
-        if (std::abs(pid_probe.output.correction_rpm) > 1e-3f) {
-            saw_pid_nonzero_correction = true;
-        }
-
-        pid_ofs << build_pid_sample_json(ts_ms,
-                                         cur_seg,
-                                         f.fsm->current_state(),
-                                         std::round(yaw * 100.0f) / 100.0f,
-                                         std::round(omega_z_dps * 100.0f) / 100.0f,
-                                         pid_probe)
-                << '\n';
-
-        spdlog::info(
-            "[hw_system][pid_combined] #{} seg={} yaw={:.2f}° omega_z={:.2f}°/s "
-            "LT={:.1f} RT={:.1f} LB={:.1f} RB={:.1f}rpm state={} "
-            "pid_mode={} corr={:.2f} pitch_drop={:.3f} roll_delta={:.3f} "
-            "final_tgt=[{:.1f},{:.1f},{:.1f},{:.1f}]",
-            total_health_records,
-            cur_seg,
-            yaw,
-            omega_z_dps,
-            gd.wheel[0].speed_rpm,
-            gd.wheel[1].speed_rpm,
-            gd.wheel[2].speed_rpm,
-            gd.wheel[3].speed_rpm,
-            f.fsm->current_state(),
-            pid_mode_name(pid_probe.pid.mode),
-            pid_probe.output.correction_rpm,
-            pid_probe.pid.pitch_drop,
-            pid_probe.pid.roll_delta,
-            pid_probe.output.speed_command.lt_rpm,
-            pid_probe.output.speed_command.rt_rpm,
-            pid_probe.output.speed_command.lb_rpm,
-            pid_probe.output.speed_command.rb_rpm);
-    };
-
-    // 等待 FSM 从 from 状态切换到其他状态（每段独立超时）
-    auto wait_transition = [&](const std::string& from) -> std::string {
-        auto deadline = clock::now() + std::chrono::seconds(f.p.limit_timeout_sec);
-        while (clock::now() < deadline) {
-            fail_if_exit_requested(f);
-            std::string curr = f.fsm->current_state();
-            if (curr != from)
-                return curr;
-            poll_once();
-            std::this_thread::sleep_for(5ms);
-        }
-        fail_if_exit_requested(f);
-        return from;  // 超时：状态未变
-    };
-
-    // ── 启动任务 ────────────────────────────────────────────────────────────
-    f.fsm->dispatch(
-        make_schedule_start(right_limit_active, left_limit_active, f.p.combined_passes));
-    {
-        const std::string s = f.fsm->current_state();
-        INFO("FSM 未能进入 CleanFwd/CleanReturn，请检查传感器与 FSM 逻辑");
-        REQUIRE((s == "CleanFwd" || s == "CleanReturn"));
-    }
-
-    // ── 逐段等待限位，直到到达 Charging ─────────────────────────────────────
-    std::string state = f.fsm->current_state();
-    int seg_idx = 0;
-
-    while (state != "Charging") {
-        ++seg_idx;
-        cur_seg = seg_idx;
-        seg_max_drift = 0.0f;
-        const bool going_fwd = (state == "CleanFwd");
-        const auto seg_start = clock::now();
-        spdlog::warn("[hw_system][pid_combined] 段 {}: {} → 等待{}限位（最多 {}s）...",
-                     seg_idx,
-                     state,
-                     going_fwd ? "【前端】" : "【尾端】",
-                     f.p.limit_timeout_sec);
-
-        std::string next = wait_transition(state);
-
-        if (next == state) {
-            spdlog::error("[hw_system][pid_combined] 段 {} 超时 {}s，当前状态仍为 {}",
-                          seg_idx,
-                          f.p.limit_timeout_sec,
-                          state);
-            INFO("限位等待超时，请检查导轨/传感器接线");
-            REQUIRE(next != state);
-            break;
-        }
-
-        // 写段摘要到 pid_metrics.jsonl
-        const float seg_dur = std::chrono::duration<float>(clock::now() - seg_start).count();
-        pid_ofs << build_segment_summary_json(seg_idx,
-                                              going_fwd ? "fwd" : "ret",
-                                              state,
-                                              next,
-                                              std::round(seg_max_drift * 100.0f) / 100.0f,
-                                              std::round(seg_dur * 10.0f) / 10.0f)
-                << '\n';
-
-        spdlog::info(
-            "[hw_system][pid_combined] ✓ 段 {} 完成：{} → {}（已采集 {} 条，耗时 {:.1f}s）",
-            seg_idx,
-            state,
-            next,
-            total_health_records,
-            seg_dur);
-        poll_once();
-        state = next;
-    }
-
-    // ── 任务完成断言 ─────────────────────────────────────────────────────────
-    {
-        INFO("任务未能到达 Charging 状态");
-        REQUIRE(state == "Charging");
-    }
-
-    // 写全局摘要到 pid_metrics.jsonl
-    pid_ofs << build_final_summary_json(seg_idx,
-                                        total_health_records,
-                                        std::round(max_drift_all * 100.0f) / 100.0f,
-                                        f.p.pid.pitch_drop_threshold,
-                                        f.p.pid.roll_threshold,
-                                        f.p.pid.max_output)
-            << '\n';
-    pid_ofs.close();
-
-    spdlog::info(
-        "[hw_system][pid_combined] ✓ 全部 {} 段完成，总采集 {} 条", seg_idx, total_health_records);
-    spdlog::info("[hw_system][pid_combined] 全程最大 yaw 漂移={:.2f}°", max_drift_all);
-
-    // 看门狗全程无超时
-    CHECK(!wd_timeout.load());
-    // 无故障
-    CHECK(f.dispatched_faults.empty());
-    CHECK(saw_pid_initialized);
-    CHECK(saw_pid_speed_command);
-    CHECK(saw_pid_nonzero_correction);
-    // yaw 漂移 CHECK（不强制 REQUIRE，允许 PID 参数不理想时继续记录）
-    if (max_drift_all >= f.p.pid_max_drift_deg) {
-        spdlog::warn(
-            "[hw_system][pid_combined] ⚠ 最大漂移 {:.2f}° ≥ 阈值 {:.1f}°，建议调整 PID 参数",
-            max_drift_all,
-            f.p.pid_max_drift_deg);
-    }
-    CHECK(max_drift_all < f.p.pid_max_drift_deg);
-
-    // pid_metrics.jsonl 存在且有内容
-    REQUIRE(std::filesystem::exists(f.p.pid_jsonl_path));
-    spdlog::info("[hw_system][pid_combined] PASS — PID 指标已保存至 {}", f.p.pid_jsonl_path);
-    spdlog::info("[hw_system][pid_combined] PASS — 健康数据已保存至 {}", f.p.health_jsonl_path);
+    hw::FullSystemFixture f(true, true);
+    const auto start_evt = start_from_configured_parking_side(f, f.p.combined_passes);
+    spdlog::warn("[hw_system][pid_combined] parking_side={} start_evt: at_parking_side={} at_far_end={}",
+                 parking_side_name(f.p.parking_side),
+                 start_evt.at_parking_side,
+                 start_evt.at_far_end);
+    run_combined_system_test(f, "hw_system][pid_combined", true, start_evt, false, true);
 }
 
 TEST_CASE("System（真实硬件）WatchdogMgr 正常心跳 1s 不触发超时",

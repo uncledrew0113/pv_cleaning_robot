@@ -78,11 +78,11 @@ TEST_CASE("FaultHandler: P0 故障 → 调用 dispatch_fn", "[app][fault_handler
 
 TEST_CASE("FaultHandler: P0 故障 → emergency_stop() 发出 CAN 帧", "[app][fault_handler]") {
     FaultHandlerFixture f;
+    f.brush_serial->clear_tx();
     f.can->sent_frames.clear();
     f.fault_svc.report(FaultLevel::P0, 0x1001, "CAN lost");
 
-    // emergency_stop 应向 CAN 总线发出帧
-    REQUIRE_FALSE(f.can->sent_frames.empty());
+    REQUIRE(f.brush_serial->take_tx_text().find("v 0 0.000 0\n") != std::string::npos);
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -96,42 +96,37 @@ TEST_CASE("FaultHandler: P1 故障 → 调用 dispatch_fn", "[app][fault_handler
     REQUIRE(f.dispatched[0].level == FaultLevel::P1);
 }
 
-TEST_CASE("FaultHandler: P1 故障 → start_returning_no_brush() 发出 CAN 帧",
+TEST_CASE("FaultHandler: P1 故障 → emergency_stop() 停刷并通知 FSM",
           "[app][fault_handler]") {
     FaultHandlerFixture f;
     f.brush_serial->clear_tx();
     f.can->sent_frames.clear();
     f.fault_svc.report(FaultLevel::P1, 0x2001, "BMS low");
 
-    REQUIRE_FALSE(f.can->sent_frames.empty());
     const auto tx = f.brush_serial->take_tx_text();
     REQUIRE(tx.find("v 0 0.000 0\n") != std::string::npos);
-    REQUIRE(tx.find("v 0 -163840.000 0\n") == std::string::npos);
 }
 
 // ────────────────────────────────────────────────────────────────
-// P2 故障：不触发 motion，但通知 dispatch_fn
+// P2 故障：不触发 motion，也不通知 dispatch_fn
 // ────────────────────────────────────────────────────────────────
-TEST_CASE("FaultHandler: P2 故障 → dispatch_fn 收到但不急停", "[app][fault_handler]") {
+TEST_CASE("FaultHandler: P2 故障 → 不通知 dispatch_fn 且不急停", "[app][fault_handler]") {
     FaultHandlerFixture f;
     f.can->sent_frames.clear();
 
     f.fault_svc.report(FaultLevel::P2, 0x3001, "IMU degraded");
 
-    REQUIRE(f.dispatched.size() == 1);
-    REQUIRE(f.dispatched[0].level == FaultLevel::P2);
-    // P2 不应触发 emergency_stop 或 start_returning（CAN 帧可能为空）
+    REQUIRE(f.dispatched.empty());
 }
 
 // ────────────────────────────────────────────────────────────────
-// P3 故障：仅日志
+// P3 故障：仅日志，不通知 dispatch_fn
 // ────────────────────────────────────────────────────────────────
-TEST_CASE("FaultHandler: P3 故障 → dispatch_fn 收到", "[app][fault_handler]") {
+TEST_CASE("FaultHandler: P3 故障 → 不通知 dispatch_fn", "[app][fault_handler]") {
     FaultHandlerFixture f;
     f.fault_svc.report(FaultLevel::P3, 0x4001, "minor warning");
 
-    REQUIRE(f.dispatched.size() == 1);
-    REQUIRE(f.dispatched[0].level == FaultLevel::P3);
+    REQUIRE(f.dispatched.empty());
 }
 
 // ────────────────────────────────────────────────────────────────
