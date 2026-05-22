@@ -93,21 +93,23 @@ HeadingCorrector::Output HeadingCorrector::compute(const Input& input) {
     }
 
     // apply_correction() 将同一个有符号修正量加到四个轮子的“带符号基速”上。
-    // 由于 MotionService 已经在 base_command 中编码了停车位左右和前进/返回的方向，
-    // slope>0 需要的物理效果（上轮朝“减速/加速”、下轮朝相反方向变化）在所有工况下
-    // 都对应同一个 correction 符号：负值。需要现场整体翻向时再用 output_sign 兜底。
-    constexpr float kSlopeToCorrectionSign = -1.0f;
-    float error = latest_result_.slope * params_.output_sign * kSlopeToCorrectionSign;
+    // MotionService 已经把前进/返回方向编码进 base_command，因此 correction 的符号
+    // 只取决于停车位左右：
+    // - right: yaw_deg>0 => 上轮减速/下轮加速 => correction<0
+    // - left : yaw_deg>0 => 镜像相反                => correction>0
+    const float parking_side_sign =
+        (input.parking_side == ParkingSide::Right) ? -1.0f : 1.0f;
+    float error = latest_result_.yaw_deg * params_.output_sign * parking_side_sign;
 
     if (!filter_initialized_) {
-        filtered_slope_ = error;
+        filtered_yaw_deg_ = error;
         filter_initialized_ = true;
     } else {
-        filtered_slope_ = low_pass(filtered_slope_, error, params_.slope_alpha);
+        filtered_yaw_deg_ = low_pass(filtered_yaw_deg_, error, params_.yaw_alpha);
     }
 
-    error = filtered_slope_;
-    if (std::abs(error) < params_.deadband_slope) {
+    error = filtered_yaw_deg_;
+    if (std::abs(error) < params_.deadband_yaw_deg) {
         error = 0.0f;
     }
 
@@ -144,9 +146,9 @@ HeadingCorrector::DebugState HeadingCorrector::debug_state() const {
     return {mode_,
             connected_,
             latest_result_.valid,
-            latest_result_.slope,
+            latest_result_.yaw_deg,
             latest_result_.confidence,
-            filtered_slope_,
+            filtered_yaw_deg_,
             integral_term_,
             last_correction_,
             latest_result_age_ms_locked(now)};
@@ -327,11 +329,16 @@ void HeadingCorrector::ingest_json_line_locked(const std::string& line) {
     }
     result.valid = valid_it->value.GetBool();
 
+    const auto yaw_it = doc.FindMember("yaw_deg");
     const auto slope_it = doc.FindMember("slope");
-    if (slope_it == doc.MemberEnd() || !slope_it->value.IsNumber()) {
+    if (yaw_it != doc.MemberEnd() && yaw_it->value.IsNumber()) {
+        result.yaw_deg = yaw_it->value.GetFloat();
+    } else if (slope_it != doc.MemberEnd() && slope_it->value.IsNumber()) {
+        // 兼容旧版视觉输出；建议新部署统一改为 yaw_deg。
+        result.yaw_deg = slope_it->value.GetFloat();
+    } else {
         return;
     }
-    result.slope = slope_it->value.GetFloat();
 
     const auto confidence_it = doc.FindMember("confidence");
     if (confidence_it != doc.MemberEnd() && confidence_it->value.IsNumber()) {
@@ -343,7 +350,7 @@ void HeadingCorrector::ingest_json_line_locked(const std::string& line) {
 
 void HeadingCorrector::reset_control_state_locked() {
     filter_initialized_ = false;
-    filtered_slope_ = 0.0f;
+    filtered_yaw_deg_ = 0.0f;
     integral_term_ = 0.0f;
     last_error_ = 0.0f;
     last_correction_ = 0.0f;

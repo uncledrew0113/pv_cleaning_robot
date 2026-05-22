@@ -127,14 +127,14 @@ struct HwParams {
         int reconnect_interval_ms{500};
         int result_timeout_ms{500};
         float min_confidence{0.60f};
-        float deadband_slope{0.02f};
-        float kp{60.0f};
+        float deadband_yaw_deg{1.0f};
+        float kp{0.8f};
         float ki{0.0f};
         float kd{0.0f};
         float integral_limit{1.0f};
-        float max_output{30.0f};
-        float min_effective_output{0.0f};
-        float slope_alpha{0.35f};
+        float max_output{8.0f};
+        float min_effective_output{1.0f};
+        float yaw_alpha{0.35f};
         float output_sign{1.0f};
     } pid;
 };
@@ -235,9 +235,11 @@ inline HwParams load_hw_test_config() {
         p.pid.result_timeout_ms =
             cfg.get<int>("pid.result_timeout_ms", p.pid.result_timeout_ms);
         p.pid.min_confidence = cfg.get<float>("pid.min_confidence", p.pid.min_confidence);
-        p.pid.deadband_slope =
-            cfg.get<float>("pid.deadband_slope",
-                           cfg.get<float>("pid.deadband_norm", p.pid.deadband_slope));
+        p.pid.deadband_yaw_deg =
+            cfg.get<float>("pid.deadband_yaw_deg",
+                           cfg.get<float>("pid.deadband_slope",
+                                          cfg.get<float>("pid.deadband_norm",
+                                                         p.pid.deadband_yaw_deg)));
         p.pid.kp = cfg.get<float>("pid.kp", p.pid.kp);
         p.pid.ki = cfg.get<float>("pid.ki", p.pid.ki);
         p.pid.kd = cfg.get<float>("pid.kd", p.pid.kd);
@@ -245,9 +247,11 @@ inline HwParams load_hw_test_config() {
         p.pid.max_output = cfg.get<float>("pid.max_output", p.pid.max_output);
         p.pid.min_effective_output =
             cfg.get<float>("pid.min_effective_output", p.pid.min_effective_output);
-        p.pid.slope_alpha =
-            cfg.get<float>("pid.slope_alpha",
-                           cfg.get<float>("pid.offset_alpha", p.pid.slope_alpha));
+        p.pid.yaw_alpha =
+            cfg.get<float>("pid.yaw_alpha",
+                           cfg.get<float>("pid.slope_alpha",
+                                          cfg.get<float>("pid.offset_alpha",
+                                                         p.pid.yaw_alpha)));
         p.pid.output_sign = cfg.get<float>("pid.output_sign", p.pid.output_sign);
         spdlog::debug("[hw_config] Loaded config: {}", path);
     } catch (const std::exception& e) {
@@ -386,14 +390,14 @@ struct FullSystemFixture : DeviceFixture, IGracefulShutdown {
         motion_cfg.pid.reconnect_interval_ms = p.pid.reconnect_interval_ms;
         motion_cfg.pid.result_timeout_ms = p.pid.result_timeout_ms;
         motion_cfg.pid.min_confidence = p.pid.min_confidence;
-        motion_cfg.pid.deadband_slope = p.pid.deadband_slope;
+        motion_cfg.pid.deadband_yaw_deg = p.pid.deadband_yaw_deg;
         motion_cfg.pid.kp = p.pid.kp;
         motion_cfg.pid.ki = p.pid.ki;
         motion_cfg.pid.kd = p.pid.kd;
         motion_cfg.pid.integral_limit = p.pid.integral_limit;
         motion_cfg.pid.max_output = p.pid.max_output;
         motion_cfg.pid.min_effective_output = p.pid.min_effective_output;
-        motion_cfg.pid.slope_alpha = p.pid.slope_alpha;
+        motion_cfg.pid.yaw_alpha = p.pid.yaw_alpha;
         motion_cfg.pid.output_sign = p.pid.output_sign;
 
         motion =

@@ -333,9 +333,11 @@ int main() {
         cfg.get<int>("robot.pid.result_timeout_ms", motion_cfg.pid.result_timeout_ms);
     motion_cfg.pid.min_confidence =
         cfg.get<float>("robot.pid.min_confidence", motion_cfg.pid.min_confidence);
-    motion_cfg.pid.deadband_slope =
-        cfg.get<float>("robot.pid.deadband_slope",
-                       cfg.get<float>("robot.pid.deadband_norm", motion_cfg.pid.deadband_slope));
+    motion_cfg.pid.deadband_yaw_deg =
+        cfg.get<float>("robot.pid.deadband_yaw_deg",
+                       cfg.get<float>("robot.pid.deadband_slope",
+                                      cfg.get<float>("robot.pid.deadband_norm",
+                                                     motion_cfg.pid.deadband_yaw_deg)));
     motion_cfg.pid.kp = cfg.get<float>("robot.pid.kp", motion_cfg.pid.kp);
     motion_cfg.pid.ki = cfg.get<float>("robot.pid.ki", motion_cfg.pid.ki);
     motion_cfg.pid.kd = cfg.get<float>("robot.pid.kd", motion_cfg.pid.kd);
@@ -344,9 +346,11 @@ int main() {
     motion_cfg.pid.max_output = cfg.get<float>("robot.pid.max_output", motion_cfg.pid.max_output);
     motion_cfg.pid.min_effective_output =
         cfg.get<float>("robot.pid.min_effective_output", motion_cfg.pid.min_effective_output);
-    motion_cfg.pid.slope_alpha =
-        cfg.get<float>("robot.pid.slope_alpha",
-                       cfg.get<float>("robot.pid.offset_alpha", motion_cfg.pid.slope_alpha));
+    motion_cfg.pid.yaw_alpha =
+        cfg.get<float>("robot.pid.yaw_alpha",
+                       cfg.get<float>("robot.pid.slope_alpha",
+                                      cfg.get<float>("robot.pid.offset_alpha",
+                                                     motion_cfg.pid.yaw_alpha)));
     motion_cfg.pid.output_sign =
         cfg.get<float>("robot.pid.output_sign", motion_cfg.pid.output_sign);
 

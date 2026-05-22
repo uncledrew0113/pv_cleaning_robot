@@ -22,14 +22,14 @@ class HeadingCorrector {
         int reconnect_interval_ms{500};
         int result_timeout_ms{500};
         float min_confidence{0.60f};
-        float deadband_slope{0.02f};
-        float kp{60.0f};
+        float deadband_yaw_deg{1.0f};
+        float kp{0.8f};
         float ki{0.0f};
         float kd{0.0f};
         float integral_limit{1.0f};
-        float max_output{30.0f};
-        float min_effective_output{0.0f};
-        float slope_alpha{0.35f};
+        float max_output{8.0f};
+        float min_effective_output{1.0f};
+        float yaw_alpha{0.35f};
         float output_sign{1.0f};
     };
 
@@ -79,9 +79,9 @@ class HeadingCorrector {
         Mode mode{Mode::UNINITIALIZED};
         bool connected{false};
         bool latest_valid{false};
-        float latest_slope{0.0f};
+        float latest_yaw_deg{0.0f};
         float latest_confidence{0.0f};
-        float filtered_slope{0.0f};
+        float filtered_yaw_deg{0.0f};
         float integral_term{0.0f};
         float last_correction{0.0f};
         int64_t result_age_ms{-1};
@@ -106,7 +106,7 @@ class HeadingCorrector {
     struct VisionResult {
         bool available{false};
         bool valid{false};
-        float slope{0.0f};
+        float yaw_deg{0.0f};
         float confidence{0.0f};
         std::chrono::steady_clock::time_point received_at{};
     };
@@ -141,7 +141,7 @@ class HeadingCorrector {
     bool connected_{false};
     VisionResult latest_result_{};
     bool filter_initialized_{false};
-    float filtered_slope_{0.0f};
+    float filtered_yaw_deg_{0.0f};
     float integral_term_{0.0f};
     float last_error_{0.0f};
     float last_correction_{0.0f};

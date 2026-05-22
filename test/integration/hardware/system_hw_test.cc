@@ -270,8 +270,8 @@ void run_combined_system_test(hw::FullSystemFixture& f,
                 spdlog::info(
                     "[{}] #{}: LT={:.1f}/{:.1f} RT={:.1f}/{:.1f} LB={:.1f}/{:.1f} "
                     "RB={:.1f}/{:.1f} brush_rpm={} brush_fault={} yaw={:.2f}° state={} "
-                    "pid(mode={} connected={} valid={} slope={:.4f} conf={:.3f} "
-                    "filtered={:.4f} correction={:.3f} age_ms={}) fused_odom(valid={} "
+                    "pid(mode={} connected={} valid={} yaw_deg={:.4f} conf={:.3f} "
+                    "filtered_yaw_deg={:.4f} correction={:.3f} age_ms={}) fused_odom(valid={} "
                     "top={:.3f} bottom={:.3f} fused={:.3f} diff={:.3f} top_v={:.3f} "
                     "bottom_v={:.3f} fused_v={:.3f})",
                     tag,
@@ -291,9 +291,9 @@ void run_combined_system_test(hw::FullSystemFixture& f,
                     heading_pid_mode_name(pid_debug.mode),
                     pid_debug.connected,
                     pid_debug.latest_valid,
-                    pid_debug.latest_slope,
+                    pid_debug.latest_yaw_deg,
                     pid_debug.latest_confidence,
-                    pid_debug.filtered_slope,
+                    pid_debug.filtered_yaw_deg,
                     pid_debug.last_correction,
                     pid_debug.result_age_ms,
                     odom.valid,
@@ -334,8 +334,8 @@ void run_combined_system_test(hw::FullSystemFixture& f,
                 spdlog::info(
                     "[{}] #{}: LT={:.1f}/{:.1f} RT={:.1f}/{:.1f} LB={:.1f}/{:.1f} "
                     "RB={:.1f}/{:.1f} brush_rpm={} brush_fault={} yaw={:.2f}° state={} "
-                    "pid(mode={} connected={} valid={} slope={:.4f} conf={:.3f} "
-                    "filtered={:.4f} correction={:.3f} age_ms={})",
+                    "pid(mode={} connected={} valid={} yaw_deg={:.4f} conf={:.3f} "
+                    "filtered_yaw_deg={:.4f} correction={:.3f} age_ms={})",
                     tag,
                     total_health_records,
                     gd.wheel[0].speed_rpm,
@@ -353,9 +353,9 @@ void run_combined_system_test(hw::FullSystemFixture& f,
                     heading_pid_mode_name(pid_debug.mode),
                     pid_debug.connected,
                     pid_debug.latest_valid,
-                    pid_debug.latest_slope,
+                    pid_debug.latest_yaw_deg,
                     pid_debug.latest_confidence,
-                    pid_debug.filtered_slope,
+                    pid_debug.filtered_yaw_deg,
                     pid_debug.last_correction,
                     pid_debug.result_age_ms);
             } else {
