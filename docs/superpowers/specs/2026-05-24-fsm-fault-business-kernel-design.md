@@ -15,6 +15,11 @@ Refactor the task orchestration core so that:
 Absolute design rule:
 
 - overall implementation must stay simple, stable, and reliable
+- implementation should avoid redundancy and keep code paths minimal
+- SOLID principles must be preserved during restructuring
+- existing code files may be modified, deleted, or renamed if that simplifies the design
+- new code files should not be added for this work
+- reducing the current number of code files is preferred when it improves clarity
 
 This spec intentionally avoids speculative abstractions and does not try to redesign unrelated subsystems.
 
@@ -480,6 +485,7 @@ This work does not include:
 - redesigning scheduler semantics beyond mission input adaptation
 - introducing a degraded-running framework
 - broad refactors unrelated to mission execution and fault semantics
+- adding new code files as part of this refactor
 
 ## Implementation Principles
 
@@ -490,11 +496,20 @@ The implementation plan derived from this spec must obey:
 - no speculative abstraction layers
 - no duplicate state vocabularies between kernel and cloud
 - business rules first, motor rules resolved separately
+- prefer in-place simplification of existing files over creating new files
+- deleting or renaming existing files is allowed if it reduces structural noise
+- reducing total file count is preferred when responsibilities become clearer, not more coupled
+- SOLID principles must be maintained:
+  - single responsibility for mission semantics, fault decision, and motion execution
+  - open/closed at the rule level, not by growing state branches
+  - interface boundaries must remain understandable and testable
+  - dependency directions must not become more tangled than they are now
 
 Whenever there is a tradeoff, prefer:
 
 - simpler runtime semantics
 - fewer FSM states
+- fewer code files when that does not merge unrelated responsibilities
 - clearer fault decisions
 - more deterministic hardware behavior
 
