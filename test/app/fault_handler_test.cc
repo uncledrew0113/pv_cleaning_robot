@@ -14,6 +14,7 @@
 #include "pv_cleaning_robot/service/motion_service.h"
 
 using robot::app::FaultHandler;
+using robot::service::FaultReporter;
 using robot::service::FaultService;
 using robot::service::MotionService;
 using FaultEvent = robot::service::FaultService::FaultEvent;
@@ -30,6 +31,26 @@ MotionService::Config make_motion_config() {
     return cfg;
 }
 
+class RecordingFaultReporter final : public FaultReporter {
+   public:
+    void report(FaultEvent::Level level, uint32_t code, const std::string& description) override {
+        reports.push_back(FaultEvent{level, code, description, 0});
+    }
+
+    void clear_active_fault() override {}
+
+    bool has_active_fault(FaultEvent::Level min_level = FaultEvent::Level::P2) const override {
+        (void)min_level;
+        return !reports.empty();
+    }
+
+    FaultEvent last_fault() const override {
+        return reports.empty() ? FaultEvent{} : reports.back();
+    }
+
+    std::vector<FaultEvent> reports;
+};
+
 }  // namespace
 
 // ────────────────────────────────────────────────────────────────
@@ -43,7 +64,7 @@ struct FaultHandlerFixture {
         std::make_shared<BrushMotor>(brush_serial, 0)};
     EventBus bus;
     std::shared_ptr<MotionService> motion;
-    FaultService fault_svc{bus};
+    std::shared_ptr<FaultService> fault_svc{std::make_shared<FaultService>(bus)};
 
     // 记录 dispatch_fn 收到的 FaultEvent
     std::vector<FaultEvent> dispatched;
@@ -56,7 +77,7 @@ struct FaultHandlerFixture {
                                                  nullptr,
                                                  bus,
                                                  make_motion_config()))
-        , handler(motion, bus, [this](FaultEvent e) { dispatched.push_back(e); }) {
+        , handler(motion, fault_svc, bus, [this](FaultEvent e) { dispatched.push_back(e); }) {
         can->open_result = true;
         can->send_result = true;
         brush_serial->open_result = true;
@@ -70,7 +91,7 @@ struct FaultHandlerFixture {
 // ────────────────────────────────────────────────────────────────
 TEST_CASE("FaultHandler: P0 故障 → 调用 dispatch_fn", "[app][fault_handler]") {
     FaultHandlerFixture f;
-    f.fault_svc.report(FaultLevel::P0, 0x1001, "CAN lost");
+    f.fault_svc->report(FaultLevel::P0, 0x1001, "CAN lost");
 
     REQUIRE(f.dispatched.size() == 1);
     REQUIRE(f.dispatched[0].level == FaultLevel::P0);
@@ -80,7 +101,7 @@ TEST_CASE("FaultHandler: P0 故障 → emergency_stop() 发出 CAN 帧", "[app][
     FaultHandlerFixture f;
     f.brush_serial->clear_tx();
     f.can->sent_frames.clear();
-    f.fault_svc.report(FaultLevel::P0, 0x1001, "CAN lost");
+    f.fault_svc->report(FaultLevel::P0, 0x1001, "CAN lost");
 
     REQUIRE(f.brush_serial->take_tx_text().find("v 0 0.000 0\n") != std::string::npos);
 }
@@ -90,21 +111,22 @@ TEST_CASE("FaultHandler: P0 故障 → emergency_stop() 发出 CAN 帧", "[app][
 // ────────────────────────────────────────────────────────────────
 TEST_CASE("FaultHandler: P1 故障 → 调用 dispatch_fn", "[app][fault_handler]") {
     FaultHandlerFixture f;
-    f.fault_svc.report(FaultLevel::P1, 0x2001, "BMS low");
+    f.fault_svc->report(FaultLevel::P1, 0x2001, "BMS low");
 
     REQUIRE(f.dispatched.size() == 1);
     REQUIRE(f.dispatched[0].level == FaultLevel::P1);
 }
 
-TEST_CASE("FaultHandler: P1 故障 → emergency_stop() 停刷并通知 FSM",
+TEST_CASE("FaultHandler: P1 故障 → 不急停，交由 FSM 执行无刷返航",
           "[app][fault_handler]") {
     FaultHandlerFixture f;
     f.brush_serial->clear_tx();
     f.can->sent_frames.clear();
-    f.fault_svc.report(FaultLevel::P1, 0x2001, "BMS low");
+    f.fault_svc->report(FaultLevel::P1, 0x2001, "BMS low");
 
     const auto tx = f.brush_serial->take_tx_text();
-    REQUIRE(tx.find("v 0 0.000 0\n") != std::string::npos);
+    REQUIRE(tx.empty());
+    REQUIRE(f.can->sent_frames.empty());
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -114,9 +136,50 @@ TEST_CASE("FaultHandler: P2 故障 → 不通知 dispatch_fn 且不急停", "[ap
     FaultHandlerFixture f;
     f.can->sent_frames.clear();
 
-    f.fault_svc.report(FaultLevel::P2, 0x3001, "IMU degraded");
+    f.fault_svc->report(FaultLevel::P2, 0x3001, "IMU degraded");
 
     REQUIRE(f.dispatched.empty());
+}
+
+TEST_CASE("FaultHandler: 指定 P2 code 升级为 P1 并通知 dispatch_fn", "[app][fault_handler]") {
+    FaultHandlerFixture f;
+    f.fault_svc->report(FaultLevel::P2, 0x3002, "gps_lost_requires_return");
+
+    REQUIRE(f.dispatched.size() == 1);
+    REQUIRE(f.dispatched[0].level == FaultLevel::P1);
+    REQUIRE(f.dispatched[0].code == 0x3002);
+    REQUIRE(f.fault_svc->has_active_fault());
+    REQUIRE(f.fault_svc->last_fault().level == FaultLevel::P1);
+    REQUIRE(f.fault_svc->last_fault().code == 0x3002u);
+}
+
+TEST_CASE("FaultHandler: 依赖故障上报抽象而不是具体 FaultService", "[app][fault_handler]") {
+    EventBus bus;
+    auto can = std::make_shared<MockCanBus>();
+    auto group = std::make_shared<WalkMotorGroup>(can);
+    auto brush_serial = std::make_shared<MockSerialPort>();
+    auto brush = std::make_shared<BrushMotor>(brush_serial, 0);
+    auto reporter = std::make_shared<RecordingFaultReporter>();
+    std::vector<FaultEvent> dispatched;
+
+    can->open_result = true;
+    can->send_result = true;
+    brush_serial->open_result = true;
+    brush->open();
+
+    auto motion =
+        std::make_shared<MotionService>(group, brush, nullptr, bus, make_motion_config());
+    FaultHandler handler(
+        motion, reporter, bus, [&dispatched](FaultEvent e) { dispatched.push_back(e); });
+    handler.start_listening();
+
+    bus.publish(FaultEvent{FaultLevel::P2, 0x3002u, "gps_lost_requires_return", 0});
+
+    REQUIRE(dispatched.size() == 1);
+    REQUIRE(dispatched[0].level == FaultLevel::P1);
+    REQUIRE(reporter->reports.size() == 1);
+    REQUIRE(reporter->reports[0].level == FaultLevel::P1);
+    REQUIRE(reporter->reports[0].code == 0x3002u);
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -124,7 +187,7 @@ TEST_CASE("FaultHandler: P2 故障 → 不通知 dispatch_fn 且不急停", "[ap
 // ────────────────────────────────────────────────────────────────
 TEST_CASE("FaultHandler: P3 故障 → 不通知 dispatch_fn", "[app][fault_handler]") {
     FaultHandlerFixture f;
-    f.fault_svc.report(FaultLevel::P3, 0x4001, "minor warning");
+    f.fault_svc->report(FaultLevel::P3, 0x4001, "minor warning");
 
     REQUIRE(f.dispatched.empty());
 }
@@ -144,10 +207,10 @@ TEST_CASE("FaultHandler: 析构后 EventBus publish 不崩溃", "[app][fault_han
     brush->open();
     auto motion = std::make_shared<MotionService>(
         group, brush, nullptr, bus, make_motion_config());
-    FaultService fault_svc(bus);
+    auto fault_svc = std::make_shared<FaultService>(bus);
 
     {
-        FaultHandler h(motion, bus, [](FaultEvent) {});
+        FaultHandler h(motion, fault_svc, bus, [](FaultEvent) {});
         h.start_listening();
     }  // FaultHandler 析构，取消订阅
 

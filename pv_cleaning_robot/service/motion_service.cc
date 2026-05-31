@@ -2,22 +2,21 @@
  * @Author: UncleDrew
  * @Date: 2026-03-14 16:03:29
  * @LastEditors: UncleDrew
- * @LastEditTime: 2026-05-12 12:13:29
+ * @LastEditTime: 2026-05-27 16:35:16
  * @FilePath: /pv_cleaning_robot/pv_cleaning_robot/service/motion_service.cc
  * @Description: 运动服务——集成 WalkMotorGroup + 视觉纠偏 + 边缘触发覆盖
  *
  * Copyright (c) 2026 by UncleDrew, All Rights Reserved.
  */
-#include "pv_cleaning_robot/service/motion_service.h"
-
 #include <cmath>
+
+#include "pv_cleaning_robot/service/motion_service.h"
 
 namespace robot::service {
 
 namespace {
 
-HeadingCorrector::SpeedCommand to_corrector_command(
-    const device::WalkMotorGroup::SpeedCmd& cmd) {
+HeadingCorrector::SpeedCommand to_corrector_command(const device::WalkMotorGroup::SpeedCmd& cmd) {
     return {cmd.lt_rpm, cmd.rt_rpm, cmd.lb_rpm, cmd.rb_rpm};
 }
 
@@ -62,7 +61,6 @@ void MotionService::sync_runtime_config() {
     cfg_.clean_speed_rpm = std::abs(static_cast<float>(runtime_cfg.clean_speed_rpm));
     cfg_.return_speed_rpm = std::abs(static_cast<float>(runtime_cfg.return_speed_rpm));
     cfg_.brush_rpm = std::abs(runtime_cfg.brush_rpm);
-    cfg_.return_brush_rpm = std::abs(runtime_cfg.return_brush_rpm);
 }
 
 bool MotionService::enable_speed_mode() {
@@ -98,8 +96,7 @@ bool MotionService::start_returning_impl(bool run_brush) {
 
     const int dir = task_direction_sign();
     if (run_brush) {
-        // 返程刷反向转，用 return_brush_rpm 单独表达返程刷速。
-        brush_->set_rpm(std::abs(cfg_.return_brush_rpm) * dir);
+        brush_->set_rpm(-std::abs(cfg_.brush_rpm) * dir);
     } else {
         brush_->stop();
     }
@@ -114,7 +111,7 @@ bool MotionService::start_returning_impl(bool run_brush) {
     if (group_->set_speeds(cmd) != device::DeviceError::OK) {
         return false;
     }
-    motion_phase_ = HeadingCorrector::MotionPhase::Returning;
+    motion_phase_ = HeadingCorrector::MotionPhase::ToParkingSide;
     set_base_speed_command(cmd);
     return true;
 }
@@ -141,10 +138,10 @@ bool MotionService::start_cleaning() {
     const device::WalkMotorGroup::SpeedCmd cmd{spd, spd, -spd, -spd};
     if (group_->set_speeds(cmd) != device::DeviceError::OK)
         return false;
-    motion_phase_ = HeadingCorrector::MotionPhase::CleanFwd;
+    motion_phase_ = HeadingCorrector::MotionPhase::ToFarEnd;
     set_base_speed_command(cmd);
 
-    brush_->set_rpm(-std::abs(cfg_.brush_rpm) * dir);
+    brush_->set_rpm(std::abs(cfg_.brush_rpm) * dir);
     return true;
 }
 
@@ -184,8 +181,7 @@ void MotionService::update() {
         input.has_base_command = true;
         input.base_command = to_corrector_command(base_speed_cmd_);
         input.motion_phase = motion_phase_;
-        input.parking_side =
-            parking_side_query_ ? parking_side_query_() : ParkingSide::Right;
+        input.parking_side = parking_side_query_ ? parking_side_query_() : ParkingSide::Right;
 
         const auto status = group_->get_group_status();
         const auto diagnostics = group_->get_group_diagnostics();

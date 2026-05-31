@@ -8,59 +8,16 @@
 #include <type_traits>
 #include <vector>
 
+#include "pv_cleaning_robot/domain/robot_domain.h"
+
 namespace robot::service {
 
 class SchedulerService;
 
-enum class ParkingSide {
-    Left,
-    Right,
-};
-
-inline const char* parking_side_config_string(ParkingSide value) noexcept {
-    switch (value) {
-    case ParkingSide::Left:
-        return "left";
-    case ParkingSide::Right:
-        return "right";
-    }
-    return "left";
-}
-
-struct RuntimeScheduleEntry {
-    int hour{0};
-    int minute{0};
-
-    bool operator==(const RuntimeScheduleEntry& other) const {
-        return hour == other.hour && minute == other.minute;
-    }
-};
-
-struct RuntimeConfig {
-    double passes{1.0};
-    double clean_speed_rpm{300.0};
-    double return_speed_rpm{300.0};
-    int brush_rpm{1000};
-    int return_brush_rpm{1000};
-    ParkingSide parking_side{ParkingSide::Left};
-    double start_battery_soc{30.0};
-    double charge_start_soc{15.0};
-    double charge_stop_soc{95.0};
-    std::vector<RuntimeScheduleEntry> schedules;
-
-    bool operator==(const RuntimeConfig& other) const {
-        return passes == other.passes &&
-               clean_speed_rpm == other.clean_speed_rpm &&
-               return_speed_rpm == other.return_speed_rpm &&
-               brush_rpm == other.brush_rpm &&
-               return_brush_rpm == other.return_brush_rpm &&
-               parking_side == other.parking_side &&
-               start_battery_soc == other.start_battery_soc &&
-               charge_start_soc == other.charge_start_soc &&
-               charge_stop_soc == other.charge_stop_soc &&
-               schedules == other.schedules;
-    }
-};
+using robot::domain::ParkingSide;
+using robot::domain::RuntimeConfig;
+using robot::domain::RuntimeScheduleEntry;
+using robot::domain::parking_side_config_string;
 
 struct SharedAttrApplyResult {
     bool accepted{false};

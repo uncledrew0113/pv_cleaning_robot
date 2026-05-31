@@ -10,7 +10,7 @@
  *   TC5  — WatchdogMgr 正常心跳——不触发超时
  *   TC6  — WatchdogMgr 超时检测——漏心跳后回调触发
  *   TC7  — SafetyMonitor GPIO → emergency_override → LimitSettledEvent → FSM 转换
- *   TC8  — P0 故障链（FaultService → FaultHandler → FSM Fault → Reset → Idle）
+ *   TC8  — P0 故障链（FaultService → FaultHandler → FSM FaultStopped → Reset → Idle）
  *   TC9  — P1 故障链 + EvLowBattery（独立场景）
  *   TC10 — N=1 完整任务链（ThreadExecutor-driven MotionService 心跳帧验证）
  *
@@ -100,7 +100,6 @@ MotionService::Config make_motion_config()
     cfg.clean_speed_rpm = 30.0f;
     cfg.return_speed_rpm = 30.0f;
     cfg.brush_rpm = 1000;
-    cfg.return_brush_rpm = 1000;
     cfg.edge_reverse_rpm = 0.0f;
     cfg.heading_pid_en = false;
     return cfg;
@@ -155,16 +154,12 @@ std::string build_test_runtime_config_json()
     writer.Double(30.0);
     writer.Key("brush_rpm");
     writer.Int(1000);
-    writer.Key("return_brush_rpm");
-    writer.Int(1000);
     writer.Key("heading_pid_en");
     writer.Bool(false);
     writer.Key("edge_reverse_rpm");
     writer.Double(0.0);
-    writer.Key("start_battery_soc");
+    writer.Key("min_battery_soc");
     writer.Double(30.0);
-    writer.Key("charge_start_soc");
-    writer.Double(15.0);
     writer.Key("charge_stop_soc");
     writer.Double(95.0);
     writer.Key("passes");
@@ -390,9 +385,9 @@ struct SystemFixture {
         // 必须在清理 health JSONL 之后创建，
         // 否则 HealthService 打开文件后被 remove 删掉目录项，
         // 写入将走未链接的 inode，exists() 永远返回 false
-        , safety_mon(group, left_sw, right_sw, bus)
-        , fsm(motion, nav, fault_svc, bus)
-        , fault_handler(motion, bus, [this](FaultEvent e) {
+        , safety_mon([this]() { group->emergency_override(0.0f); }, left_sw, right_sw, bus)
+        , fsm(motion, fault_svc, bus)
+        , fault_handler(motion, fault_svc, bus, [this](FaultEvent e) {
               dispatched_faults.push_back(e);
               if (e.level == FaultLevel::P0)
                   fsm.dispatch(EvFaultP0{});
@@ -448,8 +443,7 @@ TEST_CASE("System: ConfigService 加载测试配置并正确返回字段值",
     REQUIRE(cfg.is_loaded());
 
     REQUIRE(cfg.get<float>("robot.clean_speed_rpm", 0.0f) == Approx(30.0f));
-    REQUIRE(cfg.get<float>("robot.start_battery_soc", 0.0f) == Approx(30.0f));
-    REQUIRE(cfg.get<float>("robot.charge_start_soc", 0.0f)  == Approx(15.0f));
+    REQUIRE(cfg.get<float>("robot.min_battery_soc", 0.0f) == Approx(30.0f));
     REQUIRE(cfg.get<float>("robot.charge_stop_soc", 0.0f)  == Approx(95.0f));
     REQUIRE(cfg.get<bool>("robot.heading_pid_en", true) == false);
     REQUIRE(cfg.get<std::string>("diagnostics.mode", "") == "development");
@@ -583,13 +577,13 @@ TEST_CASE("System: WatchdogMgr 超时后回调触发并包含正确线程名",
 // =============================================================================
 // TC7：SafetyMonitor GPIO → emergency_override → LimitSettledEvent → FSM
 // =============================================================================
-TEST_CASE("System: SafetyMonitor 前端 GPIO 触发 → emergency_override → FSM CleanReturn",
+TEST_CASE("System: SafetyMonitor 前端 GPIO 触发 → emergency_override → FSM ExecutingSegment(返航段)",
           "[integration][system][safety]") {
     SystemFixture f;
 
-    // 启动任务，进入 CleanFwd
+    // 启动任务，进入 ExecutingSegment(ToFarEnd)
     f.fsm.dispatch(start_from_parking_side(2.0f));
-    REQUIRE(f.fsm.current_state() == "CleanFwd");
+    REQUIRE(f.fsm.current_state() == "ExecutingSegment");
 
     // 记录触发前 CAN 帧数
     const size_t frames_before = f.can->sent_frames.size();
@@ -597,7 +591,7 @@ TEST_CASE("System: SafetyMonitor 前端 GPIO 触发 → emergency_override → F
     // 订阅 LimitSettledEvent → 转发给 FSM（模拟 main.cc 中的 EventBus 桥接）
     f.bus.subscribe<SafetyMonitor::LimitSettledEvent>(
         [&](const SafetyMonitor::LimitSettledEvent& e) {
-            if (e.side == LimitSide::LEFT)
+            if (e.side == robot::domain::PhysicalLimitSide::Left)
                 f.fsm.dispatch(EvFarEndLimitSettled{});
             else
                 f.fsm.dispatch(EvParkingSideLimitSettled{});
@@ -617,23 +611,23 @@ TEST_CASE("System: SafetyMonitor 前端 GPIO 触发 → emergency_override → F
     // emergency_override(0.0f) 应向 CAN 总线发送零速停车帧
     REQUIRE(f.can->sent_frames.size() > frames_before);
 
-    // FSM 已转换 → CleanReturn
-    REQUIRE(f.fsm.current_state() == "CleanReturn");
+    // FSM 已转换 → ExecutingSegment(ToParkingSide)
+    REQUIRE(f.fsm.current_state() == "ExecutingSegment");
 }
 
 // =============================================================================
-// TC8：P0 故障链——FaultService → FaultHandler → FSM Fault → Reset → Idle
+// TC8：P0 故障链——FaultService → FaultHandler → FSM FaultStopped → Reset → Idle
 // =============================================================================
-TEST_CASE("System: P0 故障链 FaultService→FaultHandler→FSM Fault，复位后回 Idle",
+TEST_CASE("System: P0 故障链 FaultService→FaultHandler→FSM FaultStopped，复位后回 Idle",
           "[integration][system][fault]") {
     SystemFixture f;
 
     f.fsm.dispatch(start_from_parking_side(1.0f));
-    REQUIRE(f.fsm.current_state() == "CleanFwd");
+    REQUIRE(f.fsm.current_state() == "ExecutingSegment");
 
-    // 通过 FaultService 上报 P0（FaultHandler → dispatch EvFaultP0 → FSM Fault）
+    // 通过 FaultService 上报 P0（FaultHandler → dispatch EvFaultP0 → FSM FaultStopped）
     f.fault_svc->report(FaultLevel::P0, 0x1001, "CAN_comm_lost");
-    REQUIRE(f.fsm.current_state() == "Fault");
+    REQUIRE(f.fsm.current_state() == "FaultStopped");
 
     // FaultHandler 应记录到 dispatched_faults
     REQUIRE(!f.dispatched_faults.empty());
@@ -646,22 +640,24 @@ TEST_CASE("System: P0 故障链 FaultService→FaultHandler→FSM Fault，复位
 
     // 复位后可重新启动任务
     f.fsm.dispatch(start_from_parking_side(1.0f));
-    REQUIRE(f.fsm.current_state() == "CleanFwd");
+    REQUIRE(f.fsm.current_state() == "ExecutingSegment");
 }
 
 // =============================================================================
-// TC9-A：P1 故障链——CleanReturn → Fault
+// TC9-A：P1 故障链——运行中切换到返航段
 // =============================================================================
-TEST_CASE("System: P1 故障发生在清扫中 → Fault",
+TEST_CASE("System: P1 故障发生在清扫中 → ExecutingSegment(返航段)",
           "[integration][system][fault]") {
     SystemFixture f;
 
     f.fsm.dispatch(start_from_parking_side(2.0f));
-    f.fsm.dispatch(EvFarEndLimitSettled{});  // → CleanReturn
-    REQUIRE(f.fsm.current_state() == "CleanReturn");
+    f.fsm.dispatch(EvFarEndLimitSettled{});  // → ExecutingSegment(ToParkingSide)
+    REQUIRE(f.fsm.current_state() == "ExecutingSegment");
 
     f.fault_svc->report(FaultLevel::P1, 0x2001, "slope_too_steep");
-    REQUIRE(f.fsm.current_state() == "Fault");
+    REQUIRE(f.fsm.current_state() == "ExecutingSegment");
+    REQUIRE(f.fsm.current_segment_direction().has_value());
+    REQUIRE(*f.fsm.current_segment_direction() == SegmentDirection::ToParkingSide);
 }
 
 // =============================================================================
@@ -676,18 +672,18 @@ TEST_CASE("System: N=1 完整任务链 + ThreadExecutor 驱动 MotionService 产
     exec.add_runnable(f.motion);
     REQUIRE(exec.start());
 
-    // N=1 往返任务链：CleanFwd → CleanReturn → Charging
+    // N=1 往返任务链：ExecutingSegment(ToFarEnd) → ExecutingSegment(ToParkingSide) → Charging
     f.fsm.dispatch(start_from_parking_side(1.0f));
-    REQUIRE(f.fsm.current_state() == "CleanFwd");
+    REQUIRE(f.fsm.current_state() == "ExecutingSegment");
     REQUIRE(!f.can->sent_frames.empty());   // start_cleaning() 已投帧
 
     // 等待 MotionService update() 至少运行 2 个周期（100ms），产生心跳帧
     std::this_thread::sleep_for(std::chrono::milliseconds(120));
     const size_t frames_after_start = f.can->sent_frames.size();
 
-    // 对侧限位 → CleanReturn
+    // 对侧限位 → ExecutingSegment(ToParkingSide)
     f.fsm.dispatch(EvFarEndLimitSettled{});
-    REQUIRE(f.fsm.current_state() == "CleanReturn");
+    REQUIRE(f.fsm.current_state() == "ExecutingSegment");
 
     // 等待 start_returning() 心跳帧
     std::this_thread::sleep_for(std::chrono::milliseconds(120));
@@ -720,9 +716,9 @@ TEST_CASE("System: SafetyMonitor + HealthService + WatchdogMgr 联合启动 300m
     // 启动安全监控
     REQUIRE(f.safety_mon.start());
 
-    // FSM 进入 CleanFwd，MotionService 开始发帧
+    // FSM 进入 ExecutingSegment，MotionService 开始发帧
     f.fsm.dispatch(start_from_parking_side(1.0f));
-    REQUIRE(f.fsm.current_state() == "CleanFwd");
+    REQUIRE(f.fsm.current_state() == "ExecutingSegment");
 
     // HealthService 落盘 3 次
     f.health->update();

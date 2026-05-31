@@ -58,7 +58,7 @@
 
 // App
 #include "pv_cleaning_robot/app/fault_handler.h"
-#include "pv_cleaning_robot/app/parking_side_runtime.h"
+#include "pv_cleaning_robot/domain/robot_domain.h"
 #include "pv_cleaning_robot/app/robot_fsm.h"
 #include "pv_cleaning_robot/app/robot_supervisor.h"
 #include "pv_cleaning_robot/app/watchdog_mgr.h"
@@ -366,8 +366,11 @@ struct FullSystemFixture : DeviceFixture, IGracefulShutdown {
         brush = std::make_shared<device::BrushMotor>(brush_serial, p.brush_axis);
 
         // SafetyMonitor 构造时内部绑定 LimitSwitch 回调
-        safety =
-            std::make_unique<middleware::SafetyMonitor>(walk_group, left_sw, right_sw, event_bus);
+        safety = std::make_unique<middleware::SafetyMonitor>(
+            [this]() { walk_group->emergency_override(0.0f); },
+            left_sw,
+            right_sw,
+            event_bus);
 
         robot::device::GpsdSourceConfig gpsd_cfg;
         gpsd_cfg.host = p.gpsd_host;
@@ -381,8 +384,6 @@ struct FullSystemFixture : DeviceFixture, IGracefulShutdown {
         motion_cfg.clean_speed_rpm = p.test_speed_rpm;
         motion_cfg.return_speed_rpm = p.test_return_rpm;
         motion_cfg.brush_rpm = use_real_brush_ ? static_cast<int>(std::lround(p.brush_test_rpm)) : 0;
-        motion_cfg.return_brush_rpm =
-            use_real_brush_ ? static_cast<int>(std::lround(p.brush_test_rpm)) : 0;
         motion_cfg.edge_reverse_rpm = 0.0f;
         motion_cfg.heading_pid_en = pid_enabled;
         // 将配置文件中的视觉纠偏参数传入（无论是否使能，均写入供 start_cleaning 时生效）
@@ -406,7 +407,6 @@ struct FullSystemFixture : DeviceFixture, IGracefulShutdown {
         runtime_cfg_.clean_speed_rpm = motion_cfg.clean_speed_rpm;
         runtime_cfg_.return_speed_rpm = motion_cfg.return_speed_rpm;
         runtime_cfg_.brush_rpm = motion_cfg.brush_rpm;
-        runtime_cfg_.return_brush_rpm = motion_cfg.return_brush_rpm;
         runtime_cfg_.parking_side = p.parking_side;
         motion->set_parking_side_query([this]() { return runtime_cfg_.parking_side; });
         motion->set_runtime_config_query([this]() { return runtime_cfg_; });
@@ -415,16 +415,16 @@ struct FullSystemFixture : DeviceFixture, IGracefulShutdown {
         // WatchdogMgr：路径为空 = 不操作 /dev/watchdog
         watchdog = std::make_unique<app::WatchdogMgr>("");
 
-        fsm = std::make_shared<app::RobotFsm>(motion, nav, fault, event_bus);
+        fsm = std::make_shared<app::RobotFsm>(motion, fault, event_bus);
 
         // SafetyMonitor LimitSettledEvent → RobotFsm
         event_bus.subscribe<middleware::SafetyMonitor::LimitSettledEvent>(
             [this](const middleware::SafetyMonitor::LimitSettledEvent& evt) {
                 const bool parking_side_hit =
                     (runtime_cfg_.parking_side == service::ParkingSide::Left &&
-                     evt.side == device::LimitSide::LEFT) ||
+                     evt.side == robot::domain::PhysicalLimitSide::Left) ||
                     (runtime_cfg_.parking_side == service::ParkingSide::Right &&
-                     evt.side == device::LimitSide::RIGHT);
+                     evt.side == robot::domain::PhysicalLimitSide::Right);
                 if (parking_side_hit) {
                     fsm->dispatch(app::EvParkingSideLimitSettled{});
                 } else {
@@ -434,7 +434,7 @@ struct FullSystemFixture : DeviceFixture, IGracefulShutdown {
 
         // FaultHandler: P0→emergency_stop+EvFaultP0，P1→stop+EvFaultP1；同时记录 dispatched_faults
         fault_handler = std::make_shared<app::FaultHandler>(
-            motion, event_bus, [this](service::FaultService::FaultEvent e) {
+            motion, fault, event_bus, [this](service::FaultService::FaultEvent e) {
                 dispatched_faults.push_back(e);
                 using Level = service::FaultService::FaultEvent::Level;
                 if (e.level == Level::P0)
@@ -527,6 +527,27 @@ struct FullSystemFixture : DeviceFixture, IGracefulShutdown {
         }
         spdlog::warn(
             "[FullSystemFixture] wait_state 超时: 期望={} 实际={}", expected, fsm->current_state());
+        return false;
+    }
+
+    bool wait_segment_direction(robot::app::SegmentDirection expected,
+                                std::chrono::milliseconds timeout =
+                                    std::chrono::milliseconds(5000)) {
+        auto deadline = std::chrono::steady_clock::now() + timeout;
+        while (std::chrono::steady_clock::now() < deadline) {
+            if (HwExitGuard::instance().exit_requested()) {
+                shutdown();
+                return false;
+            }
+            const auto direction = fsm->current_segment_direction();
+            if (direction.has_value() && *direction == expected) {
+                return true;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        spdlog::warn("[FullSystemFixture] wait_segment_direction 超时: 期望方向={}",
+                     expected == robot::app::SegmentDirection::ToFarEnd ? "ToFarEnd"
+                                                                        : "ToParkingSide");
         return false;
     }
 
@@ -700,10 +721,10 @@ struct ThingsBoardRuntimeFixture : FullSystemFixture {
         return left_sw && !left_sw->read_current_level();
     }
 
-    robot::app::ParkingSideFacts parking_facts() const {
+    robot::domain::ParkingSideFacts parking_facts() const {
         const bool left_sensor_active = left_limit_active();
         const bool right_sensor_active = right_limit_active();
-        return robot::app::ParkingSideRuntime::from_physical_limits(
+        return robot::domain::ParkingSideRuntime::from_physical_limits(
             tb_cfg_file ? tb_cfg_file->active_runtime_config().parking_side
                         : robot::service::ParkingSide::Left,
             left_sensor_active,
@@ -762,14 +783,19 @@ struct ThingsBoardRuntimeFixture : FullSystemFixture {
             motion->set_runtime_config_query([this]() { return tb_cfg_file->active_runtime_config(); });
         }
         supervisor =
-            std::make_shared<robot::app::RobotSupervisor>(fsm, *tb_cfg_file, command_tracker, fault, nav);
+            std::make_shared<robot::app::RobotSupervisor>(fsm, *tb_cfg_file, fault, nav);
         tb_control = std::make_shared<robot::service::ThingsBoardControlPlane>(
-            *tb_cfg_file, &scheduler, cloud, command_tracker, supervisor);
+            *tb_cfg_file,
+            &scheduler,
+            cloud,
+            command_tracker,
+            robot::app::RobotSupervisor::make_control_port(supervisor));
 
         tb_control->subscribe_shared_attributes();
         tb_control->register_rpc_handlers(
             [this] { return parking_facts().is_valid_start_position(); },
             [this] { return is_at_parking_side(); },
+            [this] { return parking_facts().at_far_end; },
             [this] { return is_at_parking_side(); },
             [this] { return 80.0f; },
             []() {});

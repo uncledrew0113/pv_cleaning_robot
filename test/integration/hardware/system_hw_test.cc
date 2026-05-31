@@ -271,7 +271,7 @@ void run_combined_system_test(hw::FullSystemFixture& f,
                     "[{}] #{}: LT={:.1f}/{:.1f} RT={:.1f}/{:.1f} LB={:.1f}/{:.1f} "
                     "RB={:.1f}/{:.1f} brush_rpm={} brush_fault={} yaw={:.2f}° state={} "
                     "pid(mode={} connected={} valid={} yaw_deg={:.4f} conf={:.3f} "
-                    "filtered_yaw_deg={:.4f} correction={:.3f} age_ms={}) fused_odom(valid={} "
+                    "control_error_deg={:.4f} correction={:.3f} age_ms={}) fused_odom(valid={} "
                     "top={:.3f} bottom={:.3f} fused={:.3f} diff={:.3f} top_v={:.3f} "
                     "bottom_v={:.3f} fused_v={:.3f})",
                     tag,
@@ -335,7 +335,7 @@ void run_combined_system_test(hw::FullSystemFixture& f,
                     "[{}] #{}: LT={:.1f}/{:.1f} RT={:.1f}/{:.1f} LB={:.1f}/{:.1f} "
                     "RB={:.1f}/{:.1f} brush_rpm={} brush_fault={} yaw={:.2f}° state={} "
                     "pid(mode={} connected={} valid={} yaw_deg={:.4f} conf={:.3f} "
-                    "filtered_yaw_deg={:.4f} correction={:.3f} age_ms={})",
+                    "control_error_deg={:.4f} correction={:.3f} age_ms={})",
                     tag,
                     total_health_records,
                     gd.wheel[0].speed_rpm,
@@ -392,14 +392,17 @@ void run_combined_system_test(hw::FullSystemFixture& f,
     };
 
     f.fsm->dispatch(start_evt);
-    REQUIRE((f.fsm->current_state() == "CleanFwd" || f.fsm->current_state() == "Returning"));
+    REQUIRE(f.fsm->current_state() == "ExecutingSegment");
+    REQUIRE(f.fsm->current_segment_direction().has_value());
 
     std::string state = f.fsm->current_state();
     int seg_idx = 0;
 
     while (state != "Charging") {
         ++seg_idx;
-        const bool going_fwd = (state == "CleanFwd");
+        const auto direction = f.fsm->current_segment_direction();
+        REQUIRE(direction.has_value());
+        const bool going_fwd = (*direction == robot::app::SegmentDirection::ToFarEnd);
         spdlog::warn("[{}] 段 {}: {} → 等待{}限位（最多 {}s）...",
                      tag,
                      seg_idx,
@@ -528,7 +531,7 @@ TEST_CASE("System（真实硬件）ThingsBoard RPC start/stop/return 驱动运�
 
     spdlog::warn("[hw_system][tb_rpc_runtime] ThingsBoard 平台准备：");
     spdlog::warn("[hw_system][tb_rpc_runtime] 1. 确认设备在线");
-    spdlog::warn("[hw_system][tb_rpc_runtime] 2. 打开最新 telemetry，关注 device_state/task_state");
+    spdlog::warn("[hw_system][tb_rpc_runtime] 2. 打开最新 telemetry，关注 state/fault");
     spdlog::warn("[hw_system][tb_rpc_runtime] 3. 准备依次发送 RPC: start -> stop -> return");
     spdlog::warn(
         "[hw_system][tb_rpc_runtime] 4. return 之后，请人工触发【停机位一侧限位】让状态进入 "
@@ -543,36 +546,32 @@ TEST_CASE("System（真实硬件）ThingsBoard RPC start/stop/return 驱动运�
 
     spdlog::warn(
         "[hw_system][tb_rpc_runtime] ACTION REQUIRED: 在 ThingsBoard 平台发送 RPC `start`");
-    REQUIRE(f.wait_state_with_thingsboard({"CleanFwd", "CleanReturn"}, std::chrono::seconds(120)));
+    REQUIRE(f.wait_state_with_thingsboard({"ExecutingSegment"}, std::chrono::seconds(120)));
     {
         const auto snap = f.supervisor->snapshot();
-        CHECK((snap.device_state == "CleanFwd" || snap.device_state == "CleanReturn"));
-        CHECK(snap.task_state == "RunningTask");
+        CHECK(snap.state == "ExecutingSegment");
     }
 
     spdlog::warn("[hw_system][tb_rpc_runtime] ACTION REQUIRED: 在 ThingsBoard 平台发送 RPC `stop`");
-    REQUIRE(f.wait_state_with_thingsboard({"Stopped"}, std::chrono::seconds(120)));
+    REQUIRE(f.wait_state_with_thingsboard({"Idle"}, std::chrono::seconds(120)));
     {
         const auto snap = f.supervisor->snapshot();
-        CHECK(snap.device_state == "Stopped");
-        CHECK(snap.task_state == "StoppedTask");
+        CHECK(snap.state == "Idle");
     }
 
     spdlog::warn(
         "[hw_system][tb_rpc_runtime] ACTION REQUIRED: 在 ThingsBoard 平台发送 RPC `return`");
-    REQUIRE(f.wait_state_with_thingsboard({"Returning"}, std::chrono::seconds(120)));
+    REQUIRE(f.wait_state_with_thingsboard({"ExecutingSegment"}, std::chrono::seconds(120)));
     {
         const auto snap = f.supervisor->snapshot();
-        CHECK(snap.device_state == "Returning");
-        CHECK(snap.task_state == "ReturningTask");
+        CHECK(snap.state == "ExecutingSegment");
     }
 
     spdlog::warn("[hw_system][tb_rpc_runtime] ACTION REQUIRED: 人工触发【停机位一侧限位】");
     REQUIRE(f.wait_state_with_thingsboard({"Charging"}, std::chrono::seconds(180)));
     {
         const auto snap = f.supervisor->snapshot();
-        CHECK(snap.device_state == "Charging");
-        CHECK(snap.task_state == "ChargingTask");
+        CHECK(snap.state == "Charging");
     }
 }
 
@@ -1086,9 +1085,9 @@ TEST_CASE("System（真实硬件）WatchdogMgr 漏心跳后超时回调触发", 
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// [hw_system][p0_fault_chain] — P0 故障链（真实电机停止 + FSM Fault → Idle）
+// [hw_system][p0_fault_chain] — P0 故障链（真实电机停止 + FSM FaultStopped → Idle）
 // ────────────────────────────────────────────────────────────────────────────
-TEST_CASE("System（真实硬件）P0 故障链：电机急停 + FSM Fault → 复位 → Idle",
+TEST_CASE("System（真实硬件）P0 故障链：电机急停 + FSM FaultStopped → 复位 → Idle",
           "[hw_system][p0_fault_chain]") {
     hw::FullSystemFixture f;
     spdlog::warn("[hw_system][p0_fault_chain] ⚠ 此测试将短暂启动行走电机（{:.0f}rpm），确保安全！",
@@ -1096,9 +1095,11 @@ TEST_CASE("System（真实硬件）P0 故障链：电机急停 + FSM Fault → �
     REQUIRE(f.init());
     REQUIRE(f.fsm->current_state() == "Idle");
 
-    // 启动任务 → CleanFwd，电机开始运动
+    // 启动任务 → ExecutingSegment，电机开始运动
     f.fsm->dispatch(start_from_configured_parking_side(f, 1.0f));
-    REQUIRE(f.fsm->current_state() == "CleanFwd");
+    REQUIRE(f.fsm->current_state() == "ExecutingSegment");
+    REQUIRE(f.fsm->current_segment_direction().has_value());
+    CHECK(*f.fsm->current_segment_direction() == robot::app::SegmentDirection::ToFarEnd);
 
     // 等待 300ms 让电机加速
     std::this_thread::sleep_for(300ms);
@@ -1109,11 +1110,11 @@ TEST_CASE("System（真实硬件）P0 故障链：电机急停 + FSM Fault → �
                      gd.wheel[1].speed_rpm);
     }
 
-    // 注入 P0 故障 → FaultHandler: emergency_stop + dispatch EvFaultP0 → Fault
+    // 注入 P0 故障 → FaultHandler: emergency_stop + dispatch EvFaultP0 → FaultStopped
     f.fault->report(
         robot::service::FaultService::FaultEvent::Level::P0, 0x1001, "CAN_comm_lost [hw_test]");
 
-    REQUIRE(f.fsm->current_state() == "Fault");
+    REQUIRE(f.fsm->current_state() == "FaultStopped");
     REQUIRE(!f.dispatched_faults.empty());
     CHECK(f.dispatched_faults[0].level == robot::service::FaultService::FaultEvent::Level::P0);
     CHECK(f.dispatched_faults[0].code == 0x1001u);
@@ -1133,9 +1134,9 @@ TEST_CASE("System（真实硬件）P0 故障链：电机急停 + FSM Fault → �
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// [hw_system][p1_fault_chain] — P1 故障链 → Returning → Charging
+// [hw_system][p1_fault_chain] — P1 故障链 → ExecutingSegment(返航段) → Charging
 // ────────────────────────────────────────────────────────────────────────────
-TEST_CASE("System（真实硬件）P1 故障链：FSM Returning → EvParkingSideLimitSettled → Charging",
+TEST_CASE("System（真实硬件）P1 故障链：FSM ExecutingSegment(返航段) → EvParkingSideLimitSettled → Charging",
           "[hw_system][p1_fault_chain]") {
     spdlog::warn("[hw_system][p1_fault_chain] ⚠ 此测试将短暂启动电机，确保安全！");
 
@@ -1143,7 +1144,9 @@ TEST_CASE("System（真实硬件）P1 故障链：FSM Returning → EvParkingSid
     REQUIRE(f.init());
 
     f.fsm->dispatch(start_from_configured_parking_side(f, 2.0f));
-    REQUIRE(f.fsm->current_state() == "CleanFwd");
+    REQUIRE(f.fsm->current_state() == "ExecutingSegment");
+    REQUIRE(f.fsm->current_segment_direction().has_value());
+    CHECK(*f.fsm->current_segment_direction() == robot::app::SegmentDirection::ToFarEnd);
 
     // 等待 200ms 让电机建立速度
     std::this_thread::sleep_for(200ms);
@@ -1154,11 +1157,13 @@ TEST_CASE("System（真实硬件）P1 故障链：FSM Returning → EvParkingSid
                      gd.wheel[1].speed_rpm);
     }
 
-    // 注入 P1 → FaultHandler: stop_cleaning + start_returning + dispatch EvFaultP1
+    // 注入 P1 → FaultHandler: 停刷并切换到返航段，由 FSM 继续执行返航
     f.fault->report(
         robot::service::FaultService::FaultEvent::Level::P1, 0x2001, "slope_too_steep [hw_test]");
 
-    REQUIRE(f.fsm->current_state() == "Returning");
+    REQUIRE(f.fsm->current_state() == "ExecutingSegment");
+    REQUIRE(f.fsm->current_segment_direction().has_value());
+    CHECK(*f.fsm->current_segment_direction() == robot::app::SegmentDirection::ToParkingSide);
     REQUIRE(!f.dispatched_faults.empty());
     CHECK(f.dispatched_faults[0].level == robot::service::FaultService::FaultEvent::Level::P1);
 
@@ -1166,7 +1171,7 @@ TEST_CASE("System（真实硬件）P1 故障链：FSM Returning → EvParkingSid
     f.fsm->dispatch(robot::app::EvParkingSideLimitSettled{});
     REQUIRE(f.fsm->current_state() == "Charging");
 
-    spdlog::info("[hw_system][p1_fault_chain] PASS: CleanFwd→Returning→Charging");
+    spdlog::info("[hw_system][p1_fault_chain] PASS: ExecutingSegment(ToFarEnd)→ExecutingSegment(ToParkingSide)→Charging");
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -1187,17 +1192,19 @@ TEST_CASE("System（真实硬件）N=1 完整任务链（真实限位触发）",
 
     const uint32_t frames_before = f.walk_group->get_group_diagnostics().ctrl_frame_count;
 
-    // 启动 N=1 任务 → CleanFwd，电机开始正向运动
+    // 启动 N=1 任务 → ExecutingSegment(ToFarEnd)，电机开始正向运动
     f.fsm->dispatch(start_from_configured_parking_side(f, 5.0f));
-    REQUIRE(f.fsm->current_state() == "CleanFwd");
+    REQUIRE(f.fsm->current_state() == "ExecutingSegment");
+    REQUIRE(f.fsm->current_segment_direction().has_value());
+    CHECK(*f.fsm->current_segment_direction() == robot::app::SegmentDirection::ToFarEnd);
 
     spdlog::warn("[hw_system][n1_clean_cycle] ★ 机器人正在向前运动，等待【{}】触发（最多 {}s）...",
                  front_limit_name(f.p.parking_side),
                  f.p.limit_timeout_sec);
 
-    // 等待 SafetyMonitor → EventBus → FSM CleanReturn（真实限位触发）
-    const bool left_hit =
-        f.wait_state("CleanReturn", std::chrono::milliseconds(f.p.limit_timeout_sec * 1000));
+    // 等待 SafetyMonitor → EventBus → FSM 切换到返程段（真实限位触发）
+    const bool left_hit = f.wait_segment_direction(robot::app::SegmentDirection::ToParkingSide,
+                                                   std::chrono::milliseconds(f.p.limit_timeout_sec * 1000));
 
     {
         if (!left_hit && hw::HwExitGuard::instance().exit_requested()) {

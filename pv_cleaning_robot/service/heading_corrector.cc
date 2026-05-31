@@ -20,6 +20,48 @@ constexpr float kWheelRpmLimit = 210.0f;
 constexpr std::chrono::milliseconds kIoSleepDisabled(50);
 constexpr std::chrono::milliseconds kIoPollInterval(20);
 
+float normalize_yaw_to_control_error(robot::service::ParkingSide parking_side,
+                                     robot::service::HeadingCorrector::MotionPhase motion_phase,
+                                     float raw_yaw_deg) {
+    // 原始 yaw 的正负先表示视觉识别给出的纠偏方向真相。
+    //
+    // 当前项目确认的业务规则：
+    // - 停车位在右侧：
+    //   - ToFarEnd:     yaw>0 => 上轮减速 / 下轮加速
+    //   - ToParkingSide:yaw>0 => 上轮加速 / 下轮减速
+    //
+    // MotionService 的基速已把去程/回程方向编码进 base_command：
+    //   ToFarEnd     : top=+spd, bottom=-spd
+    //   ToParkingSide: top=-spd, bottom=+spd
+    //
+    // apply_correction() 统一做 base + correction，因此：
+    // - correction<0 时：
+    //   ToFarEnd      => 上轮减速 / 下轮加速
+    //   ToParkingSide => 上轮加速 / 下轮减速
+    //
+    // 所以在“停车位在右侧”场景里，两个 motion_phase 都满足：
+    //   control_error = -raw_yaw_deg
+    //
+    // 左侧停车位按整机镜像处理，符号整体反向。
+    switch (parking_side) {
+    case robot::service::ParkingSide::Right:
+        switch (motion_phase) {
+        case robot::service::HeadingCorrector::MotionPhase::ToFarEnd:
+        case robot::service::HeadingCorrector::MotionPhase::ToParkingSide:
+            return -raw_yaw_deg;
+        }
+        break;
+    case robot::service::ParkingSide::Left:
+        switch (motion_phase) {
+        case robot::service::HeadingCorrector::MotionPhase::ToFarEnd:
+        case robot::service::HeadingCorrector::MotionPhase::ToParkingSide:
+            return raw_yaw_deg;
+        }
+        break;
+    }
+    return raw_yaw_deg;
+}
+
 }  // namespace
 
 HeadingCorrector::HeadingCorrector() {
@@ -92,14 +134,10 @@ HeadingCorrector::Output HeadingCorrector::compute(const Input& input) {
         return output;
     }
 
-    // apply_correction() 将同一个有符号修正量加到四个轮子的“带符号基速”上。
-    // MotionService 已经把前进/返回方向编码进 base_command，因此 correction 的符号
-    // 只取决于停车位左右：
-    // - right: yaw_deg>0 => 上轮减速/下轮加速 => correction<0
-    // - left : yaw_deg>0 => 镜像相反                => correction>0
-    const float parking_side_sign =
-        (input.parking_side == ParkingSide::Right) ? -1.0f : 1.0f;
-    float error = latest_result_.yaw_deg * params_.output_sign * parking_side_sign;
+    // 注意：filtered_yaw_deg / correction 表示“控制误差”的符号，不是原始视觉 yaw 的符号。
+    float error = normalize_yaw_to_control_error(
+        input.parking_side, input.motion_phase, latest_result_.yaw_deg);
+    error *= params_.output_sign;
 
     if (!filter_initialized_) {
         filtered_yaw_deg_ = error;
@@ -330,12 +368,8 @@ void HeadingCorrector::ingest_json_line_locked(const std::string& line) {
     result.valid = valid_it->value.GetBool();
 
     const auto yaw_it = doc.FindMember("yaw_deg");
-    const auto slope_it = doc.FindMember("slope");
     if (yaw_it != doc.MemberEnd() && yaw_it->value.IsNumber()) {
         result.yaw_deg = yaw_it->value.GetFloat();
-    } else if (slope_it != doc.MemberEnd() && slope_it->value.IsNumber()) {
-        // 兼容旧版视觉输出；建议新部署统一改为 yaw_deg。
-        result.yaw_deg = slope_it->value.GetFloat();
     } else {
         return;
     }

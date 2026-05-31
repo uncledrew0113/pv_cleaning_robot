@@ -12,7 +12,7 @@
 #include <string>
 #include <thread>
 
-#include "pv_cleaning_robot/app/robot_runtime_snapshot.h"
+#include "pv_cleaning_robot/domain/robot_domain.h"
 #include "pv_cleaning_robot/middleware/data_cache.h"
 #include "pv_cleaning_robot/middleware/mqtt_transport.h"
 #include "pv_cleaning_robot/middleware/network_manager.h"
@@ -251,10 +251,8 @@ struct RealThingsBoardFixture {
              "clean_speed_rpm",
              "return_speed_rpm",
              "brush_rpm",
-             "return_brush_rpm",
              "parking_side",
-             "start_battery_soc",
-             "charge_start_soc",
+             "min_battery_soc",
              "charge_stop_soc",
              "schedules"});
     }
@@ -403,7 +401,7 @@ struct CloudRpcSmokeFixture {
             last_params = params;
             rpc_count.fetch_add(1, std::memory_order_relaxed);
             spdlog::info("[TB cloud rpc smoke] CloudService RPC handler invoked: params={}", params);
-            return std::string(R"({"accepted":true,"result":"ok"})");
+            return std::string(R"({"code":"ok"})");
         });
     }
 
@@ -564,7 +562,9 @@ TEST_CASE("Real ThingsBoard stays stable when shared attributes callback publish
         std::array<char, 1024> payload{};
         const auto reason = result.reason.empty() ? "ok" : result.reason.c_str();
         const size_t len = robot::service::ThingsBoardJsonCodec::build_status_event(
-            {"shared_attr_update", result.accepted, reason}, payload.data(), payload.size());
+            {"shared_attr_update", result.accepted ? "ok" : reason},
+            payload.data(),
+            payload.size());
         if (len == 0u) {
             spdlog::error("[TB callback-publish stability test] failed to build status event");
             return;
@@ -600,11 +600,10 @@ TEST_CASE("Real ThingsBoard stays stable when shared attributes callback publish
     std::atomic<uint32_t> publisher_ticks{0};
     std::thread concurrent_publisher([&]() {
         while (!stop_publishers.load(std::memory_order_relaxed)) {
-            robot::app::RobotRuntimeSnapshot snap;
-            snap.device_state = "Idle";
-            snap.task_state = "IdleTask";
+            robot::domain::RobotRuntimeSnapshot snap;
+            snap.state = "Idle";
             snap.active_config = f.cfg.active_runtime_config();
-            snap.active_config_version = publisher_ticks.fetch_add(1, std::memory_order_relaxed) + 1;
+            snap.cfg_ver = publisher_ticks.fetch_add(1, std::memory_order_relaxed) + 1;
 
             std::array<char, 4096> telemetry_buf{};
             const auto telemetry_len = robot::service::ThingsBoardJsonCodec::build_business_telemetry(
@@ -615,7 +614,7 @@ TEST_CASE("Real ThingsBoard stays stable when shared attributes callback publish
 
             std::array<char, 1024> event_buf{};
             const auto event_len = robot::service::ThingsBoardJsonCodec::build_status_event(
-                {"startup_position_invalid", false, "robot_not_at_any_endpoint"},
+                {"startup_position_invalid", "robot_not_at_any_endpoint"},
                 event_buf.data(),
                 event_buf.size());
             if (event_len > 0u) {
@@ -637,10 +636,8 @@ TEST_CASE("Real ThingsBoard stays stable when shared attributes callback publish
         "clean_speed_rpm",
         "return_speed_rpm",
         "brush_rpm",
-        "return_brush_rpm",
         "parking_side",
-        "start_battery_soc",
-        "charge_start_soc",
+        "min_battery_soc",
         "charge_stop_soc",
         "schedules",
     };
@@ -741,11 +738,10 @@ TEST_CASE("Real ThingsBoard publish startup attributes and telemetry",
     REQUIRE(attr_len > 0u);
     REQUIRE(f.cloud->publish_attributes(std::string(attr_buf.data(), attr_len)));
 
-    robot::app::RobotRuntimeSnapshot snap;
-    snap.device_state = "Idle";
-    snap.task_state = "IdleTask";
+    robot::domain::RobotRuntimeSnapshot snap;
+    snap.state = "Idle";
     snap.active_config = f.cfg.active_runtime_config();
-    snap.active_config_version = 1;
+    snap.cfg_ver = 1;
 
     std::array<char, 4096> telemetry_buf{};
     const auto telemetry_len = robot::service::ThingsBoardJsonCodec::build_business_telemetry(

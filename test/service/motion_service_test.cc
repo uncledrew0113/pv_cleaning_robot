@@ -139,7 +139,6 @@ TEST_CASE("MotionService start_cleaning normalizes signed runtime brush rpm to a
         cfg.clean_speed_rpm = 300.0;
         cfg.return_speed_rpm = 300.0;
         cfg.brush_rpm = -1200;
-        cfg.return_brush_rpm = 1200;
         cfg.parking_side = robot::service::ParkingSide::Right;
         return cfg;
     });
@@ -195,7 +194,6 @@ TEST_CASE("MotionService start_cleaning syncs runtime config before sending comm
         cfg.clean_speed_rpm = 360.0;
         cfg.return_speed_rpm = 420.0;
         cfg.brush_rpm = 1500;
-        cfg.return_brush_rpm = 900;
         cfg.parking_side = robot::service::ParkingSide::Right;
         return cfg;
     });
@@ -211,7 +209,7 @@ TEST_CASE("MotionService start_cleaning syncs runtime config before sending comm
     REQUIRE(f.serial->take_tx_text().find("v 0 -25.000 0\n") != std::string::npos);
 }
 
-TEST_CASE("MotionService start_returning syncs runtime return brush rpm before sending commands",
+TEST_CASE("MotionService start_returning syncs runtime brush rpm before sending commands",
           "[service][motion]") {
     MotionFixture f;
     f.motion.set_runtime_config_query([] {
@@ -219,7 +217,6 @@ TEST_CASE("MotionService start_returning syncs runtime return brush rpm before s
         cfg.clean_speed_rpm = 300.0;
         cfg.return_speed_rpm = 420.0;
         cfg.brush_rpm = 1500;
-        cfg.return_brush_rpm = 900;
         cfg.parking_side = robot::service::ParkingSide::Right;
         return cfg;
     });
@@ -232,7 +229,7 @@ TEST_CASE("MotionService start_returning syncs runtime return brush rpm before s
     REQUIRE(diag.wheel[1].target_value == Approx(-210.0f));
     REQUIRE(diag.wheel[2].target_value == Approx(210.0f));
     REQUIRE(diag.wheel[3].target_value == Approx(210.0f));
-    REQUIRE(f.serial->take_tx_text().find("v 0 15.000 0\n") != std::string::npos);
+    REQUIRE(f.serial->take_tx_text().find("v 0 25.000 0\n") != std::string::npos);
 }
 
 TEST_CASE("MotionService runtime speed config uses absolute values for wheel direction model",
@@ -244,7 +241,6 @@ TEST_CASE("MotionService runtime speed config uses absolute values for wheel dir
         cfg.clean_speed_rpm = -360.0;
         cfg.return_speed_rpm = -420.0;
         cfg.brush_rpm = -1500;
-        cfg.return_brush_rpm = -900;
         cfg.parking_side = robot::service::ParkingSide::Left;
         return cfg;
     });
@@ -267,7 +263,7 @@ TEST_CASE("MotionService runtime speed config uses absolute values for wheel dir
     REQUIRE(diag.wheel[1].target_value == Approx(210.0f));
     REQUIRE(diag.wheel[2].target_value == Approx(-210.0f));
     REQUIRE(diag.wheel[3].target_value == Approx(-210.0f));
-    REQUIRE(f.serial->take_tx_text().find("v 0 -15.000 0\n") != std::string::npos);
+    REQUIRE(f.serial->take_tx_text().find("v 0 -25.000 0\n") != std::string::npos);
 }
 
 TEST_CASE("MotionService start_returning_no_brush stops brush before reversing walk motors",

@@ -11,23 +11,18 @@
 
 #include <rapidjson/document.h>
 
+#include "pv_cleaning_robot/domain/robot_domain.h"
 #include "pv_cleaning_robot/service/cloud_service.h"
 #include "pv_cleaning_robot/service/command_tracker.h"
 #include "pv_cleaning_robot/service/config_service.h"
 #include "pv_cleaning_robot/service/scheduler_service.h"
-
-namespace robot::app {
-struct RobotRuntimeSnapshot;
-class RobotSupervisor;
-}
 
 namespace robot::service {
 
 /// ThingsBoard 上行 payload 只有 4 个家族：
 /// 1. startup attributes: 设备静态身份 + 支持的 RPC 能力
 /// 2. status event: 单次结果，例如 shared-attribute 接受/拒绝
-/// 3. command event: CommandTracker 维护的命令生命周期快照
-/// 4. business telemetry: Supervisor 持有的周期性运行真相
+/// 3. business telemetry: Supervisor 持有的周期性运行真相
 class ThingsBoardJsonCodec {
 public:
     struct StartupAttributesView {
@@ -39,21 +34,14 @@ public:
 
     struct StatusEventView {
         const char* event_name{""};
-        bool accepted{false};
-        const char* reason{""};
-    };
-
-    struct CommandEventView {
-        const char* event_name{""};
-        const CommandSnapshot* command{nullptr};
+        const char* code{""};
     };
 
     static size_t build_startup_attributes(const StartupAttributesView& view,
                                            char* out,
                                            size_t cap) noexcept;
     static size_t build_status_event(const StatusEventView& view, char* out, size_t cap) noexcept;
-    static size_t build_command_event(const CommandEventView& view, char* out, size_t cap) noexcept;
-    static size_t build_business_telemetry(const app::RobotRuntimeSnapshot& view,
+    static size_t build_business_telemetry(const domain::RobotRuntimeSnapshot& view,
                                            char* out,
                                            size_t cap) noexcept;
 };
@@ -66,21 +54,21 @@ public:
 ///   - 注册 RPC handlers
 /// - egress:
 ///   - 发布 startup attributes
-///   - 发布 status / command event
+///   - 发布 status event
 ///   - 发布 business telemetry
 ///
 /// 它不自己维护业务真相：
 /// - shared attributes 的 active/pending 语义，交给 ConfigService
-/// - RPC 是否允许，交给 RobotSupervisor
+/// - RPC 是否允许，交给 RobotControlPort 背后的 app 层
 /// - RPC reply 的真相，来自本地 Supervisor/CommandTracker 的裁决，不来自云端
-/// - telemetry 真相，来自 RobotSupervisor::snapshot()
+/// - telemetry 真相，来自 RobotControlPort::snapshot()
 class ThingsBoardControlPlane {
 public:
     ThingsBoardControlPlane(ConfigService& config,
                             SchedulerService* scheduler,
                             std::shared_ptr<CloudService> cloud,
                             std::shared_ptr<CommandTracker> command_tracker,
-                            std::shared_ptr<app::RobotSupervisor> supervisor);
+                            domain::RobotControlPort robot);
 
     /// 注册 shared attributes 下行入口。
     void subscribe_shared_attributes();
@@ -89,20 +77,20 @@ public:
     /// 注册当前 release 支持的 RPC: start / stop / return / reset
     void register_rpc_handlers(const std::function<bool()>& is_start_position_valid,
                                const std::function<bool()>& is_at_start_parking_side,
+                               const std::function<bool()>& is_at_start_far_end,
                                const std::function<bool()>& is_at_active_parking_side,
                                const std::function<float()>& current_battery_soc,
                                std::function<void()> reboot_device);
     void publish_backup_fallback_event() const;
     void publish_startup_attributes() const;
-    void publish_status_event(const char* event_name, bool accepted, const char* reason) const;
-    void publish_command_event(const char* event_name, const CommandSnapshot& snapshot) const;
+    void publish_status_event(const char* event_name, const char* code) const;
     void publish_business_telemetry() const;
 
 private:
     static constexpr size_t kBusinessPayloadBufferBytes = 4096;
     static constexpr size_t kEventPayloadBufferBytes = 1024;
 
-    static std::string rpc_reply(bool accepted, const std::string& reason = {});
+    static std::string rpc_reply(const std::string& code);
     bool publish_attributes_payload(size_t len, const char* error_message) const;
     bool publish_event_payload(size_t len, const char* error_message) const;
     bool publish_business_payload(size_t len, const char* error_message) const;
@@ -117,7 +105,7 @@ private:
     SchedulerService* scheduler_{nullptr};
     std::shared_ptr<CloudService> cloud_;
     std::shared_ptr<CommandTracker> command_tracker_;
-    std::shared_ptr<app::RobotSupervisor> supervisor_;
+    domain::RobotControlPort robot_;
     mutable std::mutex publish_mtx_;
     mutable std::array<char, kBusinessPayloadBufferBytes> business_payload_buf_{};
     mutable std::string business_payload_cache_;

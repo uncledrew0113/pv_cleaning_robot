@@ -3,42 +3,59 @@
 #include <functional>
 #include <string>
 
+#include "pv_cleaning_robot/domain/robot_domain.h"
 #include "pv_cleaning_robot/hal/pi_mutex.h"
 #include "pv_cleaning_robot/middleware/event_bus.h"
 
 
 namespace robot::service {
 
+struct FaultEvent {
+    enum class Level {
+        P0,  ///< 严重故障：立即急停，FSM → FaultStopped，等待人工复位
+        P1,  ///< 一般故障：停滚刷并切换到返航段，FSM 继续执行返航
+        P2,  ///< 告警：仅上报（EventBus），不转换 FSM 状态
+        P3   ///< 提示：仅记录日志，不影响运行
+    };
+    Level level{Level::P3};
+    uint32_t code{0};
+    std::string description;
+    uint64_t timestamp_ms{0};
+};
+
+namespace FaultCode = robot::domain::FaultCode;
+
+class FaultReporter {
+   public:
+    virtual ~FaultReporter() = default;
+    virtual void report(FaultEvent::Level level, uint32_t code, const std::string& description) = 0;
+    virtual void clear_active_fault() = 0;
+    virtual bool has_active_fault(FaultEvent::Level min_level = FaultEvent::Level::P2) const = 0;
+    virtual FaultEvent last_fault() const = 0;
+};
+
 /// @brief 故障服务——四级故障分类与处理策略
 ///
 /// 故障等级：
 ///   P0 — 立即停机（限位触发、通信失联）
 ///   P1 — 安全返回停机位
-///   P2 — 降速继续清扫，告警上报
+///   P2 — 告警上报，不改变当前任务
 ///   P3 — 仅记录日志
-class FaultService {
+class FaultService : public FaultReporter {
    public:
-    struct FaultEvent {
-        enum class Level {
-            P0,  ///< 严重故障：立即急停，FSM → Fault 状态，等待人工复位
-            P1,  ///< 一般故障：停滚刷，安全返回停机位，FSM → Returning
-            P2,  ///< 告警：降速继续，告警上报（EventBus），不转换 FSM 状态
-            P3   ///< 提示：仅记录日志，不影响运行
-        };
-        Level level{Level::P3};
-        uint32_t code{0};
-        std::string description;
-        uint64_t timestamp_ms{0};
-    };
+    using FaultEvent = service::FaultEvent;
 
     explicit FaultService(middleware::EventBus& bus);
 
     /// 报告一个故障（发布到 EventBus，由 RobotFsm 和 FaultHandler 响应）
-    void report(FaultEvent::Level level, uint32_t code, const std::string& description);
+    void report(FaultEvent::Level level, uint32_t code, const std::string& description) override;
 
-    bool has_active_fault(FaultEvent::Level min_level = FaultEvent::Level::P2) const;
+    /// 清除当前活跃故障；保留最后一次故障记录用于排障。
+    void clear_active_fault() override;
 
-    const FaultEvent& last_fault() const;
+    bool has_active_fault(FaultEvent::Level min_level = FaultEvent::Level::P2) const override;
+
+    FaultEvent last_fault() const override;
 
    private:
     middleware::EventBus& bus_;

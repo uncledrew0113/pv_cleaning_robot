@@ -30,19 +30,13 @@ std::string stringify_json_value(const rapidjson::Value& value)
     return {buffer.GetString(), buffer.GetSize()};
 }
 
-std::string build_rpc_response(bool accepted, const char* reason)
+std::string build_rpc_response(const char* code)
 {
     rapidjson::StringBuffer buffer;
     rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
     writer.StartObject();
-    writer.Key("accepted");
-    writer.Bool(accepted);
-    writer.Key("result");
-    writer.String(accepted ? "ok" : "rejected");
-    if (reason && reason[0] != '\0') {
-        writer.Key("reason");
-        writer.String(reason);
-    }
+    writer.Key("code");
+    writer.String(code && code[0] != '\0' ? code : "ok");
     writer.EndObject();
     return {buffer.GetString(), buffer.GetSize()};
 }
@@ -234,7 +228,7 @@ void CloudService::on_rpc_message(const std::string& topic,
             return;
         }
         const auto response_topic = topics_.rpc_response_prefix + request_id;
-        const auto response = build_rpc_response(false, reason);
+        const auto response = build_rpc_response(reason);
         spdlog::warn("[CloudService] rejecting RPC request: request_id='{}' reason='{}'",
                      request_id,
                      reason);

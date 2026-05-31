@@ -3,6 +3,7 @@
 #include <functional>
 #include <memory>
 
+#include "pv_cleaning_robot/domain/robot_domain.h"
 #include "pv_cleaning_robot/device/brush_motor.h"
 #include "pv_cleaning_robot/device/imu_device.h"
 #include "pv_cleaning_robot/device/walk_motor_group.h"
@@ -24,13 +25,12 @@ namespace robot::service {
 ///      update() 每 20ms 根据视觉 UDS 最新结果修正上下轮组目标速度
 ///   4. 冲突保护：override 激活期间 WalkMotorGroup::update() 跳过心跳重发，
 ///      防止控制心跳干扰边缘停车指令
-class MotionService : public middleware::IRunnable {
+class MotionService : public middleware::IRunnable, public domain::MotionPort {
    public:
     struct Config {
         float clean_speed_rpm{30.0f};   ///< 清扫行进速度（绝对值 RPM）
         float return_speed_rpm{30.0f};  ///< 返回速度（绝对值 RPM）
         int brush_rpm{1200};            ///< 滚刷转速绝对值
-        int return_brush_rpm{1200};     ///< 滚刷返程转速绝对值（实际方向由停机位/动作决定）
         float edge_reverse_rpm{30.0f};  ///< 边缘触发后反转速度（RPM，0=原地停）
         bool heading_pid_en{true};      ///< 是否使能视觉纠偏
         HeadingCorrector::Params pid{};  ///< 视觉纠偏参数
@@ -54,22 +54,22 @@ class MotionService : public middleware::IRunnable {
 
     // ── 运动控制 ──────────────────────────────────────────────────────────
     /// 开始清扫前进（使能行走 + 滚刷，启用姿态纠偏）
-    bool start_cleaning();
+    bool start_cleaning() override;
 
     /// 停止清扫（停滚刷，行走归零，禁用姿态纠偏）
-    void stop_cleaning();
+    void stop_cleaning() override;
 
     /// 以返回速度反向行进（滚刷反向运行，保持姿态纠偏）
-    bool start_returning();
+    bool start_returning() override;
 
     /// @brief P1 故障路径：先停滚刷，再以返回速度倒退回停机位。
     ///
     /// 由 RobotFsm::dispatch<EvFaultP1>() 调用；与 start_returning() 的区别是
     /// 滚刷立即停止（不反向运行），适用于需要避免滚刷二次损伤的故障场景。
-    bool start_returning_no_brush();
+    bool start_returning_no_brush() override;
 
     /// 原地急停（失能行走，停滚刷）
-    void emergency_stop();
+    void emergency_stop() override;
 
     void update() override;  ///< 由 ThreadExecutor 20ms 调用（50Hz 姿态纠偏）
     HeadingCorrector::DebugState heading_pid_debug_state() const;
@@ -85,7 +85,7 @@ class MotionService : public middleware::IRunnable {
     HeadingCorrector heading_corrector_{};
     device::WalkMotorGroup::SpeedCmd base_speed_cmd_{};
     bool walk_command_active_{false};
-    HeadingCorrector::MotionPhase motion_phase_{HeadingCorrector::MotionPhase::CleanFwd};
+    HeadingCorrector::MotionPhase motion_phase_{HeadingCorrector::MotionPhase::ToFarEnd};
     uint32_t last_override_clear_generation_{0};
 
     int task_direction_sign() const;

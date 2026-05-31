@@ -49,8 +49,8 @@ const rapidjson::Value* find_path(const rapidjson::Value& root,
 bool is_supported_runtime_patch_field(const std::string& key)
 {
     return key == "passes" || key == "clean_speed_rpm" || key == "return_speed_rpm" ||
-           key == "brush_rpm" || key == "return_brush_rpm" || key == "parking_side" ||
-           key == "start_battery_soc" || key == "charge_start_soc" || key == "charge_stop_soc" ||
+           key == "brush_rpm" || key == "parking_side" || key == "min_battery_soc" ||
+           key == "charge_stop_soc" ||
            key == "schedules";
 }
 
@@ -268,21 +268,13 @@ RuntimeConfig ConfigService::parse_runtime_config(const rapidjson::Value& root)
                 it != robot.MemberEnd() && it->value.IsInt()) {
                 cfg.brush_rpm = it->value.GetInt();
             }
-            if (const auto it = robot.FindMember("return_brush_rpm");
-                it != robot.MemberEnd() && it->value.IsInt()) {
-                cfg.return_brush_rpm = it->value.GetInt();
-            }
             if (const auto it = robot.FindMember("parking_side");
                 it != robot.MemberEnd() && it->value.IsString()) {
                 cfg.parking_side = parse_parking_side_string(it->value.GetString());
             }
-            if (const auto it = robot.FindMember("start_battery_soc");
+            if (const auto it = robot.FindMember("min_battery_soc");
                 it != robot.MemberEnd() && it->value.IsNumber()) {
-                cfg.start_battery_soc = it->value.GetDouble();
-            }
-            if (const auto it = robot.FindMember("charge_start_soc");
-                it != robot.MemberEnd() && it->value.IsNumber()) {
-                cfg.charge_start_soc = it->value.GetDouble();
+                cfg.min_battery_soc = it->value.GetDouble();
             }
             if (const auto it = robot.FindMember("charge_stop_soc");
                 it != robot.MemberEnd() && it->value.IsNumber()) {
@@ -343,17 +335,14 @@ void ConfigService::validate_runtime_config(const RuntimeConfig& cfg)
     const auto valid_soc = [](double value) {
         return std::isfinite(value) && value >= 0.0 && value <= 100.0;
     };
-    if (!valid_soc(cfg.start_battery_soc)) {
-        throw std::runtime_error("start_battery_soc must be within [0,100]");
-    }
-    if (!valid_soc(cfg.charge_start_soc)) {
-        throw std::runtime_error("charge_start_soc must be within [0,100]");
+    if (!valid_soc(cfg.min_battery_soc)) {
+        throw std::runtime_error("min_battery_soc must be within [0,100]");
     }
     if (!valid_soc(cfg.charge_stop_soc)) {
         throw std::runtime_error("charge_stop_soc must be within [0,100]");
     }
-    if (!(cfg.charge_start_soc < cfg.charge_stop_soc)) {
-        throw std::runtime_error("charge_start_soc must be less than charge_stop_soc");
+    if (!(cfg.min_battery_soc < cfg.charge_stop_soc)) {
+        throw std::runtime_error("min_battery_soc must be less than charge_stop_soc");
     }
 }
 
@@ -387,13 +376,11 @@ rapidjson::Document ConfigService::runtime_config_to_pending_root(const RuntimeC
     set_double_member(*robot, "clean_speed_rpm", config.clean_speed_rpm, root.GetAllocator());
     set_double_member(*robot, "return_speed_rpm", config.return_speed_rpm, root.GetAllocator());
     set_int_member(*robot, "brush_rpm", config.brush_rpm, root.GetAllocator());
-    set_int_member(*robot, "return_brush_rpm", config.return_brush_rpm, root.GetAllocator());
     set_string_member(*robot,
                       "parking_side",
                       parking_side_config_string(config.parking_side),
                       root.GetAllocator());
-    set_double_member(*robot, "start_battery_soc", config.start_battery_soc, root.GetAllocator());
-    set_double_member(*robot, "charge_start_soc", config.charge_start_soc, root.GetAllocator());
+    set_double_member(*robot, "min_battery_soc", config.min_battery_soc, root.GetAllocator());
     set_double_member(*robot, "charge_stop_soc", config.charge_stop_soc, root.GetAllocator());
 
     rapidjson::Value windows(rapidjson::kArrayType);
@@ -551,7 +538,6 @@ SharedAttrApplyResult ConfigService::apply_runtime_patch(const rapidjson::Value&
             touches_pending = true;
         };
         apply_positive_int("brush_rpm", "brush_rpm must be > 0");
-        apply_positive_int("return_brush_rpm", "return_brush_rpm must be > 0");
 
         if (const auto it = attrs.FindMember("parking_side"); it != attrs.MemberEnd()) {
             if (!it->value.IsString()) {
@@ -580,8 +566,7 @@ SharedAttrApplyResult ConfigService::apply_runtime_patch(const rapidjson::Value&
             set_double_member(*robot, key, value, pending_root_after.GetAllocator());
             touches_pending = true;
         };
-        apply_soc("start_battery_soc", "start_battery_soc must be within [0,100]");
-        apply_soc("charge_start_soc", "charge_start_soc must be within [0,100]");
+        apply_soc("min_battery_soc", "min_battery_soc must be within [0,100]");
         apply_soc("charge_stop_soc", "charge_stop_soc must be within [0,100]");
 
         if (touches_pending) {
@@ -650,14 +635,10 @@ uint64_t ConfigService::runtime_config_version(const RuntimeConfig& config) cons
     writer.Double(config.return_speed_rpm);
     writer.Key("brush_rpm");
     writer.Int(config.brush_rpm);
-    writer.Key("return_brush_rpm");
-    writer.Int(config.return_brush_rpm);
     writer.Key("parking_side");
     writer.String(parking_side_config_string(config.parking_side));
-    writer.Key("start_battery_soc");
-    writer.Double(config.start_battery_soc);
-    writer.Key("charge_start_soc");
-    writer.Double(config.charge_start_soc);
+    writer.Key("min_battery_soc");
+    writer.Double(config.min_battery_soc);
     writer.Key("charge_stop_soc");
     writer.Double(config.charge_stop_soc);
     writer.Key("schedules");

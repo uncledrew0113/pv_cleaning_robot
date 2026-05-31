@@ -37,7 +37,8 @@ struct Fixture {
     "clean_speed_rpm": 300.0,
     "return_speed_rpm": 280.0,
     "brush_rpm": 1000,
-    "return_brush_rpm": 1000,
+    "min_battery_soc": 30.0,
+    "charge_stop_soc": 95.0,
     "parking_side": "left"
   },
   "scheduler": {
@@ -100,39 +101,19 @@ TEST_CASE("ConfigService runtime patch: battery thresholds stay pending until ne
           "[service][tb_config]") {
     Fixture f;
     const auto before = f.cfg.active_runtime_config();
-    auto attrs =
-        parse_json(R"({"start_battery_soc":40.0,"charge_start_soc":20.0,"charge_stop_soc":90.0})");
+    auto attrs = parse_json(R"({"min_battery_soc":40.0,"charge_stop_soc":90.0})");
 
     const auto result = f.cfg.apply_runtime_patch(attrs);
     REQUIRE(result.accepted);
 
     const auto active = f.cfg.active_runtime_config();
-    CHECK(active.start_battery_soc == Approx(before.start_battery_soc));
-    CHECK(active.charge_start_soc == Approx(before.charge_start_soc));
+    CHECK(active.min_battery_soc == Approx(before.min_battery_soc));
     CHECK(active.charge_stop_soc == Approx(before.charge_stop_soc));
 
     const auto pending = f.cfg.pending_runtime_config();
     REQUIRE(pending.has_value());
-    CHECK(pending->start_battery_soc == Approx(40.0));
-    CHECK(pending->charge_start_soc == Approx(20.0));
+    CHECK(pending->min_battery_soc == Approx(40.0));
     CHECK(pending->charge_stop_soc == Approx(90.0));
-}
-
-TEST_CASE("ConfigService runtime patch: return_brush_rpm stays pending until next task",
-          "[service][tb_config]") {
-    Fixture f;
-    const auto before = f.cfg.active_runtime_config();
-    auto attrs = parse_json(R"({"return_brush_rpm":900})");
-
-    const auto result = f.cfg.apply_runtime_patch(attrs);
-    REQUIRE(result.accepted);
-
-    const auto active = f.cfg.active_runtime_config();
-    CHECK(active.return_brush_rpm == before.return_brush_rpm);
-
-    const auto pending = f.cfg.pending_runtime_config();
-    REQUIRE(pending.has_value());
-    CHECK(pending->return_brush_rpm == 900);
 }
 
 TEST_CASE("ConfigService runtime patch: promote_pending_to_active applies next-task config",

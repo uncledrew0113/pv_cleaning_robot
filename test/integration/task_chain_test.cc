@@ -4,8 +4,8 @@
  *
  * 覆盖场景：
  *   1. 完整 N=1 往返清扫任务链（Scheduler → FSM → Motion → FSM → Charging）
- *   2. P0 故障中断任务链（FSM → Fault → 复位 → Idle）
- *   3. P1 故障触发安全返回链（FSM → Returning → Charging）
+ *   2. P0 故障中断任务链（FSM → FaultStopped → 复位 → Idle）
+ *   3. P1 故障触发安全返回链（FSM → ExecutingSegment(返航段) → Charging）
  *   4. SafetyMonitor 触发 → emergency_override → LimitSettledEvent → FSM 转换
  *   5. FaultHandler + FSM 联动
  *
@@ -108,9 +108,9 @@ struct TaskChainFixture {
             return std::make_shared<MotionService>(group, brush, nullptr, bus, cfg);
         }())
         , nav(std::make_shared<NavService>(group, imu, gps))
-        , safety_mon(group, left_sw, right_sw, bus)
-        , fsm(motion, nav, fault_svc, bus)
-        , fault_handler(motion, bus, [this](FaultEvent e) {
+        , safety_mon([this]() { group->emergency_override(0.0f); }, left_sw, right_sw, bus)
+        , fsm(motion, fault_svc, bus)
+        , fault_handler(motion, fault_svc, bus, [this](FaultEvent e) {
             dispatched_faults.push_back(e);
             // 将故障转发到 FSM（在回调外异步，此处简化为同步调用）
             if (e.level == FaultLevel::P0)
@@ -155,7 +155,6 @@ struct TaskChainFixture {
         supervisor = std::make_shared<RobotSupervisor>(
             std::shared_ptr<RobotFsm>(&fsm, [](RobotFsm*) {}),
             cfg,
-            command_tracker,
             fault_svc,
             nav);
     }
@@ -172,14 +171,14 @@ TEST_CASE("TaskChain: N=1 完整往返任务链", "[integration][task_chain]") {
     TaskChainFixture f;
     REQUIRE(f.fsm.current_state() == "Idle");
 
-    // 调度触发 → CleanFwd
+    // 调度触发 → ExecutingSegment(ToFarEnd)
     f.fsm.dispatch(EvScheduleStart{true, false, 1.0f});
-    REQUIRE(f.fsm.current_state() == "CleanFwd");
+    REQUIRE(f.fsm.current_state() == "ExecutingSegment");
     REQUIRE_FALSE(f.can->sent_frames.empty());  // motion 已发 CAN 帧
 
-    // 对侧限位到达 → CleanReturn
+    // 对侧限位到达 → ExecutingSegment(ToParkingSide)
     f.fsm.dispatch(EvFarEndLimitSettled{});
-    REQUIRE(f.fsm.current_state() == "CleanReturn");
+    REQUIRE(f.fsm.current_state() == "ExecutingSegment");
 
     // 停机侧限位到达 → Charging（N=1 完成）
     f.fsm.dispatch(EvParkingSideLimitSettled{});
@@ -189,14 +188,14 @@ TEST_CASE("TaskChain: N=1 完整往返任务链", "[integration][task_chain]") {
 // ────────────────────────────────────────────────────────────────
 // 场景 2：P0 故障中断
 // ────────────────────────────────────────────────────────────────
-TEST_CASE("TaskChain: P0 故障中断清扫任务 → Fault → Reset → Idle", "[integration][task_chain]") {
+TEST_CASE("TaskChain: P0 故障中断清扫任务 → FaultStopped → Reset → Idle", "[integration][task_chain]") {
     TaskChainFixture f;
     f.fsm.dispatch(EvScheduleStart{true, false, 2.0f});
-    REQUIRE(f.fsm.current_state() == "CleanFwd");
+    REQUIRE(f.fsm.current_state() == "ExecutingSegment");
 
     // 通过 FaultService 上报 P0（FaultHandler → dispatch EvFaultP0）
     f.fault_svc->report(FaultLevel::P0, 0x1001, "CAN lost");
-    REQUIRE(f.fsm.current_state() == "Fault");
+    REQUIRE(f.fsm.current_state() == "FaultStopped");
 
     // 人工复位
     f.fsm.dispatch(EvFaultReset{});
@@ -207,17 +206,37 @@ TEST_CASE("TaskChain: P0 故障中断清扫任务 → Fault → Reset → Idle",
 }
 
 // ────────────────────────────────────────────────────────────────
-// 场景 3：P1 故障进入 Fault
+// 场景 3：P1 故障切换到返航段
 // ────────────────────────────────────────────────────────────────
-TEST_CASE("TaskChain: P1 故障 → Fault", "[integration][task_chain]") {
+TEST_CASE("TaskChain: P1 故障 → ExecutingSegment(返航段)", "[integration][task_chain]") {
     TaskChainFixture f;
     f.fsm.dispatch(EvScheduleStart{true, false, 2.0f});
-    f.fsm.dispatch(EvFarEndLimitSettled{});  // 进入 CleanReturn
-    REQUIRE(f.fsm.current_state() == "CleanReturn");
+    f.fsm.dispatch(EvFarEndLimitSettled{});  // 进入返航段
+    REQUIRE(f.fsm.current_state() == "ExecutingSegment");
 
-    // P1 故障（FaultHandler → dispatch EvFaultP1 → Fault）
+    // P1 故障（FaultHandler → dispatch EvFaultP1 → 无刷返航段）
     f.fault_svc->report(FaultLevel::P1, 0x2001, "BMS low");
-    REQUIRE(f.fsm.current_state() == "Fault");
+    REQUIRE(f.fsm.current_state() == "ExecutingSegment");
+    REQUIRE(f.fsm.current_segment_direction().has_value());
+    REQUIRE(*f.fsm.current_segment_direction() == SegmentDirection::ToParkingSide);
+}
+
+TEST_CASE("TaskChain: 返航段再次收到 P1 → 通过 P0 链路收口到 FaultStopped",
+          "[integration][task_chain]") {
+    TaskChainFixture f;
+    f.fsm.dispatch(EvScheduleStart{true, false, 1.0f});
+    REQUIRE(f.fsm.current_state() == "ExecutingSegment");
+
+    f.fault_svc->report(FaultLevel::P1, 0x2001, "brush_fault");
+    REQUIRE(f.fsm.current_state() == "ExecutingSegment");
+    REQUIRE(f.fsm.current_segment_direction().has_value());
+    REQUIRE(*f.fsm.current_segment_direction() == SegmentDirection::ToParkingSide);
+
+    f.fault_svc->report(FaultLevel::P1, 0x2002, "return_path_blocked");
+    REQUIRE(f.fsm.current_state() == "FaultStopped");
+    REQUIRE(f.fault_svc->has_active_fault());
+    REQUIRE(f.fault_svc->last_fault().level == FaultLevel::P0);
+    REQUIRE(f.fault_svc->last_fault().code == 0x1102u);
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -227,12 +246,12 @@ TEST_CASE("TaskChain: SafetyMonitor 触发 LimitSettledEvent → FSM 响应",
           "[integration][task_chain]") {
     TaskChainFixture f;
     f.fsm.dispatch(EvScheduleStart{true, false, 2.0f});
-    REQUIRE(f.fsm.current_state() == "CleanFwd");
+    REQUIRE(f.fsm.current_state() == "ExecutingSegment");
 
     // 订阅 LimitSettledEvent 并转发给 FSM
     f.bus.subscribe<SafetyMonitor::LimitSettledEvent>(
         [&](const SafetyMonitor::LimitSettledEvent& e) {
-            if (e.side == LimitSide::LEFT)
+            if (e.side == robot::domain::PhysicalLimitSide::Left)
                 f.fsm.dispatch(EvFarEndLimitSettled{});
             else
                 f.fsm.dispatch(EvParkingSideLimitSettled{});
@@ -250,8 +269,8 @@ TEST_CASE("TaskChain: SafetyMonitor 触发 LimitSettledEvent → FSM 响应",
     std::this_thread::sleep_for(std::chrono::milliseconds(250));
     f.safety_mon.stop();
 
-    // FSM 应已收到 EvFarEndLimitSettled 并转为 CleanReturn
-    REQUIRE(f.fsm.current_state() == "CleanReturn");
+    // FSM 应已收到 EvFarEndLimitSettled 并切换到返航段
+    REQUIRE(f.fsm.current_state() == "ExecutingSegment");
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -272,7 +291,7 @@ TEST_CASE("TaskChain: SchedulerService tick() 触发 FSM 清扫启动", "[integr
         [&] { REQUIRE(f.supervisor->start_task(true, true, 80.0f)); });
 
     f.scheduler.tick();
-    REQUIRE(f.fsm.current_state() == "CleanFwd");
+    REQUIRE(f.fsm.current_state() == "ExecutingSegment");
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -283,49 +302,51 @@ TEST_CASE("TaskChain: N=2 完整 4 趟任务链", "[integration][task_chain]") {
     f.fsm.dispatch(EvScheduleStart{true, false, 2.0f});
     // 4 个半趟
     f.fsm.dispatch(EvFarEndLimitSettled{});  // 半趟1
-    REQUIRE(f.fsm.current_state() == "CleanReturn");
+    REQUIRE(f.fsm.current_state() == "ExecutingSegment");
     f.fsm.dispatch(EvParkingSideLimitSettled{});  // 半趟2
-    REQUIRE(f.fsm.current_state() == "CleanFwd");
+    REQUIRE(f.fsm.current_state() == "ExecutingSegment");
     f.fsm.dispatch(EvFarEndLimitSettled{});  // 半趟3
-    REQUIRE(f.fsm.current_state() == "CleanReturn");
+    REQUIRE(f.fsm.current_state() == "ExecutingSegment");
     f.fsm.dispatch(EvParkingSideLimitSettled{});  // 半趟4 → Charging
     REQUIRE(f.fsm.current_state() == "Charging");
 }
 
 // ────────────────────────────────────────────────────────────────
-// 场景 7：P1 故障发生在 CleanFwd 阶段（未到前端）
+// 场景 7：P1 故障发生在 ExecutingSegment(ToFarEnd) 阶段（未到前端）
 // ────────────────────────────────────────────────────────────────
-TEST_CASE("TaskChain: P1 故障发生在 CleanFwd → Fault",
+TEST_CASE("TaskChain: P1 故障发生在 ExecutingSegment(ToFarEnd) → ExecutingSegment(ToParkingSide)",
           "[integration][task_chain]") {
     TaskChainFixture f;
     f.fsm.dispatch(EvScheduleStart{true, false, 2.0f});
-    REQUIRE(f.fsm.current_state() == "CleanFwd");
+    REQUIRE(f.fsm.current_state() == "ExecutingSegment");
 
     // P1 故障在正向清扫期间触发（尚未到达对侧限位）
     f.fault_svc->report(FaultLevel::P1, 0x2002, "slope_too_steep");
-    REQUIRE(f.fsm.current_state() == "Fault");
+    REQUIRE(f.fsm.current_state() == "ExecutingSegment");
+    REQUIRE(f.fsm.current_segment_direction().has_value());
+    REQUIRE(*f.fsm.current_segment_direction() == SegmentDirection::ToParkingSide);
 }
 
 // ────────────────────────────────────────────────────────────────
 // 场景 8：P0 故障复位后可重新启动清扫
 // ────────────────────────────────────────────────────────────────
-TEST_CASE("TaskChain: P0 故障复位后重新启动清扫 → CleanFwd",
+TEST_CASE("TaskChain: P0 故障复位后重新启动清扫 → ExecutingSegment",
           "[integration][task_chain]") {
     TaskChainFixture f;
     f.fsm.dispatch(EvScheduleStart{true, false, 1.0f});
-    REQUIRE(f.fsm.current_state() == "CleanFwd");
+    REQUIRE(f.fsm.current_state() == "ExecutingSegment");
 
-    // P0 故障 → Fault
+    // P0 故障 → FaultStopped
     f.fault_svc->report(FaultLevel::P0, 0x1001, "comm_lost");
-    REQUIRE(f.fsm.current_state() == "Fault");
+    REQUIRE(f.fsm.current_state() == "FaultStopped");
 
     // 复位 → Idle
     f.fsm.dispatch(EvFaultReset{});
     REQUIRE(f.fsm.current_state() == "Idle");
 
-    // 重新下发任务 → CleanFwd
+    // 重新下发任务 → ExecutingSegment
     f.fsm.dispatch(EvScheduleStart{true, false, 1.0f});
-    REQUIRE(f.fsm.current_state() == "CleanFwd");
+    REQUIRE(f.fsm.current_state() == "ExecutingSegment");
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -339,20 +360,19 @@ TEST_CASE("TaskChain: visual PID enabled 完整 N=1 任务链", "[integration][t
     cfg_pid.clean_speed_rpm = 300.0f;
     cfg_pid.return_speed_rpm = 300.0f;
     cfg_pid.brush_rpm = 1000;
-    cfg_pid.return_brush_rpm = 1000;
     cfg_pid.heading_pid_en = true;
     auto motion_pid =
         std::make_shared<MotionService>(f.group, f.brush, nullptr, f.bus, cfg_pid);
-    RobotFsm fsm_pid(motion_pid, f.nav, f.fault_svc, f.bus);
+    RobotFsm fsm_pid(motion_pid, f.fault_svc, f.bus);
     fsm_pid.dispatch(EvInitDone{});
     REQUIRE(fsm_pid.current_state() == "Idle");
 
     fsm_pid.dispatch(EvScheduleStart{true, false, 1.0f});
-    REQUIRE(fsm_pid.current_state() == "CleanFwd");
+    REQUIRE(fsm_pid.current_state() == "ExecutingSegment");
     REQUIRE_FALSE(f.can->sent_frames.empty());  // PID 路径仍发出 CAN 帧
 
     fsm_pid.dispatch(EvFarEndLimitSettled{});
-    REQUIRE(fsm_pid.current_state() == "CleanReturn");
+    REQUIRE(fsm_pid.current_state() == "ExecutingSegment");
 
     fsm_pid.dispatch(EvParkingSideLimitSettled{});
     REQUIRE(fsm_pid.current_state() == "Charging");
@@ -370,7 +390,7 @@ TEST_CASE("DataCache: 遥测写入本地 JSONL、confirm_sent 后断电可恢复
     {
         robot::middleware::DataCache cache{path};
         REQUIRE(cache.open());
-        REQUIRE(cache.push("telemetry/status", R"({"rpm":300,"state":"CleanFwd"})"));
+        REQUIRE(cache.push("telemetry/status", R"({"rpm":300,"state":"ExecutingSegment"})"));
         REQUIRE(cache.push("telemetry/imu",    R"({"yaw":5.1,"pitch":2.0})"));
         REQUIRE(cache.size() == 2);
 

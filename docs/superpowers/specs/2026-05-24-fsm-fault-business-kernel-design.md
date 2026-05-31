@@ -10,7 +10,8 @@ Refactor the task orchestration core so that:
 - mission semantics are simple and hardware-aligned
 - FSM stays small, stable, and predictable
 - fault handling is explicit and action-oriented
-- business state/fault/action codes become the single source of truth for runtime, tests, logs, and cloud reporting
+- business state/fault codes become the single source of truth for runtime, tests, logs, and cloud reporting
+- external field contracts stay compact and easy to maintain
 
 Absolute design rule:
 
@@ -25,9 +26,9 @@ This spec intentionally avoids speculative abstractions and does not try to rede
 
 ## Current Problems
 
-The current codebase has three structural issues in this area:
+The current codebase still has three structural issues in this area:
 
-1. Task semantics are still built around integer `passes`, which does not model:
+1. Task semantics are built around integer `passes`, which does not model:
    - single-dock round-trip tasks cleanly
    - dual-dock dock-to-dock tasks cleanly
    - test-only single-leg tasks cleanly
@@ -41,6 +42,8 @@ The current codebase has three structural issues in this area:
 
 3. Fault severity and fault action are mixed together.
    `P1` especially needs action decisions based on remaining capability and current task context, not only on severity level.
+
+Separately, the external field contracts had grown too wide. For this reason, compact outward contracts are part of the design, not a separate cleanup.
 
 ## Business Model
 
@@ -188,9 +191,10 @@ Abnormal path:
 `SegmentSpec` stays business-level only.
 It must not carry direct wheel direction, motor target rpm, or brush motor low-level output values.
 
-### ProfileResolver
+### Resolver Rule
 
-Introduce a lightweight resolver that translates business segment semantics into execution parameters.
+Segment business semantics are resolved inside the existing motion layer.
+The resolver logic may stay private to current files; no standalone resolver file is required.
 
 Inputs:
 
@@ -206,18 +210,7 @@ Outputs:
 - target motion profile needed by `MotionService`
 - terminal completion target needed by completion checking
 
-### Reason For This Split
-
-This keeps complexity out of the FSM.
-
-If later the same lane mode needs a different motor direction mapping, only the resolver logic changes.
-FSM behavior and mission semantics stay unchanged.
-
-This is required because:
-
-- different parking terminals may imply different drive directions
-- different segments may imply different brush direction behavior
-- fault return segments may use different motion rules than clean segments
+This keeps complexity out of the FSM while still allowing different docks and segments to map to different motor directions.
 
 ## Fault Chain Design
 
@@ -229,7 +222,7 @@ Fault handling is split into two layers:
   Produced by hardware, protocol, safety, or service layers
 
 - `BusinessFaultDecision`
-  Produced by a business-level `FaultArbiter`
+  Produced by a business-level fault arbiter embedded in the existing fault-handling path
   This is the only fault decision object consumed by FSM logic
 
 `BusinessFaultDecision` must contain at least:
@@ -237,7 +230,6 @@ Fault handling is split into two layers:
 - severity level
 - business fault code
 - remaining mobility capability
-- target action
 - target terminal if return is required
 
 ### P0
@@ -262,8 +254,7 @@ Meaning:
 - task may not continue cleaning
 - some controlled motion capability may still remain
 
-Action decision is not based on level alone.
-It is based on:
+Action decision is based on:
 
 - concrete fault reason
 - remaining mobility capability
@@ -276,12 +267,6 @@ P1 handling result:
   create one fault-disposal segment, normally `return_no_brush`
 - if return is not allowed:
   enter `FaultStopped`
-
-This supports the hardware reality that:
-
-- different docks imply different return targets
-- different segments imply different wheel/brush direction rules
-- different P1 subclasses may require different return policies
 
 ### P2
 
@@ -316,8 +301,6 @@ Either:
 - or it is action-relevant and must become `P1`
 - or it is safety-critical and must become `P0`
 
-This keeps behavior simple and predictable.
-
 ## Business Codes
 
 Business codes are required.
@@ -326,9 +309,8 @@ They must be the single source of truth for:
 
 - FSM-visible runtime semantics
 - logs
-- health/audit traces
 - tests
-- cloud reporting
+- compact cloud reporting
 
 Cloud-side code must not invent a parallel state vocabulary.
 
@@ -351,6 +333,7 @@ Represents business-level fault reasons.
 
 Examples:
 
+- `NONE`
 - `STARTUP_POSITION_INVALID`
 - `BMS_UNAVAILABLE`
 - `BRUSH_FAILURE_RETURN_REQUIRED`
@@ -361,21 +344,8 @@ Examples:
 Final code list should remain compact and action-oriented.
 Do not expose raw driver error catalogs as business fault codes.
 
-### BusinessActionCode
-
-Represents what the system is currently doing in response to the mission or fault state.
-
-Initial target set:
-
-- `NONE`
-- `STARTING_MISSION`
-- `EXECUTING_CLEAN_SEGMENT`
-- `SWITCHING_SEGMENT`
-- `RETURNING_TO_DOCK`
-- `STOPPING_IMMEDIATELY`
-- `WAITING_MANUAL_RESET`
-
-This is necessary because state and fault alone are not enough to explain runtime behavior on a hardware robot.
+No standalone `BusinessActionCode` is part of the outward contract for this phase.
+If action-level observability is needed later, it should only be added when `state + fault` is proven insufficient in production.
 
 ## Self-Check Rules
 
@@ -392,20 +362,13 @@ It must validate at least:
 Environment policy already agreed:
 
 - production: BMS unavailable => startup forbidden
-- test environment: BMS unavailable => startup may be allowed under degraded test policy
-
-This policy belongs in startup validation and environment config, not in the main FSM transition logic.
+- test environment: BMS unavailable => startup may be allowed under test policy
 
 ## Task Completion Rules
 
 ### SingleDockLane
 
 Formal business task completion requires returning to the dock.
-
-Meaning:
-
-- production cleaning must close the operational loop
-- charging/recovery point remains deterministic
 
 Single-leg completion is allowed only in test/manual mode.
 
@@ -416,22 +379,64 @@ Dock-to-dock arrival completes the task.
 No "half-pass" interpretation is needed.
 This is one complete mission.
 
-## Cloud / Telemetry / Observability Requirements
+## External Contracts
 
-The following business truth must be externally visible:
+### Runtime Config / Downlink
 
-- current `BusinessStateCode`
-- current `BusinessActionCode`
-- last active `BusinessFaultCode`
-- whether task is active
-- mission type
-- lane mode
+The compact runtime config contract for this phase is:
 
-Additionally:
+- `passes`
+- `clean_speed_rpm`
+- `return_speed_rpm`
+- `brush_rpm`
+- `parking_side`
+- `min_battery_soc`
+- `charge_stop_soc`
+- `schedules`
 
-- self-check failure must emit business fault reporting
-- fault-triggered return must be visible as action change, not only as logs
-- cloud payloads must reflect kernel truth instead of reconstructing state ad hoc
+Notes:
+
+- `passes` remains for compatibility and scheduling input, but should not remain the FSM's internal truth
+- `return_brush_rpm` is removed
+- `start_battery_soc` and `charge_start_soc` are merged into `min_battery_soc`
+
+### Periodic Business Telemetry
+
+The compact periodic business telemetry contract is:
+
+- `state`
+- `fault`
+- `cfg_ver`
+
+Notes:
+
+- `state` is the outward representation of current business lifecycle state
+- `fault` is the current or last active compact business fault code value
+- `cfg_ver` is optional but allowed as a compact configuration version field
+- `device_state`, `task_state`, and similar duplicate vocabularies must not continue outward
+
+### Status Events
+
+Status events use a compact event contract:
+
+- `event`
+- `code`
+
+### RPC Replies
+
+RPC replies use a compact result contract:
+
+- `code`
+
+### Command Lifecycle Visibility
+
+Command lifecycle tracking may remain local for debugging and control flow.
+It is not part of periodic telemetry for this phase.
+
+### Health And Diagnostics
+
+Existing `HEALTH` and `DIAGNOSTICS` payload schemas are intentionally not changed by this design update.
+Their compaction is explicitly out of scope for this phase.
 
 ## Testing Strategy
 
@@ -462,7 +467,13 @@ Minimum required test matrix:
 
 - state code changes match actual FSM lifecycle
 - fault code changes match business decisions
-- action code changes match actual handling path
+
+### External Contracts
+
+- runtime config fields match the compact contract
+- periodic business telemetry emits only `state`, `fault`, and `cfg_ver`
+- status events emit only `event` and `code`
+- RPC replies emit only `code`
 
 ### Environment Policy
 
@@ -476,14 +487,15 @@ This work includes:
 - mission model simplification
 - FSM simplification
 - P0/P1/P2 business handling semantics
-- business state/fault/action code design
-- telemetry truth alignment with kernel business codes
+- business state/fault code design
+- compact telemetry truth alignment with kernel business codes
 
 This work does not include:
 
 - redesigning the entire HAL/driver stack
 - redesigning scheduler semantics beyond mission input adaptation
 - introducing a degraded-running framework
+- changing existing `HEALTH` and `DIAGNOSTICS` field schemas in this phase
 - broad refactors unrelated to mission execution and fault semantics
 - adding new code files as part of this refactor
 
@@ -499,17 +511,12 @@ The implementation plan derived from this spec must obey:
 - prefer in-place simplification of existing files over creating new files
 - deleting or renaming existing files is allowed if it reduces structural noise
 - reducing total file count is preferred when responsibilities become clearer, not more coupled
-- SOLID principles must be maintained:
-  - single responsibility for mission semantics, fault decision, and motion execution
-  - open/closed at the rule level, not by growing state branches
-  - interface boundaries must remain understandable and testable
-  - dependency directions must not become more tangled than they are now
 
 Whenever there is a tradeoff, prefer:
 
 - simpler runtime semantics
 - fewer FSM states
-- fewer code files when that does not merge unrelated responsibilities
+- fewer outward fields
 - clearer fault decisions
 - more deterministic hardware behavior
 

@@ -151,7 +151,7 @@ TEST_CASE("CloudService rejects unknown RPC methods with explicit response",
     CloudService cloud(net, cache);
 
     cloud.register_rpc("start", [](const std::string&, const std::string&) {
-        return std::string{R"({"accepted":true,"result":"ok"})"};
+        return std::string{R"({"code":"ok"})"};
     });
 
     mqtt->emit_rpc("99", R"({"method":"stop","params":{}})");
@@ -161,12 +161,8 @@ TEST_CASE("CloudService rejects unknown RPC methods with explicit response",
     response.Parse(mqtt->last_publish_payload.c_str());
     REQUIRE_FALSE(response.HasParseError());
     REQUIRE(response.IsObject());
-    REQUIRE(response["accepted"].IsBool());
-    CHECK_FALSE(response["accepted"].GetBool());
-    REQUIRE(response["result"].IsString());
-    CHECK(std::string(response["result"].GetString()) == "rejected");
-    REQUIRE(response["reason"].IsString());
-    CHECK(std::string(response["reason"].GetString()) == "method_not_supported");
+    REQUIRE(response["code"].IsString());
+    CHECK(std::string(response["code"].GetString()) == "method_not_supported");
 }
 
 TEST_CASE("CloudService rejects invalid RPC payload with explicit response",
@@ -183,12 +179,8 @@ TEST_CASE("CloudService rejects invalid RPC payload with explicit response",
     response.Parse(mqtt->last_publish_payload.c_str());
     REQUIRE_FALSE(response.HasParseError());
     REQUIRE(response.IsObject());
-    REQUIRE(response["accepted"].IsBool());
-    CHECK_FALSE(response["accepted"].GetBool());
-    REQUIRE(response["result"].IsString());
-    CHECK(std::string(response["result"].GetString()) == "rejected");
-    REQUIRE(response["reason"].IsString());
-    CHECK(std::string(response["reason"].GetString()) == "invalid_request");
+    REQUIRE(response["code"].IsString());
+    CHECK(std::string(response["code"].GetString()) == "invalid_request");
 }
 
 TEST_CASE("CloudService shared attributes response routes nested shared object to callback",

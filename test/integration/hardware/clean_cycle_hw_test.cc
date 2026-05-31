@@ -6,10 +6,10 @@
  *
  * 测试分组：
  *   [hw_cycle][startup]          - 全层栈初始化，FSM = "Idle"
- *   [hw_cycle][self_check_pass]  - EvScheduleStart{right/left sensor facts} → FSM = "CleanFwd"
- *   [hw_cycle][one_pass_no_pid]  - 完整一趟（纯执行器路径），前右限位驱动换向，≤120s
- *   [hw_cycle][fault_p0_estop]   - 注入 P0 故障 → FSM = "Fault"，电机停转
- *   [hw_cycle][low_battery_return]- 注入低电 → FSM = "Returning" → "Charging"
+ *   [hw_cycle][self_check_pass]  - EvScheduleStart{right/left sensor facts} → FSM = "ExecutingSegment"
+ *   [hw_cycle][one_pass_no_pid]  - 完整一趟（纯执行器路径），前后端限位驱动换段，≤120s
+ *   [hw_cycle][fault_p0_estop]   - 注入 P0 故障 → FSM = "FaultStopped"，电机停转
+ *   [hw_cycle][low_battery_return]- 手动 return → FSM = "ExecutingSegment"(返航段) → "Charging"
  *   [hw_cycle][bms_valid]        - 清扫过程中 BMS 数据持续有效
  *   [hw_cycle][imu_valid]        - 清扫过程中 IMU 数据持续有效
  *   [hw_cycle][watchdog_alive]   - 正常运行 30s，watchdog 不触发 timeout
@@ -53,9 +53,9 @@ TEST_CASE("全层栈初始化", "[hw_cycle][startup]") {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// [hw_cycle][self_check_pass] — 自检通过，进入 CleanFwd
+// [hw_cycle][self_check_pass] — 自检通过，进入 ExecutingSegment（前进段）
 // ────────────────────────────────────────────────────────────────────────────
-TEST_CASE("自检流程（原始 right/left 限位事实 → CleanFwd）", "[hw_cycle][self_check_pass]") {
+TEST_CASE("自检流程（原始 right/left 限位事实 → ExecutingSegment）", "[hw_cycle][self_check_pass]") {
     hw::FullSystemFixture fx(false);
     REQUIRE(fx.init());
     REQUIRE(fx.wait_state("Idle", 2s));
@@ -69,8 +69,9 @@ TEST_CASE("自检流程（原始 right/left 限位事实 → CleanFwd）", "[hw_
 
     fx.fsm->dispatch(app::EvScheduleStart{right_limit_active, left_limit_active, 1.0f});
 
-    // 自检 → CleanFwd（最多 5s 内）
-    const bool in_clean_fwd = fx.wait_state("CleanFwd", 5s);
+    // 自检 → ExecutingSegment（前进段，最多 5s 内）
+    const bool in_clean_fwd = fx.wait_state("ExecutingSegment", 5s);
+    REQUIRE(fx.wait_segment_direction(app::SegmentDirection::ToFarEnd, 5s));
     spdlog::info("[hw_cycle][self_check_pass] FSM={}", fx.fsm->current_state());
     REQUIRE(in_clean_fwd);
 
@@ -83,7 +84,7 @@ TEST_CASE("自检流程（原始 right/left 限位事实 → CleanFwd）", "[hw_
 
 // ────────────────────────────────────────────────────────────────────────────
 // [hw_cycle][one_pass_no_pid] — 完整一趟（纯执行器路径）
-// 流程：Idle → SelfCheck → CleanFwd → (左限位) → CleanReturn → (右限位) → Charging
+// 流程：Idle → SelfCheck → ExecutingSegment(前进段) → ExecutingSegment(返程段) → Charging
 // ────────────────────────────────────────────────────────────────────────────
 TEST_CASE("完整清扫一趟（纯执行器路径）", "[hw_cycle][one_pass_no_pid]") {
     hw::FullSystemFixture fx(false /* pid_off */);
@@ -97,16 +98,17 @@ TEST_CASE("完整清扫一趟（纯执行器路径）", "[hw_cycle][one_pass_no_
     const auto t_start = std::chrono::steady_clock::now();
     fx.fsm->dispatch(app::EvScheduleStart{right_limit_active, left_limit_active, 1.0f});
 
-    // 阶段1：等待进入 CleanFwd
-    REQUIRE(fx.wait_state("CleanFwd", 5s));
+    // 阶段1：等待进入前进段
+    REQUIRE(fx.wait_state("ExecutingSegment", 5s));
+    REQUIRE(fx.wait_segment_direction(app::SegmentDirection::ToFarEnd, 5s));
     const auto t_fwd_start = std::chrono::steady_clock::now();
-    spdlog::info("[hw_cycle][one_pass_no_pid] → CleanFwd");
+    spdlog::info("[hw_cycle][one_pass_no_pid] → ExecutingSegment(ToFarEnd)");
 
-    // 阶段2：等待左限位触发（最多 kLimitTimeoutSec 秒）
-    REQUIRE(fx.wait_state("CleanReturn",
+    // 阶段2：等待切换到返程段（最多 kLimitTimeoutSec 秒）
+    REQUIRE(fx.wait_segment_direction(app::SegmentDirection::ToParkingSide,
             std::chrono::seconds(fx.p.limit_timeout_sec)));
     const auto t_fwd_end = std::chrono::steady_clock::now();
-    spdlog::info("[hw_cycle][one_pass_no_pid] → CleanReturn (正向 {:.1f}s)",
+    spdlog::info("[hw_cycle][one_pass_no_pid] → ExecutingSegment(ToParkingSide) (正向 {:.1f}s)",
                  std::chrono::duration<float>(t_fwd_end - t_fwd_start).count());
 
     // 阶段3：等待右限位触发 → Charging
@@ -123,7 +125,7 @@ TEST_CASE("完整清扫一趟（纯执行器路径）", "[hw_cycle][one_pass_no_
 // ────────────────────────────────────────────────────────────────────────────
 // [hw_cycle][fault_p0_estop] — P0 故障急停
 // ────────────────────────────────────────────────────────────────────────────
-TEST_CASE("P0 故障急停（FSM → Fault，电机停转）", "[hw_cycle][fault_p0_estop]") {
+TEST_CASE("P0 故障急停（FSM → FaultStopped，电机停转）", "[hw_cycle][fault_p0_estop]") {
     hw::FullSystemFixture fx(false);
     REQUIRE(fx.init());
     REQUIRE(fx.wait_state("Idle", 2s));
@@ -132,7 +134,7 @@ TEST_CASE("P0 故障急停（FSM → Fault，电机停转）", "[hw_cycle][fault
     const bool right_limit_active = !fx.right_sw->read_current_level();
     const bool left_limit_active = !fx.left_sw->read_current_level();
     fx.fsm->dispatch(app::EvScheduleStart{right_limit_active, left_limit_active, 1.0f});
-    REQUIRE(fx.wait_state("CleanFwd", 5s));
+    REQUIRE(fx.wait_state("ExecutingSegment", 5s));
 
     // 注入 P0 故障
     std::this_thread::sleep_for(2s);  // 让电机先转起来
@@ -140,9 +142,9 @@ TEST_CASE("P0 故障急停（FSM → Fault，电机停转）", "[hw_cycle][fault
     fx.fault->report(service::FaultService::FaultEvent::Level::P0,
                      0x9001u, "hw_test_inject_p0");
 
-    // FSM 应进入 Fault
-    REQUIRE(fx.wait_state("Fault", 3s));
-    spdlog::info("[hw_cycle][fault_p0_estop] FSM → Fault ✓");
+    // FSM 应进入 FaultStopped
+    REQUIRE(fx.wait_state("FaultStopped", 3s));
+    spdlog::info("[hw_cycle][fault_p0_estop] FSM → FaultStopped ✓");
 
     // 等待电机停转（override 应已激活）
     std::this_thread::sleep_for(500ms);
@@ -151,7 +153,7 @@ TEST_CASE("P0 故障急停（FSM → Fault，电机停转）", "[hw_cycle][fault
         spdlog::info("[hw_cycle][fault_p0_estop] wheel[{}] speed={:.2f}rpm online={}",
                      w, gd.wheel[w].speed_rpm, gd.wheel[w].online);
 
-    CHECK(fx.fsm->current_state() == "Fault");
+    CHECK(fx.fsm->current_state() == "FaultStopped");
     // 电机速度应接近 0（允许 5 RPM 偏差，因惯性）
     for (int w = 0; w < device::WalkMotorGroup::kWheelCount; ++w)
         CHECK(std::abs(gd.wheel[w].speed_rpm) < 5.0f);
@@ -168,18 +170,20 @@ TEST_CASE("低电量触发安全返回", "[hw_cycle][low_battery_return]") {
     const bool right_limit_active = !fx.right_sw->read_current_level();
     const bool left_limit_active = !fx.left_sw->read_current_level();
     fx.fsm->dispatch(app::EvScheduleStart{right_limit_active, left_limit_active, 1.0f});
-    REQUIRE(fx.wait_state("CleanFwd", 5s));
+    REQUIRE(fx.wait_state("ExecutingSegment", 5s));
+    REQUIRE(fx.wait_segment_direction(app::SegmentDirection::ToFarEnd, 5s));
 
     // stop 后再手动 return
     std::this_thread::sleep_for(2s);
     spdlog::warn("[hw_cycle][manual_return] 先 stop，再 return...");
     fx.fsm->dispatch(app::EvStopTask{});
-    REQUIRE(fx.wait_state("Stopped", 3s));
+    REQUIRE(fx.wait_state("Idle", 3s));
     fx.fsm->dispatch(app::EvManualReturn{});
 
-    // FSM → Returning
-    REQUIRE(fx.wait_state("Returning", 3s));
-    spdlog::info("[hw_cycle][manual_return] FSM → Returning ✓");
+    // FSM → ExecutingSegment(返航段)
+    REQUIRE(fx.wait_state("ExecutingSegment", 3s));
+    REQUIRE(fx.wait_segment_direction(app::SegmentDirection::ToParkingSide, 3s));
+    spdlog::info("[hw_cycle][manual_return] FSM → ExecutingSegment(ToParkingSide) ✓");
 
     // 等待右限位触发 → Charging（最多 kLimitTimeoutSec 秒）
     REQUIRE(fx.wait_state("Charging",
@@ -215,8 +219,9 @@ TEST_CASE("清扫过程 BMS 数据持续有效", "[hw_cycle][bms_valid]") {
     const bool left_limit_active = !fx.left_sw->read_current_level();
     fx.fsm->dispatch(app::EvScheduleStart{right_limit_active, left_limit_active, 1.0f});
 
-    // 运行到 CleanFwd 后检查 BMS 持续有效 20s
-    REQUIRE(fx.wait_state("CleanFwd", 5s));
+    // 运行到 ExecutingSegment(ToFarEnd) 后检查 BMS 持续有效 20s
+    REQUIRE(fx.wait_state("ExecutingSegment", 5s));
+    REQUIRE(fx.wait_segment_direction(app::SegmentDirection::ToFarEnd, 5s));
     std::this_thread::sleep_for(20s);
 
     bms_running.store(false);
@@ -247,7 +252,8 @@ TEST_CASE("清扫过程 IMU 数据持续有效", "[hw_cycle][imu_valid]") {
     const bool right_limit_active = !fx.right_sw->read_current_level();
     const bool left_limit_active = !fx.left_sw->read_current_level();
     fx.fsm->dispatch(app::EvScheduleStart{right_limit_active, left_limit_active, 1.0f});
-    REQUIRE(fx.wait_state("CleanFwd", 5s));
+    REQUIRE(fx.wait_state("ExecutingSegment", 5s));
+    REQUIRE(fx.wait_segment_direction(app::SegmentDirection::ToFarEnd, 5s));
 
     // 采样 IMU 20s
     int imu_valid_count = 0, imu_total = 0;
@@ -290,7 +296,8 @@ TEST_CASE("正常运行 watchdog 不超时", "[hw_cycle][watchdog_alive]") {
     const bool right_limit_active = !fx.right_sw->read_current_level();
     const bool left_limit_active = !fx.left_sw->read_current_level();
     fx.fsm->dispatch(app::EvScheduleStart{right_limit_active, left_limit_active, 1.0f});
-    REQUIRE(fx.wait_state("CleanFwd", 5s));
+    REQUIRE(fx.wait_state("ExecutingSegment", 5s));
+    REQUIRE(fx.wait_segment_direction(app::SegmentDirection::ToFarEnd, 5s));
 
     // 正常运行 30s，每 200ms 汇报一次心跳
     for (int i = 0; i < 150; ++i) {  // 150 × 200ms = 30s

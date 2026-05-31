@@ -52,16 +52,29 @@ TEST_CASE("FaultService: P3 故障后 has_active_fault(P2) == false", "[service]
     FaultService fs(bus);
     fs.report(FaultLevel::P3, 2, "P3 minor");
     REQUIRE_FALSE(fs.has_active_fault(FaultLevel::P2));
-    REQUIRE(fs.has_active_fault(FaultLevel::P3));
+    REQUIRE_FALSE(fs.has_active_fault(FaultLevel::P3));
 }
 
-TEST_CASE("FaultService: P2 故障 has_active_fault(P2) == true", "[service][fault]") {
+TEST_CASE("FaultService: P2 故障保持 active fault 以便周期遥测上报", "[service][fault]") {
     EventBus bus;
     FaultService fs(bus);
     fs.report(FaultLevel::P2, 3, "P2 warn");
     REQUIRE(fs.has_active_fault(FaultLevel::P2));
     REQUIRE_FALSE(fs.has_active_fault(FaultLevel::P1));
     REQUIRE_FALSE(fs.has_active_fault(FaultLevel::P0));
+}
+
+TEST_CASE("FaultService: clear_active_fault() clears active fault without erasing last fault",
+          "[service][fault]") {
+    EventBus bus;
+    FaultService fs(bus);
+    fs.report(FaultLevel::P1, 0x2001, "brush_fault");
+    REQUIRE(fs.has_active_fault(FaultLevel::P2));
+
+    fs.clear_active_fault();
+    REQUIRE_FALSE(fs.has_active_fault(FaultLevel::P2));
+    REQUIRE(fs.last_fault().code == 0x2001u);
+    REQUIRE(fs.last_fault().level == FaultLevel::P1);
 }
 
 // ────────────────────────────────────────────────────────────────

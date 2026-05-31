@@ -65,7 +65,7 @@
 #include <thread>
 
 #include "pv_cleaning_robot/app/fault_handler.h"
-#include "pv_cleaning_robot/app/parking_side_runtime.h"
+#include "pv_cleaning_robot/domain/robot_domain.h"
 #include "pv_cleaning_robot/app/robot_fsm.h"
 #include "pv_cleaning_robot/app/robot_supervisor.h"
 #include "pv_cleaning_robot/app/watchdog_mgr.h"
@@ -84,22 +84,27 @@ void publish_startup_position_status(
     const std::shared_ptr<robot::app::RobotSupervisor>& supervisor,
     const std::shared_ptr<spdlog::logger>& log,
     const robot::app::RobotSupervisor::StartupPositionAssessment& startup_position) {
+    if (std::string_view(startup_position.status_reason) == "ok") {
+        return;
+    }
     if (startup_position.facts.dual_endpoint_active) {
-        tb_control->publish_status_event("startup_position_invalid", false, "dual_endpoint_active");
+        tb_control->publish_status_event("startup_position_invalid", "dual_endpoint_active");
         log->warn("[Main] 启动位置异常：左右端点同时触发，禁止启动清扫");
         return;
     }
     if (startup_position.facts.no_endpoint_active) {
-        tb_control->publish_status_event(
-            "startup_position_invalid", false, "robot_not_at_any_endpoint");
+        tb_control->publish_status_event("startup_position_invalid", "robot_not_at_any_endpoint");
         log->warn("[Main] 启动位置异常：当前不在任一端点，尝试返回停机位");
         (void)supervisor;
         return;
     }
     if (!startup_position.facts.at_parking_side) {
-        tb_control->publish_status_event(
-            "startup_position_invalid", false, "robot_not_at_parking_side");
-        log->warn("[Main] 启动位置异常：当前不在停机位，禁止自动启动清扫");
+        tb_control->publish_status_event("startup_position_invalid", "robot_not_at_parking_side");
+        if (startup_position.should_request_return) {
+            log->warn("[Main] 启动位置异常：当前不在停机位，正在尝试回到停机位");
+        } else {
+            log->warn("[Main] 启动位置异常：当前不在停机位，禁止自动启动清扫");
+        }
     }
 }
 
@@ -179,7 +184,7 @@ int main() {
     auto bms = std::make_shared<robot::device::BMS>(
         bms_serial,
         cfg.get<float>("robot.charge_stop_soc", 95.0f),
-        cfg.get<float>("robot.charge_start_soc", 15.0f));
+        cfg.get<float>("robot.min_battery_soc", 30.0f));
 
     // ── 7. UART 驱动 ──────────────────────────────────────────────────
     auto imu_serial = std::make_shared<robot::driver::LibSerialPort>(
@@ -269,7 +274,10 @@ int main() {
 
     // ── 10. 安全监控器 ─────────────────────────────────────────────────
     robot::middleware::SafetyMonitor safety_monitor(
-        walk_group, left_switch, right_switch, event_bus);
+        [walk_group]() { walk_group->emergency_override(0.0f); },
+        left_switch,
+        right_switch,
+        event_bus);
     safety_monitor.start();
 
     // ── 11. 网络传输 ───────────────────────────────────────────────────
@@ -322,7 +330,6 @@ int main() {
     motion_cfg.clean_speed_rpm = cfg.get<float>("robot.clean_speed_rpm", 300.0f);
     motion_cfg.return_speed_rpm = cfg.get<float>("robot.return_speed_rpm", 300.0f);
     motion_cfg.brush_rpm = cfg.get<int>("robot.brush_rpm", 1000);
-    motion_cfg.return_brush_rpm = cfg.get<int>("robot.return_brush_rpm", 1000);
     motion_cfg.edge_reverse_rpm = cfg.get<float>("robot.edge_reverse_rpm", 0.0f);
     motion_cfg.heading_pid_en = cfg.get<bool>("robot.heading_pid_en", false);
     // 视觉纠偏参数从 robot.pid.* 读取；未配置时使用控制器头文件默认值。
@@ -364,12 +371,16 @@ int main() {
     auto fault = std::make_shared<robot::service::FaultService>(event_bus);
 
     // ── 14. 应用层 ─────────────────────────────────────────────────────
-    auto fsm = std::make_shared<robot::app::RobotFsm>(motion, nav, fault, event_bus);
+    auto fsm = std::make_shared<robot::app::RobotFsm>(motion, fault, event_bus);
     fsm->dispatch(robot::app::EvInitDone{});
     auto supervisor =
-        std::make_shared<robot::app::RobotSupervisor>(fsm, cfg, command_tracker, fault, nav);
+        std::make_shared<robot::app::RobotSupervisor>(fsm, cfg, fault, nav);
     auto tb_control = std::make_shared<robot::service::ThingsBoardControlPlane>(
-        cfg, &scheduler, cloud, command_tracker, supervisor);
+        cfg,
+        &scheduler,
+        cloud,
+        command_tracker,
+        robot::app::RobotSupervisor::make_control_port(supervisor));
     cfg.apply_active_runtime_schedules(scheduler);
     motion->set_parking_side_query(
         [&cfg]() { return cfg.active_runtime_config().parking_side; });
@@ -400,7 +411,8 @@ int main() {
             "设备可能不在配置停机位（parking_side={}），请手动归位再启动",
             configured_parking_side_text);
     }
-    if (startup_facts.at_far_end) {
+    const bool dual_dock_mode = cfg.get<bool>("robot.dual_dock_mode", false);
+    if (startup_facts.at_far_end && !dual_dock_mode) {
         log->warn(
             "[Main] [自检警告] 对侧限位当前处于触发状态，"
             "可能有遮挡或传感器异常，请检查环境");
@@ -416,10 +428,12 @@ int main() {
     tb_control->subscribe_shared_attributes();
     // 在 connect() 前完成 shared attributes / RPC 注册，避免首个云端下行消息丢失。
     tb_control->register_rpc_handlers(
-        [current_start_parking_facts]() {
-            return current_start_parking_facts().is_valid_start_position();
+        [current_start_parking_facts, &cfg]() {
+            return current_start_parking_facts().is_valid_start_position(
+                cfg.get<bool>("robot.dual_dock_mode", false));
         },
         [current_start_parking_facts]() { return current_start_parking_facts().at_parking_side; },
+        [current_start_parking_facts]() { return current_start_parking_facts().at_far_end; },
         [current_active_parking_facts]() { return current_active_parking_facts().at_parking_side; },
         current_battery_soc,
         [&log]() {
@@ -453,13 +467,13 @@ int main() {
         supervisor->handle_startup_position(startup_left_limit_active, startup_right_limit_active));
 
     // ── 应用层桥接：限位业务事件 / 调度窗口启动 ──────────────────────────
-    supervisor->register_limit_settled_bridge(event_bus, current_battery_soc);
+    supervisor->register_limit_settled_bridge(event_bus, current_limit_levels, current_battery_soc);
 
     // ── 调度服务：定时触发清扫任务（读取 active runtime 的 scheduler.windows） ─────
     supervisor->register_scheduler_window(scheduler, current_limit_levels, current_battery_soc);
 
     robot::app::FaultHandler fault_handler(
-        motion, event_bus, [fsm](const robot::service::FaultService::FaultEvent& evt) {
+        motion, fault, event_bus, [fsm](const robot::service::FaultService::FaultEvent& evt) {
             using Level = robot::service::FaultService::FaultEvent::Level;
             if (evt.level == Level::P0)
                 fsm->dispatch(robot::app::EvFaultP0{});
@@ -581,11 +595,9 @@ int main() {
         scheduler.tick();
 
         const std::string current_state = supervisor->current_state();
-        const bool active_task_state = current_state == "CleanFwd" ||
-                                       current_state == "CleanReturn" ||
-                                       current_state == "Returning";
+        const bool active_motion_state = current_state == "ExecutingSegment";
         const int desired_report_period =
-            active_task_state ? active_report_period : idle_report_period;
+            active_motion_state ? active_report_period : idle_report_period;
         if (cloud_exec.period_ms() != desired_report_period) {
             cloud_exec.set_period_ms(desired_report_period);
         }

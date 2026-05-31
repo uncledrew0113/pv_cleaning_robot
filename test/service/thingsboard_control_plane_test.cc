@@ -12,6 +12,7 @@
 #include "../mock/mock_can_bus.h"
 #include "../mock/mock_serial_port.h"
 #include "integration/thingsboard_test_support.h"
+#include "pv_cleaning_robot/app/fault_handler.h"
 #include "pv_cleaning_robot/app/robot_fsm.h"
 #include "pv_cleaning_robot/app/robot_supervisor.h"
 #include "pv_cleaning_robot/device/brush_motor.h"
@@ -122,6 +123,7 @@ struct Fixture {
     std::shared_ptr<FaultService> fault{std::make_shared<FaultService>(bus)};
     std::shared_ptr<robot::app::RobotFsm> fsm;
     std::shared_ptr<robot::app::RobotSupervisor> supervisor;
+    std::shared_ptr<robot::app::FaultHandler> fault_handler;
     std::shared_ptr<ThingsBoardControlPlane> control_plane;
     bool reboot_requested{false};
 
@@ -134,8 +136,7 @@ struct Fixture {
     "return_speed_rpm": 280.0,
     "brush_rpm": 1000,
     "parking_side": "left",
-    "start_battery_soc": 30.0,
-    "charge_start_soc": 15.0,
+    "min_battery_soc": 30.0,
     "charge_stop_soc": 95.0
   },
   "scheduler": {
@@ -170,9 +171,21 @@ struct Fixture {
             [this]() { return cfg.active_runtime_config().parking_side; });
         motion->set_runtime_config_query([this]() { return cfg.active_runtime_config(); });
         nav = std::make_shared<NavService>(group, imu, gps);
-        fsm = std::make_shared<robot::app::RobotFsm>(motion, nav, fault, bus);
+        fsm = std::make_shared<robot::app::RobotFsm>(motion, fault, bus);
+        fault_handler = std::make_shared<robot::app::FaultHandler>(
+            motion,
+            fault,
+            bus,
+            [this](const FaultService::FaultEvent& evt) {
+                if (evt.level == FaultService::FaultEvent::Level::P0)
+                    fsm->dispatch(robot::app::EvFaultP0{});
+                else if (evt.level == FaultService::FaultEvent::Level::P1)
+                    fsm->dispatch(robot::app::EvFaultP1{});
+                else if (evt.level == FaultService::FaultEvent::Level::P2)
+                    fsm->dispatch(robot::app::EvFaultP2{});
+        });
         supervisor = std::make_shared<robot::app::RobotSupervisor>(
-            fsm, cfg, command_tracker, fault, nav);
+            fsm, cfg, fault, nav);
 
         can->open_result = true;
         can->send_result = true;
@@ -180,9 +193,14 @@ struct Fixture {
         brush_serial->open_result = true;
         brush->open();
         fsm->dispatch(robot::app::EvInitDone{});
+        fault_handler->start_listening();
 
         control_plane = std::make_shared<ThingsBoardControlPlane>(
-            cfg, &scheduler, cloud, command_tracker, supervisor);
+            cfg,
+            &scheduler,
+            cloud,
+            command_tracker,
+            robot::app::RobotSupervisor::make_control_port(supervisor));
     }
 
     ~Fixture() {
@@ -192,11 +210,13 @@ struct Fixture {
 
     void register_handlers(bool position_valid = true,
                            bool at_start_parking_side = true,
+                           bool at_start_far_end = false,
                            bool at_active_parking_side = false,
                            float battery_soc = 80.0f) {
         control_plane->register_rpc_handlers(
             [position_valid]() { return position_valid; },
             [at_start_parking_side]() { return at_start_parking_side; },
+            [at_start_far_end]() { return at_start_far_end; },
             [at_active_parking_side]() { return at_active_parking_side; },
             [battery_soc]() { return battery_soc; },
             [this]() { reboot_requested = true; });
@@ -230,7 +250,22 @@ TEST_CASE("ThingsBoardControlPlane shared attributes update pending config and e
 
     const auto j = f.last_published_json("telemetry");
     CHECK(std::string(j["event"].GetString()) == "shared_attr_update");
-    CHECK(j["accepted"].GetBool() == true);
+    CHECK(std::string(j["code"].GetString()) == "ok");
+}
+
+TEST_CASE("ThingsBoardControlPlane does not publish from synchronous fault path",
+          "[service][tb_control_plane]") {
+    Fixture f;
+    f.fsm->dispatch(robot::app::EvScheduleStart{true, false, 1.0f});
+    REQUIRE(f.fsm->current_state() == "ExecutingSegment");
+    const auto before = f.mqtt->published.size();
+
+    f.fault->report(FaultService::FaultEvent::Level::P0,
+                    robot::service::FaultCode::kUnexpectedLimitSide,
+                    "unexpected_limit_side");
+
+    CHECK(f.mqtt->published.size() == before);
+    CHECK(f.fsm->current_state() == "FaultStopped");
 }
 
 TEST_CASE("ThingsBoardControlPlane publishes minimal startup attributes",
@@ -254,7 +289,7 @@ TEST_CASE("ThingsBoardControlPlane requests current release shared attribute sna
     const auto& [topic, payload] = f.mqtt->published.back();
     CHECK(topic.find("v1/devices/me/attributes/request/") == 0);
     CHECK(payload ==
-          R"({"sharedKeys":"passes,clean_speed_rpm,return_speed_rpm,brush_rpm,return_brush_rpm,parking_side,start_battery_soc,charge_start_soc,charge_stop_soc,schedules"})");
+          R"({"sharedKeys":"passes,clean_speed_rpm,return_speed_rpm,brush_rpm,parking_side,min_battery_soc,charge_stop_soc,schedules"})");
 }
 
 TEST_CASE("ThingsBoardControlPlane start RPC launches a new task", "[service][tb_control_plane]") {
@@ -263,32 +298,47 @@ TEST_CASE("ThingsBoardControlPlane start RPC launches a new task", "[service][tb
 
     f.mqtt->emit_rpc("42", R"({"method":"start","params":{}})");
 
-    CHECK(f.fsm->current_state() == "CleanFwd");
+    CHECK(f.fsm->current_state() == "ExecutingSegment");
     const auto response = f.last_published_json("rpc/response/42");
-    CHECK(response["accepted"].GetBool() == true);
+    CHECK(std::string(response["code"].GetString()) == "started_new_task");
 }
 
 TEST_CASE("ThingsBoardControlPlane start RPC can launch away from parking side",
           "[service][tb_control_plane]") {
     Fixture f;
-    f.register_handlers(true, false, false, 80.0f);
+    f.register_handlers(true, false, true, false, 80.0f);
 
     f.mqtt->emit_rpc("43", R"({"method":"start","params":{}})");
 
-    CHECK(f.fsm->current_state() == "CleanFwd");
+    CHECK(f.fsm->current_state() == "ExecutingSegment");
+    REQUIRE(f.fsm->current_segment_direction().has_value());
+    CHECK(*f.fsm->current_segment_direction() == robot::app::SegmentDirection::ToParkingSide);
     const auto response = f.last_published_json("rpc/response/43");
-    CHECK(response["accepted"].GetBool() == true);
+    CHECK(std::string(response["code"].GetString()) == "started_new_task");
+}
+
+TEST_CASE("ThingsBoardControlPlane start RPC from no-endpoint uses formal round-trip task",
+          "[service][tb_control_plane]") {
+    Fixture f;
+    f.register_handlers(false, false, false, false, 80.0f);
+
+    f.mqtt->emit_rpc("43a", R"({"method":"start","params":{}})");
+
+    CHECK(f.fsm->current_state() == "ExecutingSegment");
+    REQUIRE(f.fsm->current_segment_direction().has_value());
+    CHECK(*f.fsm->current_segment_direction() == robot::app::SegmentDirection::ToFarEnd);
+    const auto response = f.last_published_json("rpc/response/43a");
+    CHECK(std::string(response["code"].GetString()) == "started_new_task");
 }
 
 TEST_CASE("ThingsBoardControlPlane start RPC rejects invalid position or low battery",
           "[service][tb_control_plane]") {
     SECTION("invalid position") {
         Fixture f;
-        f.register_handlers(false, false, false, 80.0f);
+        f.register_handlers(false, false, true, false, 80.0f);
         f.mqtt->emit_rpc("44", R"({"method":"start","params":{}})");
         const auto response = f.last_published_json("rpc/response/44");
-        CHECK(response["accepted"].GetBool() == false);
-        CHECK(std::string(response["reason"].GetString()) == "robot_position_invalid");
+        CHECK(std::string(response["code"].GetString()) == "robot_position_invalid");
     }
 
     SECTION("battery below threshold") {
@@ -296,8 +346,7 @@ TEST_CASE("ThingsBoardControlPlane start RPC rejects invalid position or low bat
         f.register_handlers(true, true, false, 10.0f);
         f.mqtt->emit_rpc("45", R"({"method":"start","params":{}})");
         const auto response = f.last_published_json("rpc/response/45");
-        CHECK(response["accepted"].GetBool() == false);
-        CHECK(std::string(response["reason"].GetString()) == "battery_below_start_threshold");
+        CHECK(std::string(response["code"].GetString()) == "battery_below_start_threshold");
     }
 }
 
@@ -305,13 +354,13 @@ TEST_CASE("ThingsBoardControlPlane stop RPC stops active task", "[service][tb_co
     Fixture f;
     f.register_handlers();
     f.mqtt->emit_rpc("45", R"({"method":"start","params":{}})");
-    REQUIRE(f.fsm->current_state() == "CleanFwd");
+    REQUIRE(f.fsm->current_state() == "ExecutingSegment");
 
     f.mqtt->emit_rpc("46", R"({"method":"stop","params":{}})");
-    CHECK(f.fsm->current_state() == "Stopped");
+    CHECK(f.fsm->current_state() == "Idle");
 
     const auto response = f.last_published_json("rpc/response/46");
-    CHECK(response["accepted"].GetBool() == true);
+    CHECK(std::string(response["code"].GetString()) == "stopped_task");
 }
 
 TEST_CASE("ThingsBoardControlPlane return RPC sends robot back to parking side",
@@ -319,17 +368,18 @@ TEST_CASE("ThingsBoardControlPlane return RPC sends robot back to parking side",
     Fixture f;
     f.register_handlers();
     f.mqtt->emit_rpc("47", R"({"method":"start","params":{}})");
-    REQUIRE(f.fsm->current_state() == "CleanFwd");
+    REQUIRE(f.fsm->current_state() == "ExecutingSegment");
 
     f.control_plane->register_rpc_handlers(
         []() { return true; },
         []() { return true; },
         []() { return false; },
+        []() { return false; },
         []() { return 80.0f; },
         []() {});
 
     f.mqtt->emit_rpc("48", R"({"method":"return","params":{}})");
-    CHECK(f.fsm->current_state() == "Returning");
+    CHECK(f.fsm->current_state() == "ExecutingSegment");
 }
 
 TEST_CASE("ThingsBoardControlPlane reset RPC requests reboot", "[service][tb_control_plane]") {
@@ -338,7 +388,7 @@ TEST_CASE("ThingsBoardControlPlane reset RPC requests reboot", "[service][tb_con
 
     f.mqtt->emit_rpc("49", R"({"method":"reset","params":{}})");
     const auto response = f.last_published_json("rpc/response/49");
-    CHECK(response["accepted"].GetBool() == true);
+    CHECK(std::string(response["code"].GetString()) == "rebooting_device");
 
     for (int i = 0; i < 10 && !f.reboot_requested; ++i) {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -351,14 +401,25 @@ TEST_CASE("ThingsBoardControlPlane publishes business telemetry from supervisor 
     Fixture f;
     f.fsm->dispatch(robot::app::EvScheduleStart{true, false, 2.0f});
     f.fsm->dispatch(robot::app::EvFarEndLimitSettled{});
-    f.command_tracker->reject("return", "req-1", "return_not_allowed_in_current_state");
+    f.fault->report(FaultService::FaultEvent::Level::P1, 0x2001, "return_not_allowed");
 
     f.control_plane->publish_business_telemetry();
 
     const auto j = f.last_published_json("telemetry");
-    CHECK(std::string(j["device_state"].GetString()) == "CleanReturn");
-    CHECK(std::string(j["task_state"].GetString()) == "RunningTask");
-    REQUIRE(j.HasMember("active_config_version"));
-    CHECK(j["active_config_version"].GetUint64() > 0u);
+    CHECK(std::string(j["state"].GetString()) == "ExecutingSegment");
+    CHECK(j["fault"].GetUint() == 0x2001);
+    REQUIRE(j.HasMember("cfg_ver"));
+    CHECK(j["cfg_ver"].GetUint64() > 0u);
     CHECK(j.MemberCount() == 3);
+}
+
+TEST_CASE("ThingsBoardControlPlane publishes promoted P2 as active fault",
+          "[service][tb_control_plane]") {
+    Fixture f;
+    f.fault->report(FaultService::FaultEvent::Level::P2, 0x3002, "gps_lost_requires_return");
+
+    f.control_plane->publish_business_telemetry();
+
+    const auto j = f.last_published_json("telemetry");
+    CHECK(j["fault"].GetUint() == 0x3002u);
 }

@@ -42,7 +42,8 @@ struct SafetyMonitorFixture {
     EventBus bus;
     SafetyMonitor monitor;
 
-    SafetyMonitorFixture() : monitor(walk, left_sw, right_sw, bus) {
+    SafetyMonitorFixture()
+        : monitor([this]() { walk->emergency_override(0.0f); }, left_sw, right_sw, bus) {
         can->open_result = true;
         left_pin->open_result = true;
         right_pin->open_result = true;
@@ -99,15 +100,15 @@ TEST_CASE("SafetyMonitor: 右侧 GPIO 触发后立即发出急停帧",
 }
 
 // ────────────────────────────────────────────────────────────────
-// LimitSettledEvent 延迟发布（>180ms）
+// LimitSettledEvent 持续触发稳定后发布
 // ────────────────────────────────────────────────────────────────
-TEST_CASE("SafetyMonitor: 触发后 >200ms 发布 LimitSettledEvent", "[middleware][safety_monitor]") {
+TEST_CASE("SafetyMonitor: 持续触发稳定后发布 LimitSettledEvent", "[middleware][safety_monitor]") {
     SafetyMonitorFixture f;
 
     bool settled_left = false;
     f.bus.subscribe<SafetyMonitor::LimitSettledEvent>(
         [&](const SafetyMonitor::LimitSettledEvent& e) {
-            if (e.side == LimitSide::LEFT)
+            if (e.side == robot::domain::PhysicalLimitSide::Left)
                 settled_left = true;
         });
 
@@ -117,9 +118,36 @@ TEST_CASE("SafetyMonitor: 触发后 >200ms 发布 LimitSettledEvent", "[middlewa
         f.left_pin->simulate_edge();
     }
 
-    // SafetyMonitor 的 monitor_loop 延迟 180ms 后发布 LimitSettledEvent
-    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    // SafetyMonitor 仅在限位持续低有效稳定后发布 LimitSettledEvent。
+    std::this_thread::sleep_for(std::chrono::milliseconds(400));
     REQUIRE(settled_left);
+    f.monitor.stop();
+}
+
+TEST_CASE("SafetyMonitor: 短暂触发释放后不发布 LimitSettledEvent",
+          "[middleware][safety_monitor]") {
+    SafetyMonitorFixture f;
+    int settled_count = 0;
+    int unstable_count = 0;
+    f.bus.subscribe<SafetyMonitor::LimitSettledEvent>(
+        [&](const SafetyMonitor::LimitSettledEvent& e) {
+            if (e.side == robot::domain::PhysicalLimitSide::Left) ++settled_count;
+        });
+    f.bus.subscribe<SafetyMonitor::LimitUnstableEvent>(
+        [&](const SafetyMonitor::LimitUnstableEvent& e) {
+            if (e.side == robot::domain::PhysicalLimitSide::Left) ++unstable_count;
+        });
+
+    f.monitor.start();
+
+    if (f.left_pin->registered_cb) {
+        f.left_pin->simulate_edge();
+    }
+    f.left_pin->read_result = true;
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(400));
+    REQUIRE(settled_count == 0);
+    REQUIRE(unstable_count == 1);
     f.monitor.stop();
 }
 
@@ -132,7 +160,7 @@ TEST_CASE("SafetyMonitor: 短时间内多次触发只发一次 LimitSettledEvent
     int settled_count = 0;
     f.bus.subscribe<SafetyMonitor::LimitSettledEvent>(
         [&](const SafetyMonitor::LimitSettledEvent& e) {
-            if (e.side == LimitSide::RIGHT)
+            if (e.side == robot::domain::PhysicalLimitSide::Right)
                 ++settled_count;
         });
 
@@ -144,7 +172,7 @@ TEST_CASE("SafetyMonitor: 短时间内多次触发只发一次 LimitSettledEvent
             f.right_pin->simulate_edge();
     }
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    std::this_thread::sleep_for(std::chrono::milliseconds(400));
     REQUIRE(settled_count == 1);
     f.monitor.stop();
 }
@@ -158,14 +186,14 @@ TEST_CASE("SafetyMonitor: 同一侧 release 后第二次触发也能发布 Limit
     int settled_count = 0;
     f.bus.subscribe<SafetyMonitor::LimitSettledEvent>(
         [&](const SafetyMonitor::LimitSettledEvent& e) {
-            if (e.side == LimitSide::LEFT) ++settled_count;
+            if (e.side == robot::domain::PhysicalLimitSide::Left) ++settled_count;
         });
 
     f.monitor.start();
 
     // 第一次触发
     if (f.left_pin->registered_cb) f.left_pin->simulate_edge();
-    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    std::this_thread::sleep_for(std::chrono::milliseconds(400));
     REQUIRE(settled_count == 1);
 
     // 必须先物理释放（低有效限位回到高电平）后才能重新 armed
@@ -175,7 +203,7 @@ TEST_CASE("SafetyMonitor: 同一侧 release 后第二次触发也能发布 Limit
 
     // 第二次触发（已 release，可再次置位）
     if (f.left_pin->registered_cb) f.left_pin->simulate_edge();
-    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    std::this_thread::sleep_for(std::chrono::milliseconds(400));
     REQUIRE(settled_count == 2);
 
     f.monitor.stop();
@@ -187,7 +215,7 @@ TEST_CASE("SafetyMonitor: 同一侧 settled 后未 release 不会再次急停",
     f.monitor.start();
 
     if (f.left_pin->registered_cb) f.left_pin->simulate_edge();
-    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    std::this_thread::sleep_for(std::chrono::milliseconds(400));
 
     const auto frames_after_first = f.can->sent_frames.size();
     REQUIRE(frames_after_first > 0);
@@ -207,7 +235,7 @@ TEST_CASE("SafetyMonitor: 短暂 release 后立刻重触发不会再次急停",
     f.monitor.start();
 
     if (f.left_pin->registered_cb) f.left_pin->simulate_edge();
-    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    std::this_thread::sleep_for(std::chrono::milliseconds(400));
 
     const auto frames_after_first = f.can->sent_frames.size();
     REQUIRE(frames_after_first > 0);

@@ -37,7 +37,7 @@ TEST_CASE("ThingsBoardJsonCodec emits shared-attribute style status event",
           "[service][tb_json_codec]") {
     char out[512];
     robot::service::ThingsBoardJsonCodec::StatusEventView view{
-        "shared_attr_update", true, "ok"};
+        "shared_attr_update", "ok"};
 
     const size_t len =
         robot::service::ThingsBoardJsonCodec::build_status_event(view, out, sizeof(out));
@@ -45,31 +45,5 @@ TEST_CASE("ThingsBoardJsonCodec emits shared-attribute style status event",
     REQUIRE(len > 0);
     const auto payload = parse_json(out, len);
     CHECK(std::string(payload["event"].GetString()) == "shared_attr_update");
-    CHECK(payload["accepted"].GetBool() == true);
-    CHECK(std::string(payload["reason"].GetString()) == "ok");
-}
-
-TEST_CASE("ThingsBoardJsonCodec emits command event payload", "[service][tb_json_codec]") {
-    char out[1024];
-    robot::service::CommandSnapshot command;
-    command.id = "cmd-1";
-    command.name = "start";
-    command.request_id = "42";
-    command.phase = robot::service::CommandPhase::Succeeded;
-    command.reason = "started_new_task";
-    command.accepted_at_ms = 10;
-    command.finished_at_ms = 20;
-
-    robot::service::ThingsBoardJsonCodec::CommandEventView view{
-        "command_completed", &command};
-
-    const size_t len =
-        robot::service::ThingsBoardJsonCodec::build_command_event(view, out, sizeof(out));
-
-    REQUIRE(len > 0);
-    const auto payload = parse_json(out, len);
-    CHECK(std::string(payload["event"].GetString()) == "command_completed");
-    CHECK(std::string(payload["command_id"].GetString()) == "cmd-1");
-    CHECK(std::string(payload["phase"].GetString()) == "succeeded");
-    CHECK(std::string(payload["reason"].GetString()) == "started_new_task");
+    CHECK(std::string(payload["code"].GetString()) == "ok");
 }

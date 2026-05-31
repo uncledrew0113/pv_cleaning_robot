@@ -23,10 +23,16 @@ void FaultService::report(FaultEvent::Level level, uint32_t code, const std::str
     {
         std::lock_guard<hal::PiMutex> lk(mtx_);
         last_fault_ = evt;
-        has_fault_ = true;
+        has_fault_ = level == FaultEvent::Level::P0 || level == FaultEvent::Level::P1 ||
+                     level == FaultEvent::Level::P2;
     }
 
     bus_.publish(evt);
+}
+
+void FaultService::clear_active_fault() {
+    std::lock_guard<hal::PiMutex> lk(mtx_);
+    has_fault_ = false;
 }
 
 bool FaultService::has_active_fault(FaultEvent::Level min_level) const {
@@ -37,7 +43,7 @@ bool FaultService::has_active_fault(FaultEvent::Level min_level) const {
     return static_cast<int>(last_fault_.level) <= static_cast<int>(min_level);
 }
 
-const FaultService::FaultEvent& FaultService::last_fault() const {
+FaultService::FaultEvent FaultService::last_fault() const {
     std::lock_guard<hal::PiMutex> lk(mtx_);
     return last_fault_;
 }

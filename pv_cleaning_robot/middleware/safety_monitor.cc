@@ -1,10 +1,18 @@
 #include "pv_cleaning_robot/middleware/safety_monitor.h"
-// WalkMotorGroup 已通过 safety_monitor.h 间接包含
+
 #include <pthread.h>
 #include <sched.h>
 #include <spdlog/spdlog.h>
 
+#include "pv_cleaning_robot/device/limit_switch.h"
+
 namespace {
+robot::domain::PhysicalLimitSide to_physical_side(robot::device::LimitSide side) {
+    return side == robot::device::LimitSide::LEFT
+               ? robot::domain::PhysicalLimitSide::Left
+               : robot::domain::PhysicalLimitSide::Right;
+}
+
 /// 返回单调时钟毫秒时间戳（用于防抖计时）
 inline uint64_t now_ms() {
     return static_cast<uint64_t>(
@@ -13,17 +21,18 @@ inline uint64_t now_ms() {
         .count());
 }
 
+constexpr uint64_t kLimitSettleStableMs = 300u;
 constexpr uint64_t kReleaseStableMs = 300u;
 }  // namespace
 
 namespace robot::middleware {
 
 SafetyMonitor::SafetyMonitor(
-    std::shared_ptr<device::WalkMotorGroup> walk_group,
-    std::shared_ptr<device::LimitSwitch>    left_switch,
-    std::shared_ptr<device::LimitSwitch>    right_switch,
-    EventBus&                               event_bus)
-    : walk_group_(std::move(walk_group))
+    std::function<void()> emergency_stop,
+    std::shared_ptr<device::LimitSwitch> left_switch,
+    std::shared_ptr<device::LimitSwitch> right_switch,
+    EventBus& event_bus)
+    : emergency_stop_(std::move(emergency_stop))
     , left_switch_(std::move(left_switch))
     , right_switch_(std::move(right_switch))
     , event_bus_(event_bus)
@@ -39,9 +48,9 @@ bool SafetyMonitor::start()
 {
     // 注册限位触发回调（在各自 GPIO 监控线程内同步调用）
     left_switch_->set_trigger_callback(
-        [this](device::LimitSide side) { on_limit_trigger(side); });
+        [this](device::LimitSide side) { on_limit_trigger(to_physical_side(side)); });
     right_switch_->set_trigger_callback(
-        [this](device::LimitSide side) { on_limit_trigger(side); });
+        [this](device::LimitSide side) { on_limit_trigger(to_physical_side(side)); });
 
     // 启动 GPIO 边沿监控
     left_switch_->start_monitoring();
@@ -63,23 +72,24 @@ void SafetyMonitor::stop()
     if (monitor_thread_.joinable()) monitor_thread_.join();
 }
 
-void SafetyMonitor::on_limit_trigger(device::LimitSide side)
+void SafetyMonitor::on_limit_trigger(domain::PhysicalLimitSide side)
 {
     // ============================================================
     // 安全优先关键路径：此函数在 GPIO 监控线程中被调用（SCHED_FIFO 95）
     // 目标：从触发到急停指令发出 ≤ 50 ms
     //
     // 两端完全对称：立即停车 + 清除触发标志 + 置 pending 时间戳。
-    // 防抖延迟（180ms）和 FSM 通知由 monitor_loop（SCHED_FIFO 94）负责。
+    // 稳定到位确认和 FSM 通知由 monitor_loop（SCHED_FIFO 94）负责。
     // pending 时间戳本身就是去重门闩：同一侧在 settled 前不接受重复触发。
     // ============================================================
     std::atomic<uint64_t>& pending_ts =
-        side == device::LimitSide::LEFT ? pending_left_ts_ : pending_right_ts_;
+        side == domain::PhysicalLimitSide::Left ? pending_left_ts_ : pending_right_ts_;
     std::atomic<bool>& wait_release =
-        side == device::LimitSide::LEFT ? left_wait_release_ : right_wait_release_;
+        side == domain::PhysicalLimitSide::Left ? left_wait_release_ : right_wait_release_;
     std::atomic<uint64_t>& release_ts =
-        side == device::LimitSide::LEFT ? left_release_ts_ : right_release_ts_;
-    auto& limit_switch = side == device::LimitSide::LEFT ? left_switch_ : right_switch_;
+        side == domain::PhysicalLimitSide::Left ? left_release_ts_ : right_release_ts_;
+    auto& limit_switch =
+        side == domain::PhysicalLimitSide::Left ? left_switch_ : right_switch_;
 
     if (wait_release.load(std::memory_order_acquire) ||
         pending_ts.load(std::memory_order_acquire) != 0) {
@@ -88,7 +98,7 @@ void SafetyMonitor::on_limit_trigger(device::LimitSide side)
     }
 
     limit_switch->clear_trigger();
-    walk_group_->emergency_override(0.0f);
+    emergency_stop_();
     pending_ts.store(now_ms(), std::memory_order_release);
     wait_release.store(true, std::memory_order_release);
     release_ts.store(0, std::memory_order_release);
@@ -115,12 +125,18 @@ void SafetyMonitor::monitor_loop()
     }
 
     // 非阻塞并行防抖：前后端各自独立计时，互不阻塞。
-    // check_settled 每 5ms 被调用一次，距触发 ≥180ms 后发布事件。
-    // 前后端同时触发时，均在 ~185ms（180ms+5ms误差）内响应，消除串行 nanosleep 的 ~360ms 延迟。
-    auto check_settled = [&](std::atomic<uint64_t>& ts_atom, device::LimitSide side) {
+    // check_settled 每 5ms 被调用一次，持续低有效稳定后发布事件。
+    auto check_settled = [&](std::atomic<uint64_t>& ts_atom,
+                             domain::PhysicalLimitSide side,
+                             const std::shared_ptr<device::LimitSwitch>& sw) {
         uint64_t t = ts_atom.load(std::memory_order_acquire);
         if (t == 0) return;
-        if (now_ms() - t >= 180u) {
+        if (sw->read_current_level()) {
+            ts_atom.store(0, std::memory_order_release);
+            event_bus_.publish(LimitUnstableEvent{side});
+            return;
+        }
+        if (now_ms() - t >= kLimitSettleStableMs) {
             ts_atom.store(0, std::memory_order_release);  // 清除，防止重复触发
             event_bus_.publish(LimitSettledEvent{side});
         }
@@ -156,19 +172,19 @@ void SafetyMonitor::monitor_loop()
         check_release(right_wait_release_, right_release_ts_, right_switch_);
 
         // ── 非阻塞并行防抖检查（前后端独立计时）──────────────────────
-        check_settled(pending_left_ts_, device::LimitSide::LEFT);
-        check_settled(pending_right_ts_, device::LimitSide::RIGHT);
+        check_settled(pending_left_ts_, domain::PhysicalLimitSide::Left, left_switch_);
+        check_settled(pending_right_ts_, domain::PhysicalLimitSide::Right, right_switch_);
 
         // ── 备用轮询路径：以防 GPIO 边沿回调丢失（双保险）────────────
         // 注意：on_limit_trigger() 内部已调用 clear_trigger()，
         // 因此重复触发被抑制，无需额外去重计数器。
         if (left_switch_->is_triggered() &&
             pending_left_ts_.load(std::memory_order_acquire) == 0) {
-            on_limit_trigger(device::LimitSide::LEFT);
+            on_limit_trigger(domain::PhysicalLimitSide::Left);
         }
         if (right_switch_->is_triggered() &&
             pending_right_ts_.load(std::memory_order_acquire) == 0) {
-            on_limit_trigger(device::LimitSide::RIGHT);
+            on_limit_trigger(domain::PhysicalLimitSide::Right);
         }
         // 5 ms 轮询（SCHED_FIFO 94，低于 GPIO 95，避免兜底轮询反向压制边沿线程）
         struct timespec poll_ts{0, 5 * 1000 * 1000};
