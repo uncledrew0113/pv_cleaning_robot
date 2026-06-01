@@ -217,3 +217,30 @@ TEST_CASE("RobotController converts motion start failure into FaultStopped",
     REQUIRE(controller.snapshot().fault == robot::domain::FaultCode::kSegmentStartFailed);
     REQUIRE(actions.emergency_stop_count == 1);
 }
+
+TEST_CASE("RobotController posted watchdog timeout enters FaultStopped",
+          "[app][robot_controller]") {
+    RobotController controller;
+    controller.start();
+
+    controller.post_watchdog_timeout("walk_ctrl");
+    controller.drain_for_test();
+    controller.stop();
+
+    REQUIRE(controller.snapshot().state == "FaultStopped");
+    REQUIRE(controller.snapshot().fault == robot::domain::FaultCode::kCanCommunicationLost);
+}
+
+TEST_CASE("RobotController posted limit unstable enters FaultStopped",
+          "[app][robot_controller]") {
+    RobotController controller;
+    controller.start();
+
+    controller.post_limit_unstable(robot::domain::Endpoint::A);
+    controller.drain_for_test();
+    controller.stop();
+
+    REQUIRE(controller.snapshot().state == "FaultStopped");
+    REQUIRE(controller.snapshot().fault ==
+            robot::domain::FaultCode::kLimitUnstableAfterEmergencyStop);
+}

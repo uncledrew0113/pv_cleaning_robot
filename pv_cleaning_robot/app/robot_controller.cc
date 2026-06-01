@@ -54,6 +54,48 @@ void RobotController::post_for_test(std::function<void()> fn) {
     post(std::move(fn));
 }
 
+void RobotController::post_limit_settled(domain::Endpoint endpoint) {
+    post([this, endpoint] {
+        std::lock_guard<std::mutex> lk(mtx_);
+        handle_limit_settled_locked(endpoint);
+    });
+}
+
+void RobotController::post_limit_unstable(domain::Endpoint endpoint) {
+    post([this, endpoint] {
+        std::lock_guard<std::mutex> lk(mtx_);
+        handle_limit_unstable_locked(endpoint);
+    });
+}
+
+void RobotController::post_watchdog_timeout(std::string thread_name) {
+    post([this, thread_name = std::move(thread_name)] {
+        std::lock_guard<std::mutex> lk(mtx_);
+        handle_watchdog_timeout_locked(thread_name);
+    });
+}
+
+void RobotController::post_recovery_finished(bool ok) {
+    post([this, ok] {
+        std::lock_guard<std::mutex> lk(mtx_);
+        handle_recovery_finished_locked(ok);
+    });
+}
+
+void RobotController::post_schedule_window_hit() {
+    post([this] {
+        std::lock_guard<std::mutex> lk(mtx_);
+        (void)submit_command_locked(domain::RobotCommand{
+            domain::RobotCommandKind::StartConfiguredMission,
+            domain::CommandSource::Scheduler,
+            "schedule"});
+    });
+}
+
+void RobotController::post_tick() {
+    post([] {});
+}
+
 void RobotController::drain_for_test() {
     std::unique_lock<std::mutex> lk(queue_mtx_);
     idle_cv_.wait(lk, [this] { return queue_.empty() && !handling_event_; });
@@ -286,6 +328,32 @@ void RobotController::handle_limit_settled_locked(domain::Endpoint endpoint) {
         return;
     }
     mission_->current_segment_index = 0;
+    state_ = RobotState::ExecutingMission;
+    start_current_segment_locked();
+}
+
+void RobotController::handle_limit_unstable_locked(domain::Endpoint) {
+    handle_fault_locked(FaultFact{FaultSource::SafetyMonitor,
+                                  domain::FaultCode::kLimitUnstableAfterEmergencyStop,
+                                  "limit_unstable_after_hard_stop"});
+}
+
+void RobotController::handle_watchdog_timeout_locked(const std::string& thread_name) {
+    handle_fault_locked(FaultFact{FaultSource::Watchdog,
+                                  domain::FaultCode::kCanCommunicationLost,
+                                  "watchdog_timeout:" + thread_name});
+}
+
+void RobotController::handle_recovery_finished_locked(bool ok) {
+    if (state_ != RobotState::Recovering) {
+        return;
+    }
+    if (!ok) {
+        handle_fault_locked(FaultFact{FaultSource::Recovery,
+                                      domain::FaultCode::kP1DuringReturnEscalatedToP0,
+                                      "recovery_failed"});
+        return;
+    }
     state_ = RobotState::ExecutingMission;
     start_current_segment_locked();
 }

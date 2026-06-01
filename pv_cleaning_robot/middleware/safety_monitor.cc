@@ -71,6 +71,16 @@ void SafetyMonitor::stop()
     if (monitor_thread_.joinable()) monitor_thread_.join();
 }
 
+void SafetyMonitor::set_limit_settled_callback(std::function<void(domain::Endpoint)> cb)
+{
+    limit_settled_cb_ = std::move(cb);
+}
+
+void SafetyMonitor::set_limit_unstable_callback(std::function<void(domain::Endpoint)> cb)
+{
+    limit_unstable_cb_ = std::move(cb);
+}
+
 void SafetyMonitor::on_limit_trigger(domain::Endpoint endpoint)
 {
     // ============================================================
@@ -133,11 +143,17 @@ void SafetyMonitor::monitor_loop()
         if (sw->read_current_level()) {
             ts_atom.store(0, std::memory_order_release);
             event_bus_.publish(LimitUnstableEvent{endpoint});
+            if (limit_unstable_cb_) {
+                limit_unstable_cb_(endpoint);
+            }
             return;
         }
         if (now_ms() - t >= kLimitSettleStableMs) {
             ts_atom.store(0, std::memory_order_release);  // 清除，防止重复触发
             event_bus_.publish(LimitSettledEvent{endpoint});
+            if (limit_settled_cb_) {
+                limit_settled_cb_(endpoint);
+            }
         }
     };
 

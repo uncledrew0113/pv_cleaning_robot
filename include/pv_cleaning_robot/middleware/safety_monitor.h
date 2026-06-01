@@ -57,6 +57,9 @@ class SafetyMonitor {
     /// 停止安全监控
     void stop();
 
+    void set_limit_settled_callback(std::function<void(domain::Endpoint)> cb);
+    void set_limit_unstable_callback(std::function<void(domain::Endpoint)> cb);
+
     private:
     /// LimitSwitch 触发回调（在 GPIO 监控线程中被调用，必须极短）
     void on_limit_trigger(domain::Endpoint endpoint);
@@ -68,6 +71,8 @@ class SafetyMonitor {
     std::shared_ptr<device::LimitSwitch> left_switch_;
     std::shared_ptr<device::LimitSwitch> right_switch_;
     EventBus& event_bus_;
+    std::function<void(domain::Endpoint)> limit_settled_cb_;
+    std::function<void(domain::Endpoint)> limit_unstable_cb_;
 
     std::atomic<bool> running_{false};
     /// 防抖 pending 时间戳（ms）：GPIO 线程触发后记录触发时刻，0 = 未触发。

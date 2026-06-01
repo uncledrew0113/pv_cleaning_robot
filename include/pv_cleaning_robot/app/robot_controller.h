@@ -55,6 +55,13 @@ public:
     CommandResult submit_command(const domain::RobotCommand& command);
     RobotControllerSnapshot snapshot() const;
 
+    void post_limit_settled(domain::Endpoint endpoint);
+    void post_limit_unstable(domain::Endpoint endpoint);
+    void post_watchdog_timeout(std::string thread_name);
+    void post_recovery_finished(bool ok);
+    void post_schedule_window_hit();
+    void post_tick();
+
     void complete_self_check_for_test(bool ok);
     void handle_limit_settled_for_test(domain::Endpoint endpoint);
     void handle_fault_for_test(const FaultFact& fact);
@@ -71,6 +78,9 @@ private:
     CommandResult stop_locked();
     bool start_current_segment_locked();
     void handle_limit_settled_locked(domain::Endpoint endpoint);
+    void handle_limit_unstable_locked(domain::Endpoint endpoint);
+    void handle_watchdog_timeout_locked(const std::string& thread_name);
+    void handle_recovery_finished_locked(bool ok);
     void handle_fault_locked(const FaultFact& fact);
 
     mutable std::mutex mtx_;
