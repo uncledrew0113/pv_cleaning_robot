@@ -54,6 +54,7 @@ set(COMMON_SRCS
   ${PROJ}/service/thingsboard_control_plane.cc
 
   # App 层
+  ${PROJ}/app/fault_policy.cc
   ${PROJ}/app/robot_fsm.cc
   ${PROJ}/app/robot_supervisor.cc
   ${PROJ}/app/fault_handler.cc
@@ -117,6 +118,7 @@ add_executable(unit_tests
   service/recovery_motion_test.cc
 
   # App 层
+  app/fault_policy_test.cc
   app/robot_fsm_test.cc
   app/robot_supervisor_test.cc
   app/fault_handler_test.cc

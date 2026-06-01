@@ -378,6 +378,7 @@ static constexpr uint32_t kWheelSpinFree = 0x0002u;
 static constexpr uint32_t kCanCommunicationLost = 0x1001u;
 static constexpr uint32_t kSegmentStartFailed = 0x1101u;
 static constexpr uint32_t kP1DuringReturnEscalatedToP0 = 0x1102u;
+static constexpr uint32_t kTaskContextInconsistent = 0x1103u;
 static constexpr uint32_t kUnexpectedLimitSide = 0x1003u;
 static constexpr uint32_t kConflictingLimitSides = 0x1004u;
 static constexpr uint32_t kLimitUnstableAfterEmergencyStop = 0x1005u;
