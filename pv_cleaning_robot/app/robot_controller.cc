@@ -2,6 +2,82 @@
 
 namespace robot::app {
 
+RobotController::~RobotController() {
+    stop();
+}
+
+void RobotController::start() {
+    std::lock_guard<std::mutex> lk(queue_mtx_);
+    if (running_) {
+        return;
+    }
+    stop_requested_ = false;
+    running_ = true;
+    worker_ = std::thread([this] { loop(); });
+}
+
+void RobotController::stop() {
+    {
+        std::lock_guard<std::mutex> lk(queue_mtx_);
+        if (!running_) {
+            return;
+        }
+        stop_requested_ = true;
+    }
+    queue_cv_.notify_all();
+    if (worker_.joinable()) {
+        worker_.join();
+    }
+    {
+        std::lock_guard<std::mutex> lk(queue_mtx_);
+        running_ = false;
+        stop_requested_ = false;
+        handling_event_ = false;
+    }
+    idle_cv_.notify_all();
+}
+
+void RobotController::post(std::function<void()> fn) {
+    {
+        std::lock_guard<std::mutex> lk(queue_mtx_);
+        queue_.push_back(std::move(fn));
+    }
+    queue_cv_.notify_one();
+}
+
+void RobotController::post_for_test(std::function<void()> fn) {
+    post(std::move(fn));
+}
+
+void RobotController::drain_for_test() {
+    std::unique_lock<std::mutex> lk(queue_mtx_);
+    idle_cv_.wait(lk, [this] { return queue_.empty() && !handling_event_; });
+}
+
+void RobotController::loop() {
+    for (;;) {
+        std::function<void()> fn;
+        {
+            std::unique_lock<std::mutex> lk(queue_mtx_);
+            queue_cv_.wait(lk, [this] { return stop_requested_ || !queue_.empty(); });
+            if (stop_requested_ && queue_.empty()) {
+                return;
+            }
+            fn = std::move(queue_.front());
+            queue_.pop_front();
+            handling_event_ = true;
+        }
+
+        fn();
+
+        {
+            std::lock_guard<std::mutex> lk(queue_mtx_);
+            handling_event_ = false;
+        }
+        idle_cv_.notify_all();
+    }
+}
+
 const char* RobotController::state_name(RobotState state) noexcept {
     switch (state) {
     case RobotState::Idle:

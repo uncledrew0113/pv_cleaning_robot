@@ -1,8 +1,12 @@
 #pragma once
 
+#include <condition_variable>
+#include <deque>
+#include <functional>
 #include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
 
 #include "pv_cleaning_robot/domain/robot_domain.h"
 
@@ -31,13 +35,22 @@ struct RobotControllerSnapshot {
 
 class RobotController {
 public:
+    ~RobotController();
+
+    void start();
+    void stop();
+
     CommandResult submit_command(const domain::RobotCommand& command);
     RobotControllerSnapshot snapshot() const;
 
     void complete_self_check_for_test(bool ok);
+    void post_for_test(std::function<void()> fn);
+    void drain_for_test();
 
 private:
     static const char* state_name(RobotState state) noexcept;
+    void loop();
+    void post(std::function<void()> fn);
     bool mission_active() const noexcept;
     CommandResult submit_command_locked(const domain::RobotCommand& command);
     CommandResult start_command_locked(const domain::RobotCommand& command);
@@ -47,6 +60,15 @@ private:
     RobotState state_{RobotState::Idle};
     std::optional<domain::MissionContext> mission_;
     std::optional<uint32_t> active_fault_;
+
+    mutable std::mutex queue_mtx_;
+    std::condition_variable queue_cv_;
+    std::condition_variable idle_cv_;
+    std::deque<std::function<void()>> queue_;
+    bool running_{false};
+    bool stop_requested_{false};
+    bool handling_event_{false};
+    std::thread worker_;
 };
 
 }  // namespace robot::app
