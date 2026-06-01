@@ -38,6 +38,7 @@
     "sweep_rpm":           20.0,
     "limit_test_rpm":      20.0,
     "brush_test_rpm":      1000.0,
+    "combined_passes":     1,
     "primary_dock":        "B",
     "health_jsonl_path":   "data/test/hw_system_test_health.jsonl",
     "health_log_max_bytes": 10485760,
