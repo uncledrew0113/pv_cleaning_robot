@@ -150,7 +150,7 @@ struct Fixture {
     }
 
     void register_handlers() {
-        control_plane->register_rpc_handlers([] {});
+        control_plane->register_rpc_handlers();
     }
 
     rapidjson::Document last_published_json(const std::string& topic_suffix) const {
@@ -234,6 +234,17 @@ TEST_CASE("ThingsBoard RPC maps robot commands", "[service][tb_control_plane]") 
     f.mqtt->emit_rpc("305", R"({"method":"fault_reset","params":{}})");
     REQUIRE(f.last_command.has_value());
     CHECK(f.last_command->kind == robot::domain::RobotCommandKind::FaultReset);
+}
+
+TEST_CASE("ThingsBoard RPC reset reboot command is not registered", "[service][tb_control_plane]") {
+    Fixture f;
+    f.register_handlers();
+
+    f.mqtt->emit_rpc("399", R"({"method":"reset","params":{}})");
+
+    const auto response = f.last_published_json("rpc/response/399");
+    CHECK(std::string(response["code"].GetString()) == "method_not_supported");
+    REQUIRE_FALSE(f.last_command.has_value());
 }
 
 TEST_CASE("ThingsBoard RPC returns app rejection reason", "[service][tb_control_plane]") {

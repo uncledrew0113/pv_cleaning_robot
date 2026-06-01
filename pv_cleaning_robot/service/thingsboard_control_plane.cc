@@ -217,31 +217,13 @@ void ThingsBoardControlPlane::request_shared_attributes_snapshot() const {
     }
 }
 
-void ThingsBoardControlPlane::register_rpc_handlers(std::function<void()> reboot_device) {
+void ThingsBoardControlPlane::register_rpc_handlers() {
     register_command_rpc("clean_to_return", domain::RobotCommandKind::CleanTowardOppositeEndpoint);
     register_command_rpc("clean_to_parking",
                          domain::RobotCommandKind::CleanTowardPrimaryDock);
     register_command_rpc("start_configured", domain::RobotCommandKind::StartConfiguredMission);
     register_command_rpc("stop", domain::RobotCommandKind::Stop);
     register_command_rpc("fault_reset", domain::RobotCommandKind::FaultReset);
-
-    cloud_->register_rpc(
-        "reset",
-        [this, reboot_device = std::move(reboot_device)](const std::string& request_id,
-                                                         const std::string& /*params*/) {
-            // reset RPC 立即响应 rebooting_device，然后异步重启设备。
-            spdlog::info("[ThingsBoardControlPlane] RPC reset received");
-            command_tracker_->finish_success(
-                command_tracker_->accept("reset", request_id), "rebooting_device");
-            auto reply = rpc_reply("rebooting_device");
-            std::thread([reboot_device]() {
-                std::this_thread::sleep_for(std::chrono::milliseconds(200));
-                if (reboot_device) {
-                    reboot_device();
-                }
-            }).detach();
-            return reply;
-        });
 }
 
 void ThingsBoardControlPlane::publish_backup_fallback_event() const {

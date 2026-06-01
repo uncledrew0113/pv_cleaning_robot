@@ -85,8 +85,8 @@ public:
     /// 设备上线后主动请求一次当前 release 关心的 shared attributes 快照。
     void request_shared_attributes_snapshot() const;
     /// 注册当前 release 支持的机器人 RPC: clean_to_return / clean_to_parking /
-    /// start_configured / stop。reset 作为设备维护 RPC 保留。
-    void register_rpc_handlers(std::function<void()> reboot_device);
+    /// start_configured / stop / fault_reset。
+    void register_rpc_handlers();
     void publish_backup_fallback_event() const;
     void publish_startup_attributes() const;
     void publish_status_event(const char* event_name, const char* code) const;

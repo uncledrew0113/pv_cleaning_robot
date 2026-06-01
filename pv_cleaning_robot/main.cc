@@ -431,18 +431,7 @@ int main() {
         startup_right_limit_active);
     tb_control->subscribe_shared_attributes();
     // 在 connect() 前完成 shared attributes / RPC 注册，避免首个云端下行消息丢失。
-    tb_control->register_rpc_handlers([&log]() {
-            log->warn("[Main] 收到 reset RPC，准备重启设备");
-            sync();
-            const auto rc = syscall(SYS_reboot,
-                                    LINUX_REBOOT_MAGIC1,
-                                    LINUX_REBOOT_MAGIC2,
-                                    LINUX_REBOOT_CMD_RESTART,
-                                    nullptr);
-            if (rc != 0) {
-                log->error("[Main] reset RPC 重启失败: {}", strerror(errno));
-            }
-        });
+    tb_control->register_rpc_handlers();
 
     net_mgr->connect();
 
