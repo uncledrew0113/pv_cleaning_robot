@@ -216,4 +216,41 @@ void RobotController::complete_self_check_for_test(bool ok) {
     state_ = RobotState::ExecutingMission;
 }
 
+void RobotController::handle_limit_settled_for_test(domain::Endpoint endpoint) {
+    std::lock_guard<std::mutex> lk(mtx_);
+    handle_limit_settled_locked(endpoint);
+}
+
+void RobotController::handle_limit_settled_locked(domain::Endpoint endpoint) {
+    namespace FaultCode = robot::domain::FaultCode;
+
+    if (state_ != RobotState::ExecutingMission || !mission_) {
+        active_fault_ = FaultCode::kUnexpectedLimitSide;
+        mission_.reset();
+        state_ = RobotState::FaultStopped;
+        return;
+    }
+
+    const auto* segment = mission_->current_segment();
+    if (segment == nullptr || segment->target != endpoint) {
+        active_fault_ = FaultCode::kUnexpectedLimitSide;
+        mission_.reset();
+        state_ = RobotState::FaultStopped;
+        return;
+    }
+
+    state_ = RobotState::SettlingEndpoint;
+    ++mission_->current_segment_index;
+    if (mission_->current_segment_index >= mission_->segments.size()) {
+        ++mission_->completed_cycles;
+    }
+    if (mission_->completed_cycles >= mission_->repeat_count) {
+        mission_.reset();
+        state_ = RobotState::Idle;
+        return;
+    }
+    mission_->current_segment_index = 0;
+    state_ = RobotState::ExecutingMission;
+}
+
 }  // namespace robot::app

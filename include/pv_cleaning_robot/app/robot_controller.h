@@ -45,6 +45,7 @@ public:
     RobotControllerSnapshot snapshot() const;
 
     void complete_self_check_for_test(bool ok);
+    void handle_limit_settled_for_test(domain::Endpoint endpoint);
     void post_for_test(std::function<void()> fn);
     void drain_for_test();
 
@@ -56,6 +57,7 @@ private:
     CommandResult submit_command_locked(const domain::RobotCommand& command);
     CommandResult start_command_locked(const domain::RobotCommand& command);
     CommandResult stop_locked();
+    void handle_limit_settled_locked(domain::Endpoint endpoint);
 
     mutable std::mutex mtx_;
     RobotState state_{RobotState::Idle};

@@ -94,3 +94,36 @@ TEST_CASE("RobotController submit_command works through running queue",
     REQUIRE(result.reason == "accepted");
     REQUIRE(controller.snapshot().state == "SelfChecking");
 }
+
+TEST_CASE("RobotController completes configured single-dock mission through two endpoints",
+          "[app][robot_controller]") {
+    RobotController controller;
+    REQUIRE(controller
+                .submit_command(RobotCommand{
+                    RobotCommandKind::StartConfiguredMission, CommandSource::Rpc, "cmd-1"})
+                .accepted);
+
+    controller.complete_self_check_for_test(true);
+    REQUIRE(controller.snapshot().state == "ExecutingMission");
+
+    controller.handle_limit_settled_for_test(robot::domain::Endpoint::B);
+    REQUIRE(controller.snapshot().state == "ExecutingMission");
+
+    controller.handle_limit_settled_for_test(robot::domain::Endpoint::A);
+    REQUIRE(controller.snapshot().state == "Idle");
+}
+
+TEST_CASE("RobotController unexpected endpoint enters FaultStopped",
+          "[app][robot_controller]") {
+    RobotController controller;
+    REQUIRE(controller
+                .submit_command(RobotCommand{
+                    RobotCommandKind::CleanTowardPrimaryDock, CommandSource::Rpc, "cmd-1"})
+                .accepted);
+    controller.complete_self_check_for_test(true);
+
+    controller.handle_limit_settled_for_test(robot::domain::Endpoint::B);
+
+    REQUIRE(controller.snapshot().state == "FaultStopped");
+    REQUIRE(controller.snapshot().fault.has_value());
+}
