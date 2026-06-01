@@ -8,7 +8,7 @@
  *   3. 构造 HAL / Driver / Device 对象
  *   4. 构造 Middleware / Service / App 对象
  *   5. 启动各执行线程
- *   6. 进入主循环（轮询 FSM 状态与调度服务）
+ *   6. 进入主循环（轮询 RobotController 状态与调度服务）
  *   7. 捕获 SIGINT/SIGTERM，优雅关闭
  */
 #include <cmath>

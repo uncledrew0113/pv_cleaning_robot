@@ -61,7 +61,7 @@ class NavService : public middleware::IRunnable {
     /// 获取融合后的上下轮组/整体里程快照（线程安全）
     FusedOdometry get_fused_odometry() const;
 
-    /// 当前坡度超过安全阈值？（用于 FSM 判断）
+    /// 当前坡度超过安全阈值？（用于业务控制器判断）
     bool is_slope_too_steep(float threshold_deg = 15.0f) const;
 
     void update() override;  ///< 由 ThreadExecutor 10ms 调用

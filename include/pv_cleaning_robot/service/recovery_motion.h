@@ -8,7 +8,7 @@ namespace robot::service {
 ///
 /// RecoveryMotion 只描述“停车、稳定、采样、微动、验证”的阶段推进，不直接
 /// 持有传感器或电机。后续接入真实恢复动作时，由 MotionService/RobotController
-/// 在每个 phase 上绑定具体采样和微动指令，避免 FSM 膨胀成运动算法容器。
+/// 在每个 phase 上绑定具体采样和微动指令，避免业务控制器膨胀成运动算法容器。
 class RecoveryMotion {
    public:
     enum class Phase {

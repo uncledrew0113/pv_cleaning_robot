@@ -232,7 +232,7 @@ enum class MissionKind {
     CleanTowardPrimaryDock,
 };
 
-/// @brief 当前任务的最小业务事实；FSM 只推进段序号和完成次数，不直接控制硬件。
+/// @brief 当前任务的最小业务事实；控制器只推进段序号和完成次数，不直接控制硬件。
 struct MissionContext {
     /// 任务来源语义，决定段生成规则和完成条件。
     MissionKind kind{MissionKind::ConfiguredMission};
@@ -316,7 +316,7 @@ inline MissionContext build_directional_clean_context(MissionKind kind,
 /// - 从当前端点清扫到另一端点；
 /// - 单段完成即代表一次完整任务。
 ///
-/// start_pose 只用于决定双停机位的首段方向；启动合法性由 Supervisor 在调用前校验。
+/// start_pose 只用于决定双停机位的首段方向；启动合法性由 RobotController 在调用前校验。
 inline MissionContext build_configured_mission_context(const LaneConfig& lane,
                                                        PositionState start_state,
                                                        CommandSource source,

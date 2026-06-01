@@ -22,7 +22,7 @@ namespace robot::service {
 ///   4. 网络离线时将 telemetry 写入 DataCache；网络恢复后回填上报
 ///
 /// 当前它只负责协议路由和离线缓存，不负责业务判定：
-/// - 是否接受某个 RPC，由上层 ControlPlane / Supervisor 决定
+/// - 是否接受某个 RPC，由上层 ControlPlane / RobotController 决定
 /// - shared attributes 是否接受，由 ConfigService 运行时配置语义决定
 class CloudService : public middleware::IRunnable {
    public:

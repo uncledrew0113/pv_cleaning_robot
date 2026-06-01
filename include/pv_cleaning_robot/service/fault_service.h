@@ -14,7 +14,7 @@ struct FaultEvent {
     enum class Level {
         P0,  ///< 严重故障：立即急停，进入故障锁定
         P1,  ///< 一般故障：锁存上报，具体动作由 app 故障策略决定
-        P2,  ///< 告警：仅上报（EventBus），不转换 FSM 状态
+        P2,  ///< 告警：仅上报（EventBus），不转换业务状态
         P3   ///< 提示：仅记录日志，不影响运行
     };
     Level level{Level::P3};

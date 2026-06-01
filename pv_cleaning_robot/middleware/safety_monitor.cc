@@ -88,7 +88,7 @@ void SafetyMonitor::on_limit_trigger(domain::Endpoint endpoint)
     // 目标：从触发到急停指令发出 ≤ 50 ms
     //
     // 两端完全对称：立即停车 + 清除触发标志 + 置 pending 时间戳。
-    // 稳定到位确认和 FSM 通知由 monitor_loop（SCHED_FIFO 94）负责。
+    // 稳定到位确认和控制器通知由 monitor_loop（SCHED_FIFO 94）负责。
     // pending 时间戳本身就是去重门闩：同一侧在 settled 前不接受重复触发。
     // ============================================================
     std::atomic<uint64_t>& pending_ts =
