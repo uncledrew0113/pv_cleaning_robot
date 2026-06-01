@@ -55,6 +55,7 @@ set(COMMON_SRCS
 
   # App 层
   ${PROJ}/app/fault_policy.cc
+  ${PROJ}/app/robot_controller.cc
   ${PROJ}/app/robot_fsm.cc
   ${PROJ}/app/robot_supervisor.cc
   ${PROJ}/app/fault_handler.cc
@@ -119,6 +120,7 @@ add_executable(unit_tests
 
   # App 层
   app/fault_policy_test.cc
+  app/robot_controller_test.cc
   app/robot_fsm_test.cc
   app/robot_supervisor_test.cc
   app/fault_handler_test.cc
