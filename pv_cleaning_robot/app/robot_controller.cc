@@ -253,4 +253,33 @@ void RobotController::handle_limit_settled_locked(domain::Endpoint endpoint) {
     state_ = RobotState::ExecutingMission;
 }
 
+void RobotController::handle_fault_for_test(const FaultFact& fact) {
+    std::lock_guard<std::mutex> lk(mtx_);
+    handle_fault_locked(fact);
+}
+
+void RobotController::handle_fault_locked(const FaultFact& fact) {
+    const auto decision = fault_policy_.decide(fact);
+    switch (decision.action) {
+    case FaultAction::WarnOnly:
+        return;
+    case FaultAction::RejectStart:
+        if (state_ == RobotState::SelfChecking) {
+            mission_.reset();
+            state_ = RobotState::Idle;
+        }
+        return;
+    case FaultAction::StartRecovery:
+        if (state_ == RobotState::ExecutingMission && mission_) {
+            state_ = RobotState::Recovering;
+        }
+        return;
+    case FaultAction::EmergencyStopAndLatch:
+        active_fault_ = fact.code;
+        mission_.reset();
+        state_ = RobotState::FaultStopped;
+        return;
+    }
+}
+
 }  // namespace robot::app

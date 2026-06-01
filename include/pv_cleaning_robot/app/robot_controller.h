@@ -9,6 +9,7 @@
 #include <string>
 #include <thread>
 
+#include "pv_cleaning_robot/app/fault_policy.h"
 #include "pv_cleaning_robot/domain/robot_domain.h"
 
 namespace robot::app {
@@ -46,6 +47,7 @@ public:
 
     void complete_self_check_for_test(bool ok);
     void handle_limit_settled_for_test(domain::Endpoint endpoint);
+    void handle_fault_for_test(const FaultFact& fact);
     void post_for_test(std::function<void()> fn);
     void drain_for_test();
 
@@ -58,11 +60,13 @@ private:
     CommandResult start_command_locked(const domain::RobotCommand& command);
     CommandResult stop_locked();
     void handle_limit_settled_locked(domain::Endpoint endpoint);
+    void handle_fault_locked(const FaultFact& fact);
 
     mutable std::mutex mtx_;
     RobotState state_{RobotState::Idle};
     std::optional<domain::MissionContext> mission_;
     std::optional<uint32_t> active_fault_;
+    FaultPolicy fault_policy_;
 
     mutable std::mutex queue_mtx_;
     std::condition_variable queue_cv_;

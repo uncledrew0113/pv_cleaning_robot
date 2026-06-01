@@ -3,7 +3,9 @@
 #include <thread>
 #include <vector>
 
+#include "pv_cleaning_robot/app/fault_policy.h"
 #include "pv_cleaning_robot/app/robot_controller.h"
+#include "pv_cleaning_robot/domain/robot_domain.h"
 
 using robot::app::RobotController;
 using robot::domain::CommandSource;
@@ -126,4 +128,39 @@ TEST_CASE("RobotController unexpected endpoint enters FaultStopped",
 
     REQUIRE(controller.snapshot().state == "FaultStopped");
     REQUIRE(controller.snapshot().fault.has_value());
+}
+
+TEST_CASE("RobotController P0 fault enters FaultStopped and reset returns Idle",
+          "[app][robot_controller]") {
+    RobotController controller;
+    controller.handle_fault_for_test(robot::app::FaultFact{
+        robot::app::FaultSource::Watchdog,
+        robot::domain::FaultCode::kCanCommunicationLost,
+        "can_lost"});
+
+    REQUIRE(controller.snapshot().state == "FaultStopped");
+    REQUIRE(controller.snapshot().fault == robot::domain::FaultCode::kCanCommunicationLost);
+
+    const auto reset = controller.submit_command(
+        RobotCommand{RobotCommandKind::FaultReset, CommandSource::Rpc, "reset-1"});
+    REQUIRE(reset.accepted);
+    REQUIRE(controller.snapshot().state == "Idle");
+    REQUIRE_FALSE(controller.snapshot().fault.has_value());
+}
+
+TEST_CASE("RobotController recoverable fault enters Recovering from ExecutingMission",
+          "[app][robot_controller]") {
+    RobotController controller;
+    REQUIRE(controller
+                .submit_command(RobotCommand{
+                    RobotCommandKind::StartConfiguredMission, CommandSource::Rpc, "cmd-1"})
+                .accepted);
+    controller.complete_self_check_for_test(true);
+
+    controller.handle_fault_for_test(robot::app::FaultFact{
+        robot::app::FaultSource::FaultDetector,
+        robot::domain::FaultCode::kTransientAttitudeError,
+        "tilt"});
+
+    REQUIRE(controller.snapshot().state == "Recovering");
 }
