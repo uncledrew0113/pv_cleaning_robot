@@ -71,25 +71,6 @@ rapidjson::Document parse_json_line(const std::string& line) {
     return doc;
 }
 
-double configured_combined_passes() {
-    std::string path;
-    const char* env = std::getenv("HW_TEST_CONFIG");
-    if (env && std::filesystem::exists(env)) {
-        path = env;
-    } else if (std::filesystem::exists("hw_test_config.json")) {
-        path = "hw_test_config.json";
-    }
-    if (path.empty()) {
-        return 50.0;
-    }
-
-    robot::service::ConfigService cfg(path);
-    if (!cfg.load()) {
-        return 50.0;
-    }
-    return std::max(1.0, static_cast<double>(cfg.get<float>("behavior.combined_passes", 50.0f)));
-}
-
 const char* endpoint_to_config(robot::domain::Endpoint endpoint) {
     return endpoint == robot::domain::Endpoint::A ? "A" : "B";
 }
@@ -830,7 +811,7 @@ TEST_CASE("N 趟完整任务链 + 全程持续采集健康数据", "[hw_system][
     SystemHwFixture f;
     run_configured_system_chain(f,
                                 "hw_system][combined",
-                                static_cast<uint32_t>(configured_combined_passes()),
+                                kp.combined_passes,
                                 false,
                                 false,
                                 false);
@@ -840,7 +821,7 @@ TEST_CASE("完整任务链 + 融合里程计日志", "[hw_system][combined_nvm_r
     SystemHwFixture f;
     run_configured_system_chain(f,
                                 "hw_system][combined_nvm_real",
-                                static_cast<uint32_t>(configured_combined_passes()),
+                                kp.combined_passes,
                                 false,
                                 true,
                                 false);
@@ -851,7 +832,7 @@ TEST_CASE("N 趟完整任务链 + 真实滚刷 + 全程持续采集健康数据"
     SystemHwFixture f;
     run_configured_system_chain(f,
                                 "hw_system][combined_brush_real",
-                                static_cast<uint32_t>(configured_combined_passes()),
+                                kp.combined_passes,
                                 true,
                                 false,
                                 false);
@@ -861,7 +842,7 @@ TEST_CASE("视觉 PID 完整任务链 + 真实滚刷", "[hw_system][pid_combined
     SystemHwFixture f;
     run_configured_system_chain(f,
                                 "hw_system][pid_combined",
-                                static_cast<uint32_t>(configured_combined_passes()),
+                                kp.combined_passes,
                                 true,
                                 false,
                                 true);

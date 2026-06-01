@@ -84,6 +84,7 @@ struct HwParams {
     float sweep_rpm = 20.0f;
     float limit_test_rpm = 10.0f;
     float brush_test_rpm = 3000.0f;  ///< ODrive 滚刷硬件测试目标转速
+    uint32_t combined_passes = 1u;   ///< 组合链路完整任务次数，1=单停机位去返一轮
     robot::domain::Endpoint primary_dock =
         robot::domain::Endpoint::B;  ///< 硬件测试运行时主停机端配置
     std::string health_jsonl_path = "/tmp/hw_system_test_health.jsonl";
@@ -177,6 +178,9 @@ inline HwParams load_hw_test_config() {
         p.sweep_rpm = cfg.get<float>("behavior.sweep_rpm", p.sweep_rpm);
         p.limit_test_rpm = cfg.get<float>("behavior.limit_test_rpm", p.limit_test_rpm);
         p.brush_test_rpm = cfg.get<float>("behavior.brush_test_rpm", p.brush_test_rpm);
+        p.combined_passes = static_cast<uint32_t>(
+            std::max(1, cfg.get<int>("behavior.combined_passes",
+                                     static_cast<int>(p.combined_passes))));
         {
             const auto primary_dock =
                 cfg.get<std::string>("behavior.primary_dock", "B");
