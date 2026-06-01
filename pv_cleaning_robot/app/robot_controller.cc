@@ -1,5 +1,7 @@
 #include "pv_cleaning_robot/app/robot_controller.h"
 
+#include <chrono>
+
 namespace robot::app {
 
 RobotController::~RobotController() {
@@ -106,8 +108,25 @@ bool RobotController::mission_active() const noexcept {
 }
 
 CommandResult RobotController::submit_command(const domain::RobotCommand& command) {
-    std::lock_guard<std::mutex> lk(mtx_);
-    return submit_command_locked(command);
+    {
+        std::lock_guard<std::mutex> lk(queue_mtx_);
+        if (!running_) {
+            std::lock_guard<std::mutex> state_lk(mtx_);
+            return submit_command_locked(command);
+        }
+    }
+
+    auto promise = std::make_shared<std::promise<CommandResult>>();
+    auto future = promise->get_future();
+    post([this, command, promise] {
+        std::lock_guard<std::mutex> lk(mtx_);
+        promise->set_value(submit_command_locked(command));
+    });
+
+    if (future.wait_for(std::chrono::milliseconds(500)) != std::future_status::ready) {
+        return {false, "controller_timeout"};
+    }
+    return future.get();
 }
 
 CommandResult RobotController::submit_command_locked(const domain::RobotCommand& command) {

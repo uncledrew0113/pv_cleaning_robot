@@ -79,3 +79,18 @@ TEST_CASE("RobotController serializes posted callbacks on controller thread",
 
     REQUIRE(count.load() == 200);
 }
+
+TEST_CASE("RobotController submit_command works through running queue",
+          "[app][robot_controller]") {
+    RobotController controller;
+    controller.start();
+
+    const auto result = controller.submit_command(
+        RobotCommand{RobotCommandKind::StartConfiguredMission, CommandSource::Rpc, "cmd-queued"});
+
+    controller.stop();
+
+    REQUIRE(result.accepted);
+    REQUIRE(result.reason == "accepted");
+    REQUIRE(controller.snapshot().state == "SelfChecking");
+}
