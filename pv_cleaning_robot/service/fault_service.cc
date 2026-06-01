@@ -6,25 +6,6 @@
 #include "pv_cleaning_robot/service/fault_service.h"
 
 namespace robot::service {
-namespace {
-
-struct FaultRule {
-    uint32_t code{0};
-    FaultAction action{FaultAction::WarnOnly};
-    bool latch{false};
-    bool report{true};
-};
-
-constexpr FaultRule kFaultRules[] = {
-    {FaultCode::kStartRejectedLowBattery, FaultAction::RejectStart, false, true},
-    {FaultCode::kTransientAttitudeError, FaultAction::StartRecovery, false, true},
-    {FaultCode::kConflictingLimitSides, FaultAction::ImmediateEmergencyStop, true, true},
-    {FaultCode::kCanCommunicationLost, FaultAction::ImmediateEmergencyStop, true, true},
-    {FaultCode::kBrushFaultReturnRequired, FaultAction::BrushOffReturnHome, true, true},
-};
-
-}  // namespace
-
 FaultService::FaultService(middleware::EventBus& bus) : bus_(bus) {}
 
 void FaultService::report(FaultEvent::Level level, uint32_t code, const std::string& description) {
@@ -64,22 +45,6 @@ bool FaultService::has_active_fault(FaultEvent::Level min_level) const {
 FaultService::FaultEvent FaultService::last_fault() const {
     std::lock_guard<hal::PiMutex> lk(mtx_);
     return last_fault_;
-}
-
-FaultDecision FaultService::decide(const FaultEvent& event) const {
-    for (const auto& rule : kFaultRules) {
-        if (rule.code == event.code) {
-            return FaultDecision{rule.action, rule.latch, rule.report};
-        }
-    }
-
-    if (event.level == FaultEvent::Level::P0) {
-        return FaultDecision{FaultAction::ImmediateEmergencyStop, true, true};
-    }
-    if (event.level == FaultEvent::Level::P1) {
-        return FaultDecision{FaultAction::BrushOffReturnHome, true, true};
-    }
-    return FaultDecision{FaultAction::WarnOnly, false, true};
 }
 
 }  // namespace robot::service

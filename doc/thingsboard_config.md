@@ -53,14 +53,12 @@
 
 当前只支持这些共享属性：
 
-- `passes`
+- `repeat_count`
 - `clean_speed_rpm`
 - `return_speed_rpm`
 - `brush_rpm`
-- `return_brush_rpm`
-- `parking_side`
-- `start_battery_soc`
-- `charge_start_soc`
+- `primary_dock`
+- `min_battery_soc`
 - `charge_stop_soc`
 - `schedules`
 
@@ -97,47 +95,39 @@
 
 ### 4.1 当前支持命令
 
-当前只注册四个 RPC：
+当前注册五个 RPC：
 
-- `start`
+- `clean_to_return`
+- `clean_to_parking`
+- `start_configured`
 - `stop`
-- `return`
-- `reset`
-
-启动属性里的 `supported_rpc_methods` 也与此一致。
+- `fault_reset`
 
 ### 4.2 设备侧语义
 
-#### `start`
+#### `clean_to_return`
 
-- 允许状态：`Idle`、`Charging`、`Stopped`
-- 要求 `position_valid=true`
-- 要求当前电量满足 `robot.start_battery_soc`
-- 这是特权启动
-  - 不要求当前位于停机位
-  - 从当前位置开始执行完整任务
-  - 正向阶段进入 `CleanFwd`
-  - 到对侧后自动进入 `CleanReturn`
-  - 返程继续带刷清扫
+- 从可信位置启动，向返机端方向清扫，到达后停止。
+
+#### `clean_to_parking`
+
+- 从可信位置启动，向主停机端方向清扫，到达后停止。
+
+#### `start_configured`
+
+- 只允许从配置任务合法端点启动。
+- 要求当前电量满足 `robot.min_battery_soc`。
 
 #### `stop`
 
-- 允许状态：`CleanFwd`、`CleanReturn`、`Returning`
-- 执行后进入 `Stopped`
+- 只允许运行任务时触发。
+- 执行后进入 `Idle`
 - 立即停行走轮和滚刷
 
-#### `return`
+#### `fault_reset`
 
-- 允许状态：`CleanFwd`、`CleanReturn`、`Stopped`、`Idle`
-- 如果当前已经在配置停机位一侧，则拒绝
-- 执行后进入 `Returning`
-- 调用的是 `start_returning_no_brush()`
-- 返程不带刷
-
-#### `reset`
-
-- 当前实现为立即接受
-- 发布 RPC 响应后异步执行系统重启
+- 只允许 `FaultStopped`。
+- 清除锁存故障后回到 `Idle`。
 
 RPC 处理逻辑见 [thingsboard_control_plane.cc](/home/tronlong/pv_cleaning_robot/pv_cleaning_robot/service/thingsboard_control_plane.cc:883)。
 
@@ -151,8 +141,6 @@ RPC 处理逻辑见 [thingsboard_control_plane.cc](/home/tronlong/pv_cleaning_ro
 - `hardware_version`
 - `device_model`
 - `device_id`
-- `supported_rpc_methods`
-- `config_schema_version`
 
 ### 5.2 业务遥测
 
@@ -171,30 +159,11 @@ RPC 处理逻辑见 [thingsboard_control_plane.cc](/home/tronlong/pv_cleaning_ro
 
 其中：
 
-- `device_state` 直接反映 FSM 状态
-- `task_state` 是给云端看的任务态抽象，如 `IdleTask`、`RunningTask`、`ReturningTask`
+- `device_state` 直接反映 RobotController 状态
+- `task_state` 是给云端看的任务态抽象，如 `IdleTask`、`RunningTask`、`FaultTask`
 - `active_config` / `pending_config` 是当前和待生效业务配置快照
 
-### 5.3 命令事件
-
-设备会额外发布命令生命周期事件，用于平台审计与调试。当前事件包括：
-
-- `command_accepted`
-- `command_completed`
-- `command_rejected`
-
-事件体包含：
-
-- `event`
-- `command_id`
-- `command_name`
-- `request_id`
-- `phase`
-- `reason`
-- `accepted_at_ms`
-- `finished_at_ms`
-
-### 5.4 健康遥测
+### 5.3 健康遥测
 
 健康上报由 `HealthService` 负责，统一使用 ThingsBoard 推荐格式：
 
@@ -241,7 +210,7 @@ RPC 处理逻辑见 [thingsboard_control_plane.cc](/home/tronlong/pv_cleaning_ro
 - 运行态：使用 `publish_interval_active_ms`
 - 空闲态：使用 `publish_interval_idle_ms`
 
-当前主程序会将 `Idle`、`Stopped`、`Charging` 视为空闲态，因此 idle 时可以降到较低上报频率，例如 5 分钟一次。
+当前主程序会将 `Idle`、`Charging`、`FaultStopped` 视为空闲态，因此 idle 时可以降到较低上报频率，例如 5 分钟一次。
 
 ### 5.5 当前 health / diagnostics 字段
 
@@ -308,14 +277,12 @@ RPC 处理逻辑见 [thingsboard_control_plane.cc](/home/tronlong/pv_cleaning_ro
 
 ```json
 {
-  "passes": 1,
+  "repeat_count": 1,
   "clean_speed_rpm": 20,
   "return_speed_rpm": 20,
   "brush_rpm": 2000,
-  "return_brush_rpm": 3000,
-  "parking_side": "right",
-  "start_battery_soc": 0.0,
-  "charge_start_soc": 0.0,
+  "primary_dock": "B",
+  "min_battery_soc": 0.0,
   "charge_stop_soc": 1.0,
   "schedules": [
     { "hour": 8, "minute": 0 },
@@ -346,16 +313,16 @@ RPC 处理逻辑见 [thingsboard_control_plane.cc](/home/tronlong/pv_cleaning_ro
    - attributes 快照响应成功
 2. 修改 `schedules`
    - 确认设备立即保存 active 配置
-3. 修改 `passes` 或 `brush_rpm`
+3. 修改 `repeat_count` 或 `brush_rpm`
    - 确认进入 pending，而不是直接打断当前任务
-4. 发送 RPC `start`
-   - 确认接受并进入 `CleanFwd`
+4. 发送 RPC `start_configured`
+   - 确认接受并进入 `ExecutingMission`
 5. 发送 RPC `stop`
-   - 确认进入 `Stopped`
-6. 发送 RPC `return`
-   - 确认进入 `Returning`，且返程不带刷
-7. 发送 RPC `reset`
-   - 确认设备响应后重启
+   - 确认进入 `Idle`
+6. 发送 RPC `clean_to_return` 或 `clean_to_parking`
+   - 确认到目标端点后进入 `Idle`
+7. 触发故障后发送 RPC `fault_reset`
+   - 确认从 `FaultStopped` 回到 `Idle`
 
 ## 8. 当前明确不在接入范围内的内容
 

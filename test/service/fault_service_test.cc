@@ -117,27 +117,3 @@ TEST_CASE("FaultService: 多个订阅者都能收到 FaultEvent", "[service][fau
     REQUIRE(count1 == 1);
     REQUIRE(count2 == 1);
 }
-
-TEST_CASE("FaultService maps transient attitude fault to recovery", "[service][fault]") {
-    EventBus bus;
-    FaultService fs(bus);
-    auto decision = fs.decide(FaultEvent{
-        FaultLevel::P2,
-        robot::service::FaultCode::kTransientAttitudeError,
-        "transient attitude error"});
-
-    CHECK(decision.action == robot::service::FaultAction::StartRecovery);
-    CHECK_FALSE(decision.latch);
-}
-
-TEST_CASE("FaultService maps conflicting limits to immediate stop", "[service][fault]") {
-    EventBus bus;
-    FaultService fs(bus);
-    auto decision = fs.decide(FaultEvent{
-        FaultLevel::P0,
-        robot::service::FaultCode::kConflictingLimitSides,
-        "conflicting limit sides"});
-
-    CHECK(decision.action == robot::service::FaultAction::ImmediateEmergencyStop);
-    CHECK(decision.latch);
-}

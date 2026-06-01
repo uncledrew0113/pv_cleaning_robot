@@ -57,9 +57,6 @@ set(COMMON_SRCS
   ${PROJ}/app/fault_detector.cc
   ${PROJ}/app/fault_policy.cc
   ${PROJ}/app/robot_controller.cc
-  ${PROJ}/app/robot_fsm.cc
-  ${PROJ}/app/robot_supervisor.cc
-  ${PROJ}/app/fault_handler.cc
   ${PROJ}/app/watchdog_mgr.cc
 )
 
@@ -123,9 +120,6 @@ add_executable(unit_tests
   app/fault_detector_test.cc
   app/fault_policy_test.cc
   app/robot_controller_test.cc
-  app/robot_fsm_test.cc
-  app/robot_supervisor_test.cc
-  app/fault_handler_test.cc
   app/watchdog_mgr_test.cc
 
   ${COMMON_SRCS}

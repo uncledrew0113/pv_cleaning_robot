@@ -92,33 +92,6 @@ void MotionService::set_base_speed_command(const device::WalkMotorGroup::SpeedCm
     walk_command_active_ = true;
 }
 
-bool MotionService::start_brush_off_return_to(domain::Endpoint target) {
-    if (target != primary_dock()) {
-        return false;
-    }
-
-    sync_runtime_config();
-    group_->clear_override();
-    walk_command_active_ = false;
-
-    brush_->stop();
-
-    sync_heading_pid_enabled();
-    if (!enable_speed_mode()) {
-        return false;
-    }
-
-    const int dir = target_direction_sign(target);
-    const float spd = std::abs(cfg_.return_speed_rpm) * static_cast<float>(dir);
-    const device::WalkMotorGroup::SpeedCmd cmd{spd, spd, -spd, -spd};
-    if (group_->set_speeds(cmd) != device::DeviceError::OK) {
-        return false;
-    }
-    travel_direction_ = domain::travel_direction_to(target);
-    set_base_speed_command(cmd);
-    return true;
-}
-
 // ── 运动控制 ──────────────────────────────────────────────────────────────
 
 bool MotionService::start_cleaning_to(domain::Endpoint target) {
@@ -160,8 +133,6 @@ bool MotionService::start_segment(const domain::MissionSegment& segment) {
     switch (segment.mode) {
     case domain::SegmentMode::Cleaning:
         return start_cleaning_to(segment.target);
-    case domain::SegmentMode::BrushOffReturn:
-        return start_brush_off_return_to(segment.target);
     }
     return false;
 }

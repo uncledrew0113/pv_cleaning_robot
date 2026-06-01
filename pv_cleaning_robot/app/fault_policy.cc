@@ -24,7 +24,7 @@ FaultDecision FaultPolicy::decide(const FaultFact& fact) const noexcept {
     case FaultCode::kWheelSpinFree:
     case FaultCode::kCanCommunicationLost:
     case FaultCode::kSegmentStartFailed:
-    case FaultCode::kP1DuringReturnEscalatedToP0:
+    case FaultCode::kRecoveryFailed:
     case FaultCode::kTaskContextInconsistent:
     case FaultCode::kUnexpectedLimitSide:
     case FaultCode::kConflictingLimitSides:

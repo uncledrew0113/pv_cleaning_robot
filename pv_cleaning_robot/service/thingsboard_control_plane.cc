@@ -300,7 +300,7 @@ bool ThingsBoardControlPlane::publish_business_payload(size_t len,
 std::string ThingsBoardControlPlane::reject_rpc_command(const char* command_name,
                                                         const std::string& request_id,
                                                         const char* reason) {
-    // 保留本地命令真相，但不再发布高频 command event。
+    // 保留本地命令真相，但不再额外发布高频命令事件。
     command_tracker_->reject(command_name, request_id, reason);
     return rpc_reply(reason);
 }

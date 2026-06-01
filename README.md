@@ -50,14 +50,12 @@ cmake --build --preset rk3576-build
 运行配置 [config.runtime.json](/home/tronlong/pv_cleaning_robot/config/config.runtime.json)：
 
 - `scheduler.windows`
-- `robot.passes`
-- `robot.parking_side`
+- `robot.repeat_count`
+- `robot.primary_dock`
 - `robot.clean_speed_rpm`
 - `robot.return_speed_rpm`
 - `robot.brush_rpm`
-- `robot.return_brush_rpm`
-- `robot.start_battery_soc`
-- `robot.charge_start_soc`
+- `robot.min_battery_soc`
 - `robot.charge_stop_soc`
 - `robot.heading_pid_en`
 - `robot.pid.*`
@@ -92,36 +90,34 @@ cmake --build --preset rk3576-build
 
 1. 加载 split config
 2. 初始化日志和信号处理
-3. 构造 CAN、串口、GPIO、GPS、CloudService、ThingsBoardControlPlane、FSM、Supervisor
+3. 构造 CAN、串口、GPIO、GPS、CloudService、ThingsBoardControlPlane、RobotController
 4. 注册 shared attributes 和 RPC
 5. 建立网络连接，请求 shared attributes 快照，发布启动属性
 6. 启动 `walk_ctrl`、`nav`、`bms`、`cloud` 线程
 7. 主循环内执行：
    - `scheduler.tick()`
-   - 根据 FSM 状态切换 health/business telemetry 的 active/idle 周期
-   - `supervisor->tick_safety()`
-   - 充电完成判断
+   - 根据 `RobotController` 状态切换 health/business telemetry 的 active/idle 周期
+   - 将安全监控、看门狗、恢复动作结果统一投递到控制器事件队列
 8. `SIGINT` / `SIGTERM` 时优雅关闭所有线程和设备
 
 ## 当前状态机语义
 
-设备状态来自 `RobotFsm`，当前核心状态为：
+设备状态来自 `RobotController`，当前核心状态为：
 
 - `Idle`
-- `SelfCheck`
-- `CleanFwd`
-- `CleanReturn`
-- `Returning`
-- `Stopped`
+- `SelfChecking`
+- `ExecutingMission`
+- `SettlingEndpoint`
+- `Recovering`
 - `Charging`
-- `Fault`
+- `FaultStopped`
 
 业务语义：
 
-- 调度启动只允许从停机位开始。
-- RPC `start` 是特权启动，允许从当前位置开始完整清扫任务，但仍要求“当前位置有效”。
-- `stop` 进入 `Stopped`，原地停住。
-- `return` 进入 `Returning`，调用 `start_returning_no_brush()`，返程不带刷。
+- 配置任务只允许从合法端点启动；低电量在启动前拒绝。
+- RPC 定向清扫允许从可信位置启动，到目标端点停止。
+- RPC `stop` 只允许运行任务时触发，停止电机和滚刷后回到 `Idle`。
+- P0/恢复失败等锁存故障进入 `FaultStopped`，只能通过云端故障复位回到 `Idle`。
 
 ## 测试
 

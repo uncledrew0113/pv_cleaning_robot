@@ -41,7 +41,7 @@ class MotionService : public middleware::IRunnable, public domain::EmergencyStop
                   middleware::EventBus& bus,
                   Config cfg);
 
-    /// 注入主停机端配置，用于速度选择、无刷返航和纠偏镜像符号。
+    /// 注入主停机端配置，用于速度选择和纠偏镜像符号。
     void set_primary_dock_query(std::function<domain::Endpoint()> query);
     /// 新任务启动前从 active runtime 同步速度/滚刷参数；所有速度配置统一按绝对值解释。
     void set_runtime_config_query(std::function<RuntimeConfig()> query);
@@ -78,7 +78,6 @@ class MotionService : public middleware::IRunnable, public domain::EmergencyStop
     bool enable_speed_mode();
     void sync_heading_pid_enabled();
     bool start_cleaning_to(domain::Endpoint target);
-    bool start_brush_off_return_to(domain::Endpoint target);
     void set_base_speed_command(const device::WalkMotorGroup::SpeedCmd& cmd);
 };
 

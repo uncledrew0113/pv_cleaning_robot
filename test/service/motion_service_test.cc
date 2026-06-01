@@ -119,26 +119,6 @@ TEST_CASE("MotionService starts cleaning toward primary dock endpoint", "[servic
     REQUIRE(f.serial->take_tx_text().find("v 0 20.000 0\n") != std::string::npos);
 }
 
-TEST_CASE("MotionService brush-off return keeps brush stopped", "[service][motion]") {
-    MotionFixture f;
-    f.serial->clear_tx();
-    f.can->sent_frames.clear();
-
-    REQUIRE(f.motion.start_segment(segment(robot::domain::Endpoint::B,
-                                           robot::domain::SegmentMode::BrushOffReturn)));
-    f.motion.update();
-
-    REQUIRE_FALSE(f.can->sent_frames.empty());
-    REQUIRE(f.serial->take_tx_text().find("v 0 0.000 0\n") != std::string::npos);
-}
-
-TEST_CASE("MotionService rejects brush-off motion away from parking", "[service][motion]") {
-    MotionFixture f;
-
-    REQUIRE_FALSE(f.motion.start_segment(segment(robot::domain::Endpoint::A,
-                                                robot::domain::SegmentMode::BrushOffReturn)));
-}
-
 TEST_CASE("MotionService syncs runtime config before segment start", "[service][motion]") {
     MotionFixture f;
     f.motion.set_runtime_config_query([] {

@@ -168,7 +168,7 @@ struct Fixture {
 
 }  // namespace
 
-TEST_CASE("ThingsBoardControlPlane shared attributes update pending config without status event",
+TEST_CASE("ThingsBoardControlPlane shared attributes update pending config without extra publish",
           "[service][tb_control_plane]") {
     Fixture f;
     f.control_plane->subscribe_shared_attributes();

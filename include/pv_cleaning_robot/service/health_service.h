@@ -53,7 +53,7 @@ public:
 /// 通过 fixed config 的 diagnostics.mode 字段在启动时选择，无需更换类。
 ///
 /// 实际上报频率不在本类内部固定，而是由外部 ThreadExecutor 调度决定。
-/// 当前主程序会根据 RobotSupervisor 的运行态在 active / idle 两档周期之间切换，
+/// 当前主程序会根据 RobotController 的运行态在 active / idle 两档周期之间切换，
 /// 因此 Health telemetry 和 business telemetry 会一起跟随该周期变化。
 ///
 /// 当 local_log_path 非空时，update() 在每次上报时额外把 JSON payload 以

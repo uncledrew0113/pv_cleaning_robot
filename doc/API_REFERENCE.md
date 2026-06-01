@@ -59,7 +59,7 @@
 
 - 构造 `WalkMotorGroup`、`BrushMotor`、`BMS`、`ImuDevice`、`GpsDevice`
 - 构造 `CloudService`、`ThingsBoardConfigManager`、`ThingsBoardControlPlane`
-- 构造 `RobotFsm`、`RobotSupervisor`、`FaultHandler`、`WatchdogMgr`
+- 构造 `RobotController`、`FaultPolicy`、`FaultDetector`、`WatchdogMgr`
 - 启动 `walk_ctrl`、`nav`、`bms`、`cloud` 线程
 - 动态切换 telemetry 周期
 
@@ -81,68 +81,41 @@
 
 主程序当前使用的接口：
 
-- `start_cleaning()`
-- `stop_cleaning()`
-- `start_returning()`
-- `start_returning_no_brush()`
-- `emergency_stop()`
-- `update()`
+- `start_segment()`：按业务任务段启动清扫运动。
+- `stop_cleaning()`：停止滚刷、停止行走并关闭纠偏。
+- `emergency_stop()`：刷停 + 行走电机 override 到 0。
+- `update()`：周期心跳和视觉纠偏。
 
 关键语义：
 
-- `start_cleaning()`：前进清扫，滚刷按 `brush_rpm`
-- `start_returning()`：返程清扫，滚刷按 `return_brush_rpm` 反向
-- `start_returning_no_brush()`：返程不带刷
-- `emergency_stop()`：刷停 + 行走电机 override 到 0
+- 运动方向由目标端点换算，不由上层传电机正负号。
+- 向主停机端运行使用 `return_speed_rpm`，向对端运行使用 `clean_speed_rpm`。
+- 当前主流程只有清扫段；无刷返航不再作为业务状态机路径。
 
-### 4.2 RobotFsm
+### 4.2 RobotController
 
-头文件：[robot_fsm.h](/home/tronlong/pv_cleaning_robot/include/pv_cleaning_robot/app/robot_fsm.h:20)
+头文件：[robot_controller.h](/home/tronlong/pv_cleaning_robot/include/pv_cleaning_robot/app/robot_controller.h)
 
 当前状态：
 
-- `Init`
 - `Idle`
-- `SelfCheck`
-- `CleanFwd`
-- `CleanReturn`
-- `Returning`
-- `Stopped`
+- `SelfChecking`
+- `ExecutingMission`
+- `SettlingEndpoint`
+- `Recovering`
 - `Charging`
-- `Fault`
-
-关键外部事件：
-
-- `EvScheduleStart`
-- `EvRpcStartTask`
-- `EvFarEndLimitSettled`
-- `EvParkingSideLimitSettled`
-- `EvManualReturn`
-- `EvStopTask`
-- `EvFaultP0`
-- `EvFaultP1`
-- `EvFaultReset`
-- `EvChargeDone`
-
-### 4.3 RobotSupervisor
-
-头文件：[robot_supervisor.h](/home/tronlong/pv_cleaning_robot/include/pv_cleaning_robot/app/robot_supervisor.h)
+- `FaultStopped`
 
 核心接口与规则：
 
-- `start_task(at_parking_side, position_valid, battery_soc)`
-  - 只允许调度启动
-  - 必须在停机位
-- `start_task_from_current_position(position_valid, battery_soc)`
-  - 供 RPC `start`
-  - 不要求当前在停机位
-- `stop_task()`
-  - 允许状态：`CleanFwd` / `CleanReturn` / `Returning`
-- `return_task(at_parking_side)`
-  - 允许状态：`CleanFwd` / `CleanReturn` / `Stopped` / `Idle`
-  - 当前已经在停车侧则拒绝
+- `submit_command()` 是 RPC、调度和本地业务命令的统一入口。
+- `StartConfiguredMission` 只允许从合法端点启动，并在启动前检查低电量。
+- `CleanTowardOppositeEndpoint` / `CleanTowardPrimaryDock` 允许从可信位置启动，到目标端点停止。
+- `Stop` 只允许任务运行中触发，停止后清空任务并回到 `Idle`。
+- `FaultReset` 只允许 `FaultStopped`，清除锁存故障后直接回 `Idle`。
+- 限位、安全、看门狗、恢复结果通过控制器事件队列串行处理。
 
-实现见：[robot_supervisor.cc](/home/tronlong/pv_cleaning_robot/pv_cleaning_robot/app/robot_supervisor.cc:51)
+实现见：[robot_controller.cc](/home/tronlong/pv_cleaning_robot/pv_cleaning_robot/app/robot_controller.cc)
 
 ## 5. ThingsBoard 控制面
 
@@ -152,14 +125,12 @@
 
 当前支持字段：
 
-- `passes`
+- `repeat_count`
 - `clean_speed_rpm`
 - `return_speed_rpm`
 - `brush_rpm`
-- `return_brush_rpm`
-- `parking_side`
-- `start_battery_soc`
-- `charge_start_soc`
+- `primary_dock`
+- `min_battery_soc`
 - `charge_stop_soc`
 - `schedules`
 
@@ -175,33 +146,33 @@
 
 当前注册 RPC：
 
-- `start`
+- `clean_to_return`
+- `clean_to_parking`
+- `start_configured`
 - `stop`
-- `return`
-- `reset`
+- `fault_reset`
 
 规则：
 
-- `start`
-  - 允许状态：`Idle` / `Charging` / `Stopped`
-  - 要求 `position_valid=true`
-  - 电量需满足 `start_battery_soc`
+- `clean_to_return`
+  - 从可信位置启动，向返机端方向清扫，到达后停止
+- `clean_to_parking`
+  - 从可信位置启动，向主停机端方向清扫，到达后停止
+- `start_configured`
+  - 只允许从配置任务合法端点启动
+  - 电量需满足 `min_battery_soc`
 - `stop`
-  - 允许状态：`CleanFwd` / `CleanReturn` / `Returning`
-- `return`
-  - 允许状态：`CleanFwd` / `CleanReturn` / `Stopped` / `Idle`
-  - 若已在停车侧则拒绝
-- `reset`
-  - 当前实现为立即接受并异步重启设备
+  - 只允许运行任务时触发
+- `fault_reset`
+  - 只允许 `FaultStopped`，清除锁存故障后回到 `Idle`
 
 实现见：[thingsboard_control_plane.cc](/home/tronlong/pv_cleaning_robot/pv_cleaning_robot/service/thingsboard_control_plane.cc:883)
 
 ### 5.3 ThingsBoard 上行 payload 家族
 
 1. `startup attributes`
-2. `status event`
-3. `command event`
-4. `business telemetry`
+2. `RPC reply`
+3. `business telemetry`
 
 编码器类：`ThingsBoardJsonCodec`
 定义见：[thingsboard_control_plane.h](/home/tronlong/pv_cleaning_robot/include/pv_cleaning_robot/service/thingsboard_control_plane.h:86)
@@ -214,29 +185,6 @@
 - `hardware_version`
 - `device_model`
 - `device_id`
-- `supported_rpc_methods`
-- `config_schema_version`
-
-#### status event
-
-字段：
-
-- `event`
-- `accepted`
-- `reason`
-
-#### command event
-
-字段：
-
-- `event`
-- `command_id`
-- `command_name`
-- `request_id`
-- `phase`
-- `reason`
-- `accepted_at_ms`
-- `finished_at_ms`
 
 #### business telemetry
 

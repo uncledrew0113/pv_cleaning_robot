@@ -29,10 +29,9 @@ struct RobotCommandPort {
     std::function<domain::RobotRuntimeSnapshot()> snapshot;
 };
 
-/// ThingsBoard 上行 payload 只有 4 个家族：
-/// 1. startup attributes: 设备静态身份 + 支持的 RPC 能力
-/// 2. status event: 单次结果，例如 shared-attribute 接受/拒绝
-/// 3. business telemetry: Supervisor 持有的周期性运行真相
+/// ThingsBoard 上行 payload 只有两个主家族：
+/// 1. startup attributes: 设备静态身份
+/// 2. business telemetry: RobotController 持有的周期性运行真相
 class ThingsBoardJsonCodec {
 public:
     struct StartupAttributesView {
@@ -63,7 +62,7 @@ public:
 /// 它不自己维护业务真相：
 /// - shared attributes 的 active/pending 语义，交给 ConfigService
 /// - RPC 是否允许，交给 RobotCommandPort 背后的 app 层
-/// - RPC reply 的真相，来自本地 Supervisor/CommandTracker 的裁决，不来自云端
+/// - RPC reply 的真相，来自本地 RobotController/CommandTracker 的裁决，不来自云端
 /// - telemetry 真相，来自 RobotCommandPort::snapshot()
 class ThingsBoardControlPlane {
 public:

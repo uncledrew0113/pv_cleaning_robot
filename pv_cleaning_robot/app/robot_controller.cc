@@ -458,7 +458,7 @@ void RobotController::handle_recovery_finished_locked(bool ok) {
     }
     if (!ok) {
         handle_fault_locked(FaultFact{FaultSource::Recovery,
-                                      domain::FaultCode::kP1DuringReturnEscalatedToP0,
+                                      domain::FaultCode::kRecoveryFailed,
                                       "recovery_failed"});
         return;
     }

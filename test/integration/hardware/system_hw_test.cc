@@ -2,9 +2,9 @@
  * @file system_hw_test.cc
  * @brief 真实硬件系统链路测试。
  *
- * 这些用例补回旧 system_hw_test.cc 的测试意图，但适配当前精简后的
- * RobotSupervisor/RobotFsm API：
- *   [hw_system][full_init]        - 组合根初始化后 FSM 处于 Idle
+ * 这些用例补回旧 system_hw_test.cc 的测试意图，但适配当前收敛后的
+ * RobotController API：
+ *   [hw_system][full_init]        - 组合根初始化后控制器处于 Idle
  *   [hw_system][health_real_data] - IMU/GPS/HealthService 真实数据落盘
  *   [hw_system][safety_idle]      - 空闲限位监控不误触发
  *   [hw_system][motion_then_stop] - 运动 1s 后 emergency_override 急停
@@ -13,7 +13,6 @@
  *   [hw_system][watchdog_timeout] - 看门狗超时回调
  *   [hw_system][watchdog_heartbeat] - 看门狗正常心跳不误报
  *   [hw_system][p0_fault_chain]   - P0 故障链路：急停 + FaultStopped + 云端复位
- *   [hw_system][p1_fault_chain]   - P1 故障链路：停刷并无刷返航
  *   [hw_system][n1_clean_cycle]   - 配置完整任务真实限位闭环
  *   [hw_system][combined]         - N 趟完整任务链 + 全程持续采集健康数据
  *   [hw_system][combined_nvm_real]- N 趟完整任务链 + 全程打印融合里程计日志
@@ -46,9 +45,7 @@
 #include "hw_exit_guard.h"
 #include "integration/thingsboard_test_support.h"
 #include "mock/mock_serial_port.h"
-#include "pv_cleaning_robot/app/fault_handler.h"
-#include "pv_cleaning_robot/app/robot_fsm.h"
-#include "pv_cleaning_robot/app/robot_supervisor.h"
+#include "pv_cleaning_robot/app/robot_controller.h"
 #include "pv_cleaning_robot/app/watchdog_mgr.h"
 #include "pv_cleaning_robot/device/bms.h"
 #include "pv_cleaning_robot/device/gps_device.h"
@@ -146,9 +143,7 @@ class SystemHwFixture : public hw::IGracefulShutdown {
     std::unique_ptr<robot::service::ConfigService> config;
     std::shared_ptr<robot::service::FaultService> fault;
     std::shared_ptr<robot::service::MotionService> motion;
-    std::shared_ptr<robot::app::RobotFsm> fsm;
-    std::shared_ptr<robot::app::RobotSupervisor> supervisor;
-    std::unique_ptr<robot::app::FaultHandler> fault_handler;
+    std::shared_ptr<robot::app::RobotController> controller;
     std::shared_ptr<robot::driver::LibGpiodPin> left_gpio;
     std::shared_ptr<robot::driver::LibGpiodPin> right_gpio;
     std::shared_ptr<robot::device::LimitSwitch> left_sw;
@@ -232,17 +227,33 @@ class SystemHwFixture : public hw::IGracefulShutdown {
         motion->set_primary_dock_query(
             [this]() { return config->active_runtime_config().primary_dock; });
 
-        fsm = std::make_shared<robot::app::RobotFsm>();
-        supervisor =
-            std::make_shared<robot::app::RobotSupervisor>(fsm, *config, fault, nav);
-        supervisor->set_motion_service(motion);
-        supervisor->set_battery_soc_query([] { return 80.0f; });
-        supervisor->set_position_state_query([this]() { return position_state; });
-        fault_handler = std::make_unique<robot::app::FaultHandler>(
-            motion, fault, bus, [this](robot::service::FaultEvent event) {
-                supervisor->handle_fault_event(event);
-            });
-        fault_handler->start_listening();
+        robot::app::RobotController::ActionPorts actions;
+        actions.start_segment = [this](const robot::domain::MissionSegment& segment) {
+            return motion->start_segment(segment);
+        };
+        actions.stop_motion = [this]() { motion->stop_cleaning(); };
+        actions.emergency_stop = [this]() { motion->emergency_stop(); };
+        actions.clear_fault = [this]() { fault->clear_active_fault(); };
+        controller = std::make_shared<robot::app::RobotController>(actions);
+        controller->set_config_ports(robot::app::RobotController::ConfigPorts{
+            [this]() { return config->active_runtime_config(); },
+            [this]() { return config->pending_runtime_config(); },
+            [this](const robot::domain::RuntimeConfig& cfg) {
+                return config->runtime_config_version(cfg);
+            },
+            [this]() { return config->promote_pending_runtime_to_active(); },
+            [this]() {
+                const auto dock_mode =
+                    config->get<std::string>("robot.dock_mode", "single_dock") == "dual_dock"
+                        ? robot::domain::DockMode::DualDock
+                        : robot::domain::DockMode::SingleDock;
+                return robot::domain::LaneConfig{dock_mode,
+                                                 config->active_runtime_config().primary_dock};
+            },
+        });
+        controller->set_battery_soc_query([] { return 80.0f; });
+        controller->set_position_state_query([this]() { return position_state; });
+        controller->start();
         if (!health_jsonl_path.empty()) {
             health = std::make_shared<robot::service::HealthService>(
                 walk_group,
@@ -277,13 +288,6 @@ class SystemHwFixture : public hw::IGracefulShutdown {
             return false;
         }
 
-        supervisor->register_limit_settled_bridge(
-            bus,
-            [this]() {
-                return std::make_pair(!left_sw->read_current_level(),
-                                      !right_sw->read_current_level());
-            },
-            []() { return 80.0f; });
         safety = std::make_unique<robot::middleware::SafetyMonitor>(
             [this]() {
                 if (walk_group) {
@@ -293,39 +297,49 @@ class SystemHwFixture : public hw::IGracefulShutdown {
             left_sw,
             right_sw,
             bus);
+        safety->set_limit_settled_callback([this](robot::domain::Endpoint endpoint) {
+            controller->post_limit_settled(endpoint);
+        });
+        safety->set_limit_unstable_callback([this](robot::domain::Endpoint endpoint) {
+            controller->post_limit_unstable(endpoint);
+        });
         return safety->start();
     }
 
-    robot::app::RobotSupervisor::CommandResult start_directional_to_opposite() {
-        auto result = supervisor->submit_command(robot::domain::RobotCommand{
+    robot::app::CommandResult start_directional_to_opposite() {
+        auto result = controller->submit_command(robot::domain::RobotCommand{
             robot::domain::RobotCommandKind::CleanTowardOppositeEndpoint,
             robot::domain::CommandSource::Rpc,
             "hw-clean-opposite"});
         if (!result.accepted) {
             return result;
         }
-        return supervisor->handle_self_check_passed();
+        controller->complete_self_check(true);
+        controller->drain_for_test();
+        return {true, "accepted"};
     }
 
-    robot::app::RobotSupervisor::CommandResult start_configured_assuming_primary_dock() {
+    robot::app::CommandResult start_configured_assuming_primary_dock() {
         // 保持旧 system_hw_test.cc 行为：启动配置任务时不读取当前真实限位，
         // 而是按测试配置假定机器人从 primary_dock 语义出发。
         position_state = position_at(kp.primary_dock);
-        auto result = supervisor->submit_command(robot::domain::RobotCommand{
+        auto result = controller->submit_command(robot::domain::RobotCommand{
             robot::domain::RobotCommandKind::StartConfiguredMission,
             robot::domain::CommandSource::Rpc,
             "hw-configured"});
         if (!result.accepted) {
             return result;
         }
-        return supervisor->handle_self_check_passed();
+        controller->complete_self_check(true);
+        controller->drain_for_test();
+        return {true, "accepted"};
     }
 
-    bool wait_until_state(robot::app::RobotState state, std::chrono::seconds timeout) {
+    bool wait_until_state(const std::string& state, std::chrono::seconds timeout) {
         const auto deadline = std::chrono::steady_clock::now() + timeout;
         while (!hw::HwExitGuard::instance().exit_requested() &&
                std::chrono::steady_clock::now() < deadline) {
-            if (fsm->robot_state() == state) {
+            if (controller->snapshot().state == state) {
                 return true;
             }
             if (motion) {
@@ -339,12 +353,15 @@ class SystemHwFixture : public hw::IGracefulShutdown {
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(kp.loop_period_ms));
         }
-        return fsm->robot_state() == state;
+        return controller->snapshot().state == state;
     }
 
     void shutdown() override {
         if (safety) {
             safety->stop();
+        }
+        if (controller) {
+            controller->stop();
         }
         if (motion) {
             motion->emergency_stop();
@@ -552,14 +569,14 @@ void run_configured_system_chain(SystemHwFixture& f,
                  f.repeat_count,
                  f.repeat_count * 2u);
     REQUIRE(f.start_configured_assuming_primary_dock().accepted);
-    REQUIRE(f.fsm->robot_state() == robot::app::RobotState::ExecutingMission);
+    REQUIRE(f.controller->snapshot().state == "ExecutingMission");
 
     const auto deadline =
         std::chrono::steady_clock::now() + std::chrono::seconds(kp.limit_timeout_sec * 2 *
                                                                 static_cast<int>(f.repeat_count));
     while (!hw::HwExitGuard::instance().exit_requested() &&
            std::chrono::steady_clock::now() < deadline &&
-           f.fsm->robot_state() != robot::app::RobotState::Idle) {
+           f.controller->snapshot().state != "Idle") {
         f.motion->update();
         f.nav->update();
         if (f.bms) {
@@ -590,7 +607,7 @@ void run_configured_system_chain(SystemHwFixture& f,
                 "brush={} fault={} yaw={:.2f} odom(valid={} top={:.3f} bottom={:.3f} "
                 "fused={:.3f} diff={:.3f}) pid(mode={} connected={} valid={} corr={:.3f})",
                 tag,
-                f.fsm->current_state(),
+                f.controller->snapshot().state,
                 settled_count.load(),
                 walk_diag.wheel[0].speed_rpm,
                 walk_diag.wheel[1].speed_rpm,
@@ -616,7 +633,7 @@ void run_configured_system_chain(SystemHwFixture& f,
     f.watchdog->stop();
 
     REQUIRE_FALSE(hw::HwExitGuard::instance().exit_requested());
-    REQUIRE(f.fsm->robot_state() == robot::app::RobotState::Idle);
+    REQUIRE(f.controller->snapshot().state == "Idle");
     CHECK(settled_count.load() >= static_cast<int>(f.repeat_count * 2u));
     CHECK_FALSE(watchdog_timeout.load());
     CHECK(health_records > 0);
@@ -647,8 +664,7 @@ void run_configured_system_chain(SystemHwFixture& f,
 TEST_CASE("系统组合根初始化后处于 Idle", "[hw_system][full_init]") {
     SystemHwFixture f;
     REQUIRE(f.init());
-    CHECK(f.fsm->robot_state() == robot::app::RobotState::Idle);
-    CHECK(f.supervisor->current_state() == "Idle");
+    CHECK(f.controller->snapshot().state == "Idle");
 }
 
 TEST_CASE("HealthService DIAGNOSTICS 落盘真实传感器数据", "[hw_system][health_real_data]") {
@@ -782,46 +798,22 @@ TEST_CASE("P0 故障链路急停并由云端复位回 Idle", "[hw_system][p0_fau
     REQUIRE(f.init());
     f.position_state = robot::domain::PositionState::OnSegment;
     REQUIRE(f.start_directional_to_opposite().accepted);
-    REQUIRE(f.fsm->robot_state() == robot::app::RobotState::ExecutingMission);
+    REQUIRE(f.controller->snapshot().state == "ExecutingMission");
 
-    f.fault->report(robot::service::FaultEvent::Level::P0,
-                    robot::service::FaultCode::kCanCommunicationLost,
-                    "hw_p0");
+    f.controller->post_fault(robot::app::FaultFact{robot::app::FaultSource::Watchdog,
+                                                   robot::domain::FaultCode::kCanCommunicationLost,
+                                                   "hw_p0"});
+    f.controller->drain_for_test();
 
-    CHECK(f.fsm->robot_state() == robot::app::RobotState::FaultStopped);
-    REQUIRE(f.fault->has_active_fault());
-    const auto reset = f.supervisor->submit_command(robot::domain::RobotCommand{
+    CHECK(f.controller->snapshot().state == "FaultStopped");
+    CHECK(f.controller->snapshot().fault == robot::domain::FaultCode::kCanCommunicationLost);
+    const auto reset = f.controller->submit_command(robot::domain::RobotCommand{
         robot::domain::RobotCommandKind::FaultReset,
         robot::domain::CommandSource::Rpc,
         "hw-reset"});
     REQUIRE(reset.accepted);
-    CHECK(f.fsm->robot_state() == robot::app::RobotState::Idle);
+    CHECK(f.controller->snapshot().state == "Idle");
     CHECK_FALSE(f.fault->has_active_fault());
-}
-
-TEST_CASE("P1 故障链路停刷并切换到无刷返航", "[hw_system][p1_fault_chain]") {
-    SystemHwFixture f;
-    REQUIRE(f.init());
-    REQUIRE(f.start_configured_assuming_primary_dock().accepted);
-    REQUIRE(f.fsm->robot_state() == robot::app::RobotState::ExecutingMission);
-
-    f.fault->report(robot::service::FaultEvent::Level::P1,
-                    robot::service::FaultCode::kBrushFaultReturnRequired,
-                    "hw_p1");
-
-    CHECK(f.fsm->robot_state() == robot::app::RobotState::ExecutingMission);
-    REQUIRE(f.fsm->mission().has_value());
-    REQUIRE(f.fsm->mission()->current_segment() != nullptr);
-    CHECK(f.fsm->mission()->current_segment()->mode == robot::domain::SegmentMode::BrushOffReturn);
-    CHECK(f.fsm->mission()->current_segment()->target == kp.primary_dock);
-    REQUIRE(f.fault->has_active_fault());
-    CHECK(f.fault->last_fault().level == robot::service::FaultEvent::Level::P1);
-
-    f.supervisor->handle_limit_settled(kp.primary_dock,
-                                       kp.primary_dock == robot::domain::Endpoint::A,
-                                       kp.primary_dock == robot::domain::Endpoint::B,
-                                       80.0f);
-    CHECK(f.fsm->robot_state() == robot::app::RobotState::Idle);
 }
 
 TEST_CASE("配置完整任务通过真实限位闭环完成", "[hw_system][n1_clean_cycle]") {
@@ -830,9 +822,8 @@ TEST_CASE("配置完整任务通过真实限位闭环完成", "[hw_system][n1_cl
     REQUIRE(f.init());
     REQUIRE(f.start_safety_bridge());
     REQUIRE(f.start_configured_assuming_primary_dock().accepted);
-    CHECK(f.fsm->robot_state() == robot::app::RobotState::ExecutingMission);
-    CHECK(f.wait_until_state(robot::app::RobotState::Idle,
-                             std::chrono::seconds(kp.limit_timeout_sec * 2)));
+    CHECK(f.controller->snapshot().state == "ExecutingMission");
+    CHECK(f.wait_until_state("Idle", std::chrono::seconds(kp.limit_timeout_sec * 2)));
 }
 
 TEST_CASE("N 趟完整任务链 + 全程持续采集健康数据", "[hw_system][combined]") {

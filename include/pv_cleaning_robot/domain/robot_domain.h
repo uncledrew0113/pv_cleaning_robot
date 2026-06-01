@@ -118,7 +118,7 @@ struct RuntimeConfig {
     uint32_t repeat_count{1};
     /// 清扫段行走速度，业务配置使用绝对值，具体方向由 MotionService 根据任务段换算。
     double clean_speed_rpm{300.0};
-    /// 无刷返航或返程清扫速度，业务配置使用绝对值。
+    /// 向主停机端运行时的速度，业务配置使用绝对值。
     double return_speed_rpm{300.0};
     /// 滚刷目标转速绝对值；正反方向由任务段和停机端点决定。
     int brush_rpm{1000};
@@ -208,8 +208,6 @@ inline TravelDirection travel_direction_to(Endpoint target) noexcept {
 enum class SegmentMode {
     /// 行走并开启滚刷，属于清扫段。
     Cleaning,
-    /// 行走但关闭滚刷，用于故障或策略返航。
-    BrushOffReturn,
 };
 
 /// @brief 一个可执行任务段：物理目标端点 + 动作模式。
@@ -219,7 +217,7 @@ enum class SegmentMode {
 struct SegmentSpec {
     /// 本段结束时应稳定确认的物理端点。
     Endpoint target{Endpoint::B};
-    /// 本段是否清扫、是否停刷返航。
+    /// 本段的运动模式。
     SegmentMode mode{SegmentMode::Cleaning};
 };
 
@@ -232,8 +230,6 @@ enum class MissionKind {
     CleanTowardOppositeEndpoint,
     /// RPC: 无论当前位置，向主停机端清扫，到达后停止。
     CleanTowardPrimaryDock,
-    /// 故障/策略触发的无刷返航。
-    BrushOffReturnHome,
 };
 
 /// @brief 当前任务的最小业务事实；FSM 只推进段序号和完成次数，不直接控制硬件。
@@ -310,22 +306,6 @@ inline MissionContext build_directional_clean_context(MissionKind kind,
     return ctx;
 }
 
-/// @brief 构造无刷返航任务。
-///
-/// 用于 P1 故障、取消任务后安全回停机端等场景。它只表达业务意图：
-/// 目标是 primary_dock，动作模式是 BrushOffReturn；具体停刷、轮速和方向
-/// 由 MotionService 执行。
-inline MissionContext build_brush_off_return_context(const LaneConfig& lane,
-                                                      CommandSource source,
-                                                      std::string command_id) {
-    MissionContext ctx;
-    ctx.kind = MissionKind::BrushOffReturnHome;
-    ctx.source = source;
-    ctx.command_id = std::move(command_id);
-    ctx.segments.push_back(MissionSegment{lane.primary_dock, SegmentMode::BrushOffReturn});
-    return ctx;
-}
-
 /// @brief 构造按配置执行的完整任务。
 ///
 /// 单停机位：
@@ -367,17 +347,17 @@ namespace FaultCode {
 // 常用关键故障源表。
 //
 // 编码规则：
-// - 0x0xxx: 本地设备/安全监控原始故障，可由 FaultService 决策表提升等级。
+// - 0x0xxx: 本地设备/安全监控原始故障，可由 app 层故障策略提升等级。
 // - 0x1xxx: P0 类故障，立即急停并进入 FaultStopped。
-// - 0x2xxx: P1 类故障，停刷并请求无刷返航。
+// - 0x2xxx: P1 类故障，当前主流程只锁存上报，动作由策略表显式定义。
 // - 0x3xxx: P2 类告警或业务拒绝，通常只上报，不强制改变运行状态。
 //
 // 这里定义的是跨层共享的稳定故障码，不在 domain 中放故障处理逻辑；
-// 具体动作由 FaultService::decide() 和 RobotSupervisor 的故障桥接执行。
+// 具体动作由 app::FaultPolicy 和 RobotController 统一执行。
 static constexpr uint32_t kWheelSpinFree = 0x0002u;
 static constexpr uint32_t kCanCommunicationLost = 0x1001u;
 static constexpr uint32_t kSegmentStartFailed = 0x1101u;
-static constexpr uint32_t kP1DuringReturnEscalatedToP0 = 0x1102u;
+static constexpr uint32_t kRecoveryFailed = 0x1102u;
 static constexpr uint32_t kTaskContextInconsistent = 0x1103u;
 static constexpr uint32_t kUnexpectedLimitSide = 0x1003u;
 static constexpr uint32_t kConflictingLimitSides = 0x1004u;
@@ -388,14 +368,11 @@ static constexpr uint32_t kStartRejectedBusy = 0x3003u;
 static constexpr uint32_t kStartRejectedInvalidPosition = 0x3004u;
 static constexpr uint32_t kStartRejectedLowBattery = 0x3005u;
 static constexpr uint32_t kRuntimeConfigPromoteFailed = 0x3006u;
-static constexpr uint32_t kBrushFaultReturnRequired = 0x2001u;
-static constexpr uint32_t kReturnPathBlocked = 0x2002u;
-static constexpr uint32_t kGpsLostRequiresReturn = 0x3002u;
 }  // namespace FaultCode
 
 /// @brief 对云端和本地诊断暴露的业务运行快照。
 ///
-/// Snapshot 是“只读事实投影”，不应被反向写回 FSM。ThingsBoardControlPlane、
+/// Snapshot 是“只读事实投影”，不应被反向写回控制器。ThingsBoardControlPlane、
 /// HealthService 或本地诊断工具可以使用它生成 telemetry/status payload。
 struct RobotRuntimeSnapshot {
     /// 当前业务状态，使用 app::RobotState 对应的稳定字符串。
@@ -417,7 +394,7 @@ struct RobotRuntimeSnapshot {
 /// @brief 最小急停端口。
 ///
 /// Domain 只定义“需要急停能力”这一边界，不关心急停由电机组、继电器还是安全
-/// 控制器实现。这样 FaultHandler/SafetyMonitor 可依赖稳定接口，而不依赖具体服务。
+/// 控制器实现。这样 SafetyMonitor 或其他安全组件可依赖稳定接口，而不依赖具体服务。
 class EmergencyStopPort {
    public:
     virtual ~EmergencyStopPort() = default;
