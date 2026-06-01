@@ -14,24 +14,18 @@
 
 namespace robot::service {
 
-/// @brief 运动控制服务——协调行走电机组与滚刷电机
+/// @brief 运动服务：把业务任务段转换成行走电机和滚刷命令。
 ///
-/// 新增功能：
-///   1. 通信超时保活：WalkMotorGroup 在 open() 时自动下发 comm_timeout_ms
-///      给每台电机；update() 每 20ms 重发设定值维持心跳，超时自停
-///   2. 主动上报+温度查询：反馈方式使用主动上报（100Hz），
-///      无法上报温度时由 WalkMotorGroup::update() 定期发 0x107 查询补采
-///   3. 视觉纠偏：MotionService 持有 HeadingCorrector，
-///      update() 每 20ms 根据视觉 UDS 最新结果修正上下轮组目标速度
-///   4. 冲突保护：override 激活期间 WalkMotorGroup::update() 跳过心跳重发，
-///      防止控制心跳干扰边缘停车指令
-class MotionService : public middleware::IRunnable, public domain::MotionPort {
+/// 边界约束：
+///   - app 层只能调用 start_segment()/stop_cleaning()/emergency_stop()；
+///   - 具体轮向和滚刷方向在本服务内根据目标端点和主停机端统一换算；
+///   - update() 负责周期心跳和姿态纠偏，override 激活时不抢占安全停车。
+class MotionService : public middleware::IRunnable, public domain::EmergencyStopPort {
    public:
     struct Config {
         float clean_speed_rpm{30.0f};   ///< 清扫行进速度（绝对值 RPM）
         float return_speed_rpm{30.0f};  ///< 返回速度（绝对值 RPM）
         int brush_rpm{1200};            ///< 滚刷转速绝对值
-        float edge_reverse_rpm{30.0f};  ///< 边缘触发后反转速度（RPM，0=原地停）
         bool heading_pid_en{true};      ///< 是否使能视觉纠偏
         HeadingCorrector::Params pid{};  ///< 视觉纠偏参数
     };
@@ -47,26 +41,16 @@ class MotionService : public middleware::IRunnable, public domain::MotionPort {
                   middleware::EventBus& bus,
                   Config cfg);
 
-    /// 以“停机位在右侧”为运动方向基线；查询返回 Left 时整体取反。
-    void set_parking_side_query(std::function<ParkingSide()> query);
+    /// 注入主停机端配置，用于速度选择、无刷返航和纠偏镜像符号。
+    void set_primary_dock_query(std::function<domain::Endpoint()> query);
     /// 新任务启动前从 active runtime 同步速度/滚刷参数；所有速度配置统一按绝对值解释。
     void set_runtime_config_query(std::function<RuntimeConfig()> query);
 
-    // ── 运动控制 ──────────────────────────────────────────────────────────
-    /// 开始清扫前进（使能行走 + 滚刷，启用姿态纠偏）
-    bool start_cleaning() override;
+    /// @brief 按业务任务段启动运动，是 app 层唯一的任务段运动入口。
+    bool start_segment(const domain::MissionSegment& segment);
 
-    /// 停止清扫（停滚刷，行走归零，禁用姿态纠偏）
-    void stop_cleaning() override;
-
-    /// 以返回速度反向行进（滚刷反向运行，保持姿态纠偏）
-    bool start_returning() override;
-
-    /// @brief P1 故障路径：先停滚刷，再以返回速度倒退回停机位。
-    ///
-    /// 由 RobotFsm::dispatch<EvFaultP1>() 调用；与 start_returning() 的区别是
-    /// 滚刷立即停止（不反向运行），适用于需要避免滚刷二次损伤的故障场景。
-    bool start_returning_no_brush() override;
+    /// 停止当前运动段（停滚刷，行走归零，禁用姿态纠偏）。
+    void stop_cleaning();
 
     /// 原地急停（失能行走，停滚刷）
     void emergency_stop() override;
@@ -80,19 +64,21 @@ class MotionService : public middleware::IRunnable, public domain::MotionPort {
     std::shared_ptr<device::ImuDevice> imu_;
     middleware::EventBus& bus_;
     Config cfg_;
-    std::function<ParkingSide()> parking_side_query_;
+    std::function<domain::Endpoint()> primary_dock_query_;
     std::function<RuntimeConfig()> runtime_config_query_;
     HeadingCorrector heading_corrector_{};
     device::WalkMotorGroup::SpeedCmd base_speed_cmd_{};
     bool walk_command_active_{false};
-    HeadingCorrector::MotionPhase motion_phase_{HeadingCorrector::MotionPhase::ToFarEnd};
+    domain::TravelDirection travel_direction_{domain::TravelDirection::AToB};
     uint32_t last_override_clear_generation_{0};
 
-    int task_direction_sign() const;
+    domain::Endpoint primary_dock() const;
+    int target_direction_sign(domain::Endpoint target) const;
     void sync_runtime_config();
     bool enable_speed_mode();
     void sync_heading_pid_enabled();
-    bool start_returning_impl(bool run_brush);
+    bool start_cleaning_to(domain::Endpoint target);
+    bool start_brush_off_return_to(domain::Endpoint target);
     void set_base_speed_command(const device::WalkMotorGroup::SpeedCmd& cmd);
 };
 

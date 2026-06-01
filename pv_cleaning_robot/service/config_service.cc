@@ -48,13 +48,13 @@ const rapidjson::Value* find_path(const rapidjson::Value& root,
 
 bool is_supported_runtime_patch_field(const std::string& key)
 {
-    return key == "passes" || key == "clean_speed_rpm" || key == "return_speed_rpm" ||
-           key == "brush_rpm" || key == "parking_side" || key == "min_battery_soc" ||
-           key == "charge_stop_soc" ||
+    return key == "repeat_count" || key == "clean_speed_rpm" ||
+           key == "return_speed_rpm" || key == "brush_rpm" || key == "primary_dock" ||
+           key == "min_battery_soc" || key == "charge_stop_soc" ||
            key == "schedules";
 }
 
-bool is_integer_passes(double value)
+bool is_valid_repeat_count(double value)
 {
     return std::isfinite(value) && value > 0.0 && std::floor(value) == value;
 }
@@ -103,6 +103,20 @@ void set_int_member(rapidjson::Value& parent,
         parent.AddMember(name, rapidjson::Value(value), alloc);
     } else {
         it->value.SetInt(value);
+    }
+}
+
+void set_uint_member(rapidjson::Value& parent,
+                     const char* key,
+                     uint32_t value,
+                     rapidjson::Document::AllocatorType& alloc)
+{
+    auto it = parent.FindMember(key);
+    if (it == parent.MemberEnd()) {
+        rapidjson::Value name(key, alloc);
+        parent.AddMember(name, rapidjson::Value(value), alloc);
+    } else {
+        it->value.SetUint(value);
     }
 }
 
@@ -233,15 +247,15 @@ std::vector<std::string> ConfigService::split_path(const std::string& path)
     return parts;
 }
 
-ParkingSide ConfigService::parse_parking_side_string(const std::string& value)
+Endpoint ConfigService::parse_endpoint_string(const std::string& value)
 {
-    if (value == parking_side_config_string(ParkingSide::Left)) {
-        return ParkingSide::Left;
+    if (value == endpoint_config_string(Endpoint::A)) {
+        return Endpoint::A;
     }
-    if (value == parking_side_config_string(ParkingSide::Right)) {
-        return ParkingSide::Right;
+    if (value == endpoint_config_string(Endpoint::B)) {
+        return Endpoint::B;
     }
-    throw std::runtime_error("parking_side must be left or right");
+    throw std::runtime_error("primary_dock must be A or B");
 }
 
 RuntimeConfig ConfigService::parse_runtime_config(const rapidjson::Value& root)
@@ -252,9 +266,9 @@ RuntimeConfig ConfigService::parse_runtime_config(const rapidjson::Value& root)
         if (const auto robot_it = root.FindMember("robot");
             robot_it != root.MemberEnd() && robot_it->value.IsObject()) {
             const auto& robot = robot_it->value;
-            if (const auto it = robot.FindMember("passes");
-                it != robot.MemberEnd() && it->value.IsNumber()) {
-                cfg.passes = it->value.GetDouble();
+            if (const auto it = robot.FindMember("repeat_count");
+                it != robot.MemberEnd() && it->value.IsUint()) {
+                cfg.repeat_count = it->value.GetUint();
             }
             if (const auto it = robot.FindMember("clean_speed_rpm");
                 it != robot.MemberEnd() && it->value.IsNumber()) {
@@ -268,9 +282,9 @@ RuntimeConfig ConfigService::parse_runtime_config(const rapidjson::Value& root)
                 it != robot.MemberEnd() && it->value.IsInt()) {
                 cfg.brush_rpm = it->value.GetInt();
             }
-            if (const auto it = robot.FindMember("parking_side");
+            if (const auto it = robot.FindMember("primary_dock");
                 it != robot.MemberEnd() && it->value.IsString()) {
-                cfg.parking_side = parse_parking_side_string(it->value.GetString());
+                cfg.primary_dock = parse_endpoint_string(it->value.GetString());
             }
             if (const auto it = robot.FindMember("min_battery_soc");
                 it != robot.MemberEnd() && it->value.IsNumber()) {
@@ -329,8 +343,8 @@ std::vector<RuntimeScheduleEntry> ConfigService::parse_schedule_entries(
 
 void ConfigService::validate_runtime_config(const RuntimeConfig& cfg)
 {
-    if (!is_integer_passes(cfg.passes)) {
-        throw std::runtime_error("passes must be a positive integer");
+    if (cfg.repeat_count == 0u) {
+        throw std::runtime_error("repeat_count must be a positive integer");
     }
     const auto valid_soc = [](double value) {
         return std::isfinite(value) && value >= 0.0 && value <= 100.0;
@@ -372,13 +386,13 @@ rapidjson::Document ConfigService::runtime_config_to_pending_root(const RuntimeC
     rapidjson::Document root;
     root.SetObject();
     auto* robot = ensure_object_member(root, "robot", root.GetAllocator());
-    set_double_member(*robot, "passes", config.passes, root.GetAllocator());
+    set_uint_member(*robot, "repeat_count", config.repeat_count, root.GetAllocator());
     set_double_member(*robot, "clean_speed_rpm", config.clean_speed_rpm, root.GetAllocator());
     set_double_member(*robot, "return_speed_rpm", config.return_speed_rpm, root.GetAllocator());
     set_int_member(*robot, "brush_rpm", config.brush_rpm, root.GetAllocator());
     set_string_member(*robot,
-                      "parking_side",
-                      parking_side_config_string(config.parking_side),
+                      "primary_dock",
+                      endpoint_config_string(config.primary_dock),
                       root.GetAllocator());
     set_double_member(*robot, "min_battery_soc", config.min_battery_soc, root.GetAllocator());
     set_double_member(*robot, "charge_stop_soc", config.charge_stop_soc, root.GetAllocator());
@@ -496,11 +510,13 @@ SharedAttrApplyResult ConfigService::apply_runtime_patch(const rapidjson::Value&
         auto* robot =
             ensure_object_member(pending_root_after, "robot", pending_root_after.GetAllocator());
 
-        if (const auto it = attrs.FindMember("passes"); it != attrs.MemberEnd()) {
-            if (!it->value.IsNumber() || !is_integer_passes(it->value.GetDouble())) {
-                throw std::runtime_error("passes must be a positive integer");
+        if (const auto it = attrs.FindMember("repeat_count"); it != attrs.MemberEnd()) {
+            if (!it->value.IsNumber() || !is_valid_repeat_count(it->value.GetDouble())) {
+                throw std::runtime_error("repeat_count must be a positive integer");
             }
-            set_double_member(*robot, "passes", it->value.GetDouble(), pending_root_after.GetAllocator());
+            const auto repeat_count = static_cast<uint32_t>(it->value.GetDouble());
+            set_uint_member(
+                *robot, "repeat_count", repeat_count, pending_root_after.GetAllocator());
             touches_pending = true;
         }
 
@@ -539,14 +555,14 @@ SharedAttrApplyResult ConfigService::apply_runtime_patch(const rapidjson::Value&
         };
         apply_positive_int("brush_rpm", "brush_rpm must be > 0");
 
-        if (const auto it = attrs.FindMember("parking_side"); it != attrs.MemberEnd()) {
+        if (const auto it = attrs.FindMember("primary_dock"); it != attrs.MemberEnd()) {
             if (!it->value.IsString()) {
-                throw std::runtime_error("parking_side must be left or right");
+                throw std::runtime_error("primary_dock must be A or B");
             }
-            const auto side = parse_parking_side_string(it->value.GetString());
+            const auto endpoint = parse_endpoint_string(it->value.GetString());
             set_string_member(*robot,
-                              "parking_side",
-                              parking_side_config_string(side),
+                              "primary_dock",
+                              endpoint_config_string(endpoint),
                               pending_root_after.GetAllocator());
             touches_pending = true;
         }
@@ -627,16 +643,16 @@ uint64_t ConfigService::runtime_config_version(const RuntimeConfig& config) cons
     rapidjson::StringBuffer buffer;
     rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
     writer.StartObject();
-    writer.Key("passes");
-    writer.Double(config.passes);
+    writer.Key("repeat_count");
+    writer.Uint(config.repeat_count);
     writer.Key("clean_speed_rpm");
     writer.Double(config.clean_speed_rpm);
     writer.Key("return_speed_rpm");
     writer.Double(config.return_speed_rpm);
     writer.Key("brush_rpm");
     writer.Int(config.brush_rpm);
-    writer.Key("parking_side");
-    writer.String(parking_side_config_string(config.parking_side));
+    writer.Key("primary_dock");
+    writer.String(endpoint_config_string(config.primary_dock));
     writer.Key("min_battery_soc");
     writer.Double(config.min_battery_soc);
     writer.Key("charge_stop_soc");

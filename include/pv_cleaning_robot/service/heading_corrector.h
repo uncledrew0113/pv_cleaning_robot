@@ -11,7 +11,7 @@
 #include <string>
 #include <thread>
 
-#include "pv_cleaning_robot/service/thingsboard_control_plane.h"
+#include "pv_cleaning_robot/domain/robot_domain.h"
 
 namespace robot::service {
 
@@ -40,11 +40,6 @@ class HeadingCorrector {
         TRACK,
     };
 
-    enum class MotionPhase : uint8_t {
-        ToFarEnd = 0,
-        ToParkingSide,
-    };
-
     struct WheelFeedback {
         bool valid{false};
         std::array<float, 4> rpm{};
@@ -63,8 +58,8 @@ class HeadingCorrector {
         WheelFeedback wheel_feedback{};
         bool has_base_command{false};
         SpeedCommand base_command{};
-        MotionPhase motion_phase{MotionPhase::ToFarEnd};
-        ParkingSide parking_side{ParkingSide::Right};
+        domain::TravelDirection travel_direction{domain::TravelDirection::AToB};
+        domain::Endpoint primary_dock{domain::Endpoint::B};
     };
 
     struct Output {
@@ -81,7 +76,7 @@ class HeadingCorrector {
         bool latest_valid{false};
         float latest_yaw_deg{0.0f};
         float latest_confidence{0.0f};
-        // 控制误差（已按 parking_side / motion_phase 归一化并做低通滤波），不是原始视觉 yaw。
+        // 控制误差（已按 primary_dock / travel_direction 归一化并做低通滤波），不是原始视觉 yaw。
         float filtered_yaw_deg{0.0f};
         float integral_term{0.0f};
         float last_correction{0.0f};

@@ -1,162 +1,108 @@
 #pragma once
 
-// Boost.SML（需 C++17，header-only）
-#include <boost/sml.hpp>
-#include <boost/lockfree/spsc_queue.hpp>
-#include "pv_cleaning_robot/domain/robot_domain.h"
-#include "pv_cleaning_robot/middleware/event_bus.h"
-#include "pv_cleaning_robot/service/fault_service.h"
-#include <memory>
-#include <mutex>
+/// @file robot_fsm.h
+/// @brief 机器人业务状态机的纯决策层。
+///
+/// FSM 不直接访问电机、配置、云端或文件系统。它只维护业务状态和
+/// MissionContext，并返回 RobotAction 列表；动作由 RobotSupervisor 串行分发。
+#include <algorithm>
 #include <optional>
 #include <string>
-#include "pv_cleaning_robot/hal/pi_mutex.h"
+#include <vector>
 
-namespace sml = boost::sml;
+#include "pv_cleaning_robot/domain/robot_domain.h"
+#include "pv_cleaning_robot/hal/pi_mutex.h"
 
 namespace robot::app {
 
-// ── 状态 ──────────────────────────────────────────────────────────────
-struct StateInit {};
-struct StateIdle {};
-struct StateSelfCheck {};        ///< 启动前检查
-struct StateExecutingSegment {}; ///< 执行当前任务段
-struct StateSegmentBoundary {};  ///< 段完成后的瞬时决策态
-struct StateCharging {};         ///< 在停机位（充电或待机）
-struct StateFaultStopped {};     ///< 故障停机，等待人工复位
-
-using robot::domain::CompletionCondition;
-using robot::domain::MissionContext;
-using robot::domain::MissionType;
-using robot::domain::SegmentDirection;
-using robot::domain::SegmentMode;
-using robot::domain::SegmentSpec;
-
-// ── 公开事件 ──────────────────────────────────────────────────────────
-/// 调度器触发（SchedulerService 或 RPC "start"）
-struct EvScheduleStart {
-    bool  at_parking_side{false};  ///< 当前是否位于停机位一侧
-    bool  at_far_end{false};       ///< 当前是否位于对侧端点
-    float passes{1.0f};            ///< 本次任务趟数（首版仅支持整数趟）
-    bool dual_dock_mode{false};    ///< 双停机位模式：任一端点都允许启动
+enum class RobotState {
+    Idle,
+    SelfChecking,
+    ExecutingMission,
+    SettlingEndpoint,
+    Recovering,
+    Charging,
+    FaultStopped,
 };
-/// 云端 RPC 特权启动：允许从非停机位直接开始完整清扫任务。
-struct EvRpcStartTask {
-    float passes{1.0f};          ///< 本次任务趟数（首版仅支持整数趟）
-    bool at_parking_side{false}; ///< 当前是否位于配置停机位一侧
-    bool at_far_end{false};      ///< 当前是否位于对侧端点
-    bool dual_dock_mode{false};  ///< 双停机位模式：任一端点都允许启动
+
+/// @brief FSM 输出动作。动作是“意图”，由 RobotSupervisor 串行调用服务层完成副作用。
+enum class RobotActionKind {
+    StartSegmentMotion,
+    StartRecoveryMotion,
+    StopMotion,
+    EmergencyStopMotion,
+    ClearFault,
 };
-struct EvFarEndLimitSettled { bool should_charge{true}; };  ///< 对侧端点限位防抖完成（SafetyMonitor 延迟后发布）
-struct EvParkingSideLimitSettled  { bool should_charge{true}; };  ///< 停机位一侧限位防抖完成
-struct EvFaultP2           {};  ///< P2 故障（不转换状态，仅记录告警）
-struct EvFaultP0           {};  ///< P0 严重故障 → Fault
-struct EvFaultP1           {};  ///< P1 故障 → Fault
-struct EvFaultReset        {};  ///< 故障复位（人工确认后）
-struct EvChargeDone        {};  ///< 充电完成（BMS-less 电池兼容预留）
-struct EvInitDone          {};  ///< 系统初始化完成
-struct EvStopTask          {};  ///< 终止当前任务并原地停住
-struct EvManualReturn      {};  ///< 任务级返回停机位，到位后本任务结束
 
-// ── 内部事件（仅在 dispatch<> 中使用，不对外派发）──────────────────
-struct EvSelfCheckOk       {};  ///< 自检通过，从停机位正向出发
-struct EvSelfCheckFail     {};  ///< 自检失败，留在 Idle
-struct EvTaskCompleteCharge {};  ///< 所有指定趟数完成且需充电
-struct EvTaskCompleteIdle   {};  ///< 所有指定趟数完成且无需充电
-struct EvReturnCompleteCharge {};  ///< 返回停机位后进入充电
-struct EvReturnCompleteIdle   {};  ///< 返回停机位后进入空闲
-struct EvSegmentContinue      {};  ///< 切换到下一段并继续执行
+struct RobotAction {
+    RobotActionKind kind{RobotActionKind::StopMotion};
+    std::string command_id;
+    std::optional<domain::MissionSegment> segment;
+};
 
-/// @brief 机器人有限状态机（Boost.SML）
-///
-/// 转换逻辑概述：
-///   Idle/Charging   --EvScheduleStart→ SelfCheck（自检）
-///   SelfCheck       --[ok]→            ExecutingSegment
-///   SelfCheck       --[fail]→          Idle（拒绝）
-///   ExecutingSegment --EvFarEndLimitSettled/EvParkingSideLimitSettled→ SegmentBoundary
-///   SegmentBoundary --EvSegmentContinue→ ExecutingSegment
-///   SegmentBoundary --EvTaskComplete*/EvReturnComplete*→ Idle/Charging
-///   ExecutingSegment --EvFaultP0/EvFaultP1→ FaultStopped
-///   ExecutingSegment --EvFaultP2→        (不变，仅告警)
-///   ExecutingSegment/Idle --EvManualReturn→ ExecutingSegment
-///   ExecutingSegment --EvStopTask→ Idle
-///   FaultStopped --EvFaultReset→ Idle
+struct FsmResult {
+    bool accepted{false};
+    bool safety_fault{false};
+    std::string reason;
+    std::vector<RobotAction> actions;
+
+    bool has_action(RobotActionKind kind) const {
+        return std::any_of(actions.begin(), actions.end(), [kind](const RobotAction& action) {
+            return action.kind == kind;
+        });
+    }
+};
+
+enum class FaultResponse {
+    Ignore,
+    Recover,
+    ReturnHome,
+    Stop,
+};
+
+struct FaultHandling {
+    uint32_t code{0};
+    FaultResponse response{FaultResponse::Ignore};
+    std::string reason;
+    std::optional<domain::MissionContext> return_mission;
+};
+
 class RobotFsm {
 public:
-    RobotFsm(std::shared_ptr<domain::MotionPort> motion,
-             std::shared_ptr<service::FaultReporter> fault,
-             middleware::EventBus&                   bus);
-
-    /// 向状态机发送事件（线程安全）
-    template <typename Event>
-    void dispatch(Event e);
+    RobotFsm();
 
     std::string current_state() const;
-    std::optional<SegmentDirection> current_segment_direction() const;
-    int target_passes() const;
-    int completed_passes() const;
+    RobotState robot_state() const;
+    const std::optional<domain::MissionContext>& mission() const noexcept;
+    uint32_t repeat_count() const;
+    uint32_t completed_cycles() const;
 
-    // SML 状态机定义（必须在头文件中完整定义，sml::sm<> 模板需要完整类型）
-    struct Fsm {
-        auto operator()() const noexcept {
-            using namespace sml;
-            return make_transition_table(
-                // 初始化
-                *state<StateInit>           + event<EvInitDone>              = state<StateIdle>,
-                // 调度触发 → 自检
-                state<StateIdle>            + event<EvScheduleStart>         = state<StateSelfCheck>,
-                state<StateCharging>        + event<EvScheduleStart>         = state<StateSelfCheck>,
-                // RPC 特权启动 → 自检（不要求当前位于停机位）
-                state<StateIdle>            + event<EvRpcStartTask>          = state<StateSelfCheck>,
-                state<StateCharging>        + event<EvRpcStartTask>          = state<StateSelfCheck>,
-                // 自检结论
-                state<StateSelfCheck>       + event<EvSelfCheckOk>           = state<StateExecutingSegment>,
-                state<StateSelfCheck>       + event<EvSelfCheckFail>         = state<StateIdle>,
-                // 任务段执行/换段
-                state<StateExecutingSegment> + event<EvFarEndLimitSettled>   = state<StateSegmentBoundary>,
-                state<StateExecutingSegment> + event<EvParkingSideLimitSettled> = state<StateSegmentBoundary>,
-                state<StateSegmentBoundary> + event<EvSegmentContinue>       = state<StateExecutingSegment>,
-                state<StateSegmentBoundary> + event<EvTaskCompleteCharge>    = state<StateCharging>,
-                state<StateSegmentBoundary> + event<EvTaskCompleteIdle>      = state<StateIdle>,
-                state<StateSegmentBoundary> + event<EvReturnCompleteCharge>  = state<StateCharging>,
-                state<StateSegmentBoundary> + event<EvReturnCompleteIdle>    = state<StateIdle>,
-                // 任务控制
-                state<StateExecutingSegment> + event<EvManualReturn>         = state<StateExecutingSegment>,
-                state<StateIdle>            + event<EvManualReturn>          = state<StateExecutingSegment>,
-                state<StateExecutingSegment> + event<EvStopTask>             = state<StateIdle>,
-                // 故障/返回
-                state<StateCharging>        + event<EvChargeDone>            = state<StateIdle>,
-                // P1/P0 故障
-                state<StateExecutingSegment> + event<EvFaultP1>              = state<StateExecutingSegment>,
-                state<StateExecutingSegment> + event<EvFaultP0>              = state<StateFaultStopped>,
-                // 故障复位
-                state<StateFaultStopped>    + event<EvFaultReset>            = state<StateIdle>
-            );
-        }
-    };
+    /// 进入启动前自检；真正的电量、姿态、配置检查由 Supervisor/Service 执行。
+    FsmResult start(domain::MissionContext mission);
+    /// 结束自检。通过则启动当前任务段；失败则回 Idle 或 FaultStopped。
+    FsmResult complete_self_check(bool ok, bool fatal, const std::string& reason);
+    /// 端点稳定确认。只在 ExecutingMission 中接受；异常端点会进入 FaultStopped。
+    FsmResult settle_endpoint(domain::Endpoint endpoint, bool limit_consistent = true);
+    /// 远程/人工停止。只允许 ExecutingMission 或 Recovering。
+    FsmResult stop(const std::string& command_id);
+    /// 应用故障策略。策略由 Supervisor/故障表决定，FSM 只执行状态变更。
+    FsmResult apply_fault(const FaultHandling& fault);
+    /// 结束恢复动作。成功恢复原任务段，失败进入 FaultStopped。
+    FsmResult complete_recovery(bool ok, const std::string& reason);
+    /// 云端故障复位。只允许 FaultStopped。
+    FsmResult reset_fault(const std::string& command_id);
 
 private:
-    std::shared_ptr<domain::MotionPort>     motion_;
-    std::shared_ptr<service::FaultReporter> fault_;
-    middleware::EventBus&                   bus_;
+    static const char* state_name(RobotState state) noexcept;
+    FsmResult start_current_segment(const char* reason);
+    FsmResult enter_fault_stopped(const char* reason,
+                                  RobotActionKind action,
+                                  const std::string& command_id = {},
+                                  bool safety_fault = false);
 
-    mutable hal::PiMutex          mtx_;
-    /// 仅用于日志输出，不参与任何业务判断。
-    /// 状态判断请使用 sm_->is(sml::state<StateXxx>)。
-    std::string                   state_name_{"Init"};
-    std::unique_ptr<sml::sm<Fsm>> sm_;
-    std::optional<MissionContext> mission_;
-
-    // N 趟计数
-    int  target_passes_{1};          ///< 目标完整趟数（1=一去一回）
-    int  completed_passes_{0};       ///< 已完成完整趟数
-
-    static MissionContext build_round_trip_mission(int passes);
-    static MissionContext build_single_clean_mission(SegmentDirection direction);
-    static MissionContext build_return_mission();
-    bool start_current_segment();
-    bool advance_to_next_segment();
-    void handle_segment_start_failure(const char* context);
+    mutable hal::PiMutex mtx_;
+    RobotState state_{RobotState::Idle};
+    std::optional<domain::MissionContext> mission_;
 };
 
-} // namespace robot::app
+}  // namespace robot::app

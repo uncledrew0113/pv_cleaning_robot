@@ -69,14 +69,14 @@ TEST_CASE("CloudService shared attributes ignore messages before callback regist
 
     int call_count = 0;
 
-    mqtt->emit_attributes(R"({"passes":2})");
+    mqtt->emit_attributes(R"({"repeat_count":2})");
     cloud.subscribe_shared_attributes([&](const rapidjson::Document& attrs) {
-        const auto it = attrs.FindMember("passes");
+        const auto it = attrs.FindMember("repeat_count");
         REQUIRE(it != attrs.MemberEnd());
         REQUIRE(it->value.GetInt() == 3);
         ++call_count;
     });
-    mqtt->emit_attributes(R"({"passes":3})");
+    mqtt->emit_attributes(R"({"repeat_count":3})");
 
     REQUIRE(call_count == 1);
 }
@@ -92,17 +92,17 @@ TEST_CASE("CloudService exact shared attributes route preserves string and int f
     cloud.subscribe_shared_attributes([&](const rapidjson::Document& attrs) {
         REQUIRE(attrs.IsObject());
         const auto brush_it = attrs.FindMember("brush_rpm");
-        const auto side_it = attrs.FindMember("parking_side");
+        const auto dock_it = attrs.FindMember("primary_dock");
         REQUIRE(brush_it != attrs.MemberEnd());
-        REQUIRE(side_it != attrs.MemberEnd());
+        REQUIRE(dock_it != attrs.MemberEnd());
         REQUIRE(brush_it->value.IsInt());
         REQUIRE(brush_it->value.GetInt() == 30);
-        REQUIRE(side_it->value.IsString());
-        REQUIRE(std::string(side_it->value.GetString()) == "right");
+        REQUIRE(dock_it->value.IsString());
+        REQUIRE(std::string(dock_it->value.GetString()) == "B");
         ++call_count;
     });
 
-    mqtt->emit_attributes(R"({"brush_rpm":30,"parking_side":"right"})");
+    mqtt->emit_attributes(R"({"brush_rpm":30,"primary_dock":"B"})");
 
     REQUIRE(call_count == 1);
 }
@@ -137,10 +137,11 @@ TEST_CASE("CloudService requests shared attributes snapshot using ThingsBoard to
     auto cache = std::make_shared<DataCache>("/tmp/cloud_service_attr_request_test.jsonl");
     CloudService cloud(net, cache);
 
-    REQUIRE(cloud.request_shared_attributes_snapshot({"passes", "clean_speed_rpm", "parking_side"}));
+    REQUIRE(cloud.request_shared_attributes_snapshot(
+        {"repeat_count", "clean_speed_rpm", "primary_dock"}));
     REQUIRE(mqtt->last_publish_topic.find("v1/devices/me/attributes/request/") == 0);
     REQUIRE(mqtt->last_publish_payload ==
-            R"({"sharedKeys":"passes,clean_speed_rpm,parking_side"})");
+            R"({"sharedKeys":"repeat_count,clean_speed_rpm,primary_dock"})");
 }
 
 TEST_CASE("CloudService rejects unknown RPC methods with explicit response",
@@ -193,17 +194,17 @@ TEST_CASE("CloudService shared attributes response routes nested shared object t
     int call_count = 0;
     cloud.subscribe_shared_attributes([&](const rapidjson::Document& attrs) {
         REQUIRE(attrs.IsObject());
-        const auto passes_it = attrs.FindMember("passes");
-        const auto side_it = attrs.FindMember("parking_side");
-        REQUIRE(passes_it != attrs.MemberEnd());
-        REQUIRE(side_it != attrs.MemberEnd());
-        REQUIRE(passes_it->value.GetInt() == 3);
-        REQUIRE(std::string(side_it->value.GetString()) == "right");
+        const auto repeat_it = attrs.FindMember("repeat_count");
+        const auto dock_it = attrs.FindMember("primary_dock");
+        REQUIRE(repeat_it != attrs.MemberEnd());
+        REQUIRE(dock_it != attrs.MemberEnd());
+        REQUIRE(repeat_it->value.GetInt() == 3);
+        REQUIRE(std::string(dock_it->value.GetString()) == "B");
         ++call_count;
     });
 
     mqtt->emit_attributes_response(
-        "7", R"({"shared":{"passes":3,"parking_side":"right"}})");
+        "7", R"({"shared":{"repeat_count":3,"primary_dock":"B"}})");
 
     REQUIRE(call_count == 1);
 }

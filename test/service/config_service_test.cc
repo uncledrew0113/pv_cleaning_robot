@@ -94,8 +94,8 @@ struct SplitConfigFixture {
                                             R"({
   "robot": {
     "clean_speed_rpm": 320.0,
-    "passes": 1.0,
-    "parking_side": "left"
+    "repeat_count": 1,
+    "primary_dock": "A"
   }
 })",
                                             R"({
@@ -110,8 +110,8 @@ struct SplitConfigFixture {
         tb_test_support::write_text_file(paths.pending_path,
                                          R"({
   "robot": {
-    "passes": 3.0,
-    "parking_side": "right"
+    "repeat_count": 3,
+    "primary_dock": "B"
   }
 })");
     }
@@ -159,8 +159,8 @@ TEST_CASE("ConfigService: fixed/runtime/pending 三份配置独立加载", "[ser
     REQUIRE(pending.has_value());
     const auto robot_it = pending->FindMember("robot");
     REQUIRE(robot_it != pending->MemberEnd());
-    CHECK(robot_it->value["passes"].GetDouble() == Approx(3.0).epsilon(0.01));
-    CHECK(std::string(robot_it->value["parking_side"].GetString()) == "right");
+    CHECK(robot_it->value["repeat_count"].GetUint() == 3u);
+    CHECK(std::string(robot_it->value["primary_dock"].GetString()) == "B");
 }
 
 TEST_CASE("ConfigService: clear_pending() 清除 runtime pending 文件", "[service][config]")
@@ -269,19 +269,19 @@ TEST_CASE("ConfigService: replace_and_save() 原子替换整份配置并持久�
 
         auto next = cfg.snapshot();
         set_double(next, "robot", "clean_speed_rpm", 450.0);
-        set_double(next, "robot", "passes", 2.0);
+        set_int(next, "robot", "repeat_count", 2);
         set_int(next, "system", "value", 777);
 
         REQUIRE(cfg.replace_and_save(next));
         REQUIRE(cfg.get<float>("robot.clean_speed_rpm", 0.0f) == Approx(450.0f).epsilon(0.01f));
-        REQUIRE(cfg.get<float>("robot.passes", 0.0f) == Approx(2.0f).epsilon(0.01f));
+        REQUIRE(cfg.get<int>("robot.repeat_count", 0) == 2);
         REQUIRE(cfg.get<int>("system.value", 0) == 777);
     }
     {
         ConfigService cfg2(f.path);
         REQUIRE(cfg2.load());
         REQUIRE(cfg2.get<float>("robot.clean_speed_rpm", 0.0f) == Approx(450.0f).epsilon(0.01f));
-        REQUIRE(cfg2.get<float>("robot.passes", 0.0f) == Approx(2.0f).epsilon(0.01f));
+        REQUIRE(cfg2.get<int>("robot.repeat_count", 0) == 2);
         REQUIRE(cfg2.get<int>("system.value", 0) == 777);
     }
 }
@@ -335,7 +335,7 @@ TEST_CASE("ConfigService: save_pending/load_pending/clear_pending 管理待生�
     REQUIRE(cfg.load());
 
     auto pending = cfg.snapshot();
-    set_double(pending, "robot", "passes", 3.0);
+    set_int(pending, "robot", "repeat_count", 3);
     set_double(pending, "robot", "clean_speed_rpm", 520.0);
 
     REQUIRE(cfg.save_pending(pending));
@@ -345,7 +345,7 @@ TEST_CASE("ConfigService: save_pending/load_pending/clear_pending 管理待生�
     REQUIRE(loaded.has_value());
     const auto robot_it = loaded->FindMember("robot");
     REQUIRE(robot_it != loaded->MemberEnd());
-    REQUIRE(robot_it->value["passes"].GetDouble() == Approx(3.0).epsilon(0.01));
+    REQUIRE(robot_it->value["repeat_count"].GetInt() == 3);
     REQUIRE(robot_it->value["clean_speed_rpm"].GetDouble() == Approx(520.0).epsilon(0.01));
 
     REQUIRE(cfg.clear_pending());

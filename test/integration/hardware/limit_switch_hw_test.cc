@@ -4,7 +4,7 @@
  *
  * 测试分组：
  *   [hw_limit][open]             - GPIO open 成功
- *   [hw_limit][read_level_parking_side]  - 停机位电平自检（right=低/触发，left=高/未触发）
+ *   [hw_limit][read_level_primary_dock]  - 主停机端电平自检（B=低/触发，A=高/未触发）
  *   [hw_limit][callback_left]   - 左侧传感器回调链路（需手动触发）
  *   [hw_limit][callback_right]    - 右侧传感器回调链路（需手动触发）
  *   [hw_limit][is_triggered]     - is_triggered() 状态查询
@@ -70,10 +70,10 @@ TEST_CASE("限位传感器 GPIO 初始化", "[hw_limit][open]") {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// [hw_limit][read_level_parking_side] — 停机位电平自检
+// [hw_limit][read_level_primary_dock] — 主停机端电平自检
 // 运行前提：机器人停在停机位
 // ────────────────────────────────────────────────────────────────────────────
-TEST_CASE("停机位 GPIO 电平自检", "[hw_limit][read_level_parking_side]") {
+TEST_CASE("主停机端 GPIO 电平自检", "[hw_limit][read_level_primary_dock]") {
     // read_current_level() 语义：true=高电平/未遮挡，false=低电平/已遮挡
     // 停机位期望：right=false（遮挡），left=true（未遮挡）
     auto left_gpio = std::make_shared<driver::LibGpiodPin>(
@@ -91,9 +91,9 @@ TEST_CASE("停机位 GPIO 电平自检", "[hw_limit][read_level_parking_side]") 
     const bool left_level = left_sw->read_current_level();
     const bool right_level  = right_sw->read_current_level();
 
-    spdlog::info("[hw_limit][read_level_parking_side] left_level={} (期望 true=未遮挡)",
+    spdlog::info("[hw_limit][read_level_primary_dock] left_level={} (期望 true=未遮挡)",
                  left_level);
-    spdlog::info("[hw_limit][read_level_parking_side] right_level={}  (期望 false=停机位遮挡)",
+    spdlog::info("[hw_limit][read_level_primary_dock] right_level={}  (期望 false=主停机端遮挡)",
                  right_level);
 
     CHECK(left_level == true);   // 前端：未遮挡 = 高电平

@@ -12,8 +12,8 @@ namespace robot::service {
 
 struct FaultEvent {
     enum class Level {
-        P0,  ///< 严重故障：立即急停，FSM → FaultStopped，等待人工复位
-        P1,  ///< 一般故障：停滚刷并切换到返航段，FSM 继续执行返航
+        P0,  ///< 严重故障：立即急停，进入故障锁定
+        P1,  ///< 一般故障：停滚刷并请求无刷返航
         P2,  ///< 告警：仅上报（EventBus），不转换 FSM 状态
         P3   ///< 提示：仅记录日志，不影响运行
     };
@@ -24,6 +24,21 @@ struct FaultEvent {
 };
 
 namespace FaultCode = robot::domain::FaultCode;
+
+enum class FaultAction {
+    WarnOnly,
+    RejectStart,
+    ProtectiveStop,
+    StartRecovery,
+    BrushOffReturnHome,
+    ImmediateEmergencyStop,
+};
+
+struct FaultDecision {
+    FaultAction action{FaultAction::WarnOnly};
+    bool latch{false};
+    bool report{true};
+};
 
 class FaultReporter {
    public:
@@ -47,7 +62,7 @@ class FaultService : public FaultReporter {
 
     explicit FaultService(middleware::EventBus& bus);
 
-    /// 报告一个故障（发布到 EventBus，由 RobotFsm 和 FaultHandler 响应）
+    /// 报告一个故障；发布到 EventBus，具体动作由 app 层故障桥接统一裁决。
     void report(FaultEvent::Level level, uint32_t code, const std::string& description) override;
 
     /// 清除当前活跃故障；保留最后一次故障记录用于排障。
@@ -56,6 +71,9 @@ class FaultService : public FaultReporter {
     bool has_active_fault(FaultEvent::Level min_level = FaultEvent::Level::P2) const override;
 
     FaultEvent last_fault() const override;
+
+    /// 根据故障码返回处理策略；不修改内部状态，不发布事件。
+    FaultDecision decide(const FaultEvent& event) const;
 
    private:
     middleware::EventBus& bus_;

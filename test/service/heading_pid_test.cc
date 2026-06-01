@@ -15,7 +15,7 @@
 #include "pv_cleaning_robot/service/heading_corrector.h"
 
 using robot::service::HeadingCorrector;
-using robot::service::ParkingSide;
+using robot::domain::Endpoint;
 
 namespace {
 
@@ -92,19 +92,14 @@ HeadingCorrector::Params test_params(const std::string& uds_path) {
     return p;
 }
 
-HeadingCorrector::Input make_input(HeadingCorrector::MotionPhase phase,
-                                   ParkingSide parking_side = ParkingSide::Right) {
+HeadingCorrector::Input make_input(Endpoint target, Endpoint primary_dock = Endpoint::B) {
     HeadingCorrector::Input input;
     input.dt_s = 0.02f;
     input.has_base_command = true;
-    input.motion_phase = phase;
-    input.parking_side = parking_side;
-    const float dir = parking_side == ParkingSide::Right ? 1.0f : -1.0f;
-    if (phase == HeadingCorrector::MotionPhase::ToFarEnd) {
-        input.base_command = {100.0f * dir, 100.0f * dir, -100.0f * dir, -100.0f * dir};
-    } else {
-        input.base_command = {-100.0f * dir, -100.0f * dir, 100.0f * dir, 100.0f * dir};
-    }
+    input.travel_direction = robot::domain::travel_direction_to(target);
+    input.primary_dock = primary_dock;
+    const float dir = target == Endpoint::A ? 1.0f : -1.0f;
+    input.base_command = {100.0f * dir, 100.0f * dir, -100.0f * dir, -100.0f * dir};
     return input;
 }
 
@@ -117,14 +112,14 @@ std::string unique_socket_path() {
 
 TEST_CASE("HeadingCorrector: disabled controller outputs zero", "[service][heading_pid]") {
     HeadingCorrector ctrl;
-    auto input = make_input(HeadingCorrector::MotionPhase::ToFarEnd);
+    auto input = make_input(Endpoint::A);
 
     const auto out = ctrl.compute(input);
     REQUIRE(out.correction_rpm == Approx(0.0f));
     REQUIRE_FALSE(out.has_speed_command);
 }
 
-TEST_CASE("HeadingCorrector: right parking ToFarEnd yaw>0 slows top and speeds bottom",
+TEST_CASE("HeadingCorrector: primary dock B toward A yaw>0 slows top and speeds bottom",
           "[service][heading_pid]") {
     LocalUdsServer server(unique_socket_path());
     HeadingCorrector ctrl(test_params(server.path));
@@ -133,7 +128,7 @@ TEST_CASE("HeadingCorrector: right parking ToFarEnd yaw>0 slows top and speeds b
     server.send_line(R"({"valid":true,"yaw_deg":0.10,"confidence":0.82})");
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
-    const auto out = ctrl.compute(make_input(HeadingCorrector::MotionPhase::ToFarEnd));
+    const auto out = ctrl.compute(make_input(Endpoint::A));
     REQUIRE(out.has_speed_command);
     REQUIRE(out.correction_rpm == Approx(-1.0f));
     REQUIRE(out.speed_command.lt_rpm == Approx(99.0f));
@@ -142,7 +137,7 @@ TEST_CASE("HeadingCorrector: right parking ToFarEnd yaw>0 slows top and speeds b
     REQUIRE(out.speed_command.rb_rpm == Approx(-101.0f));
 }
 
-TEST_CASE("HeadingCorrector: right parking ToFarEnd yaw<0 speeds top and slows bottom",
+TEST_CASE("HeadingCorrector: primary dock B toward A yaw<0 speeds top and slows bottom",
           "[service][heading_pid]") {
     LocalUdsServer server(unique_socket_path());
     HeadingCorrector ctrl(test_params(server.path));
@@ -151,7 +146,7 @@ TEST_CASE("HeadingCorrector: right parking ToFarEnd yaw<0 speeds top and slows b
     server.send_line(R"({"valid":true,"yaw_deg":-0.10,"confidence":0.82})");
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
-    const auto out = ctrl.compute(make_input(HeadingCorrector::MotionPhase::ToFarEnd));
+    const auto out = ctrl.compute(make_input(Endpoint::A));
     REQUIRE(out.has_speed_command);
     REQUIRE(out.correction_rpm == Approx(1.0f));
     REQUIRE(out.speed_command.lt_rpm == Approx(101.0f));
@@ -160,7 +155,7 @@ TEST_CASE("HeadingCorrector: right parking ToFarEnd yaw<0 speeds top and slows b
     REQUIRE(out.speed_command.rb_rpm == Approx(-99.0f));
 }
 
-TEST_CASE("HeadingCorrector: right parking ToParkingSide yaw>0 speeds top and slows bottom",
+TEST_CASE("HeadingCorrector: primary dock B toward B yaw>0 speeds top and slows bottom",
           "[service][heading_pid]") {
     LocalUdsServer server(unique_socket_path());
     HeadingCorrector ctrl(test_params(server.path));
@@ -169,7 +164,7 @@ TEST_CASE("HeadingCorrector: right parking ToParkingSide yaw>0 speeds top and sl
     server.send_line(R"({"valid":true,"yaw_deg":0.10,"confidence":0.82})");
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
-    const auto out = ctrl.compute(make_input(HeadingCorrector::MotionPhase::ToParkingSide));
+    const auto out = ctrl.compute(make_input(Endpoint::B));
     REQUIRE(out.has_speed_command);
     REQUIRE(out.correction_rpm == Approx(-1.0f));
     REQUIRE(out.speed_command.lt_rpm == Approx(-101.0f));
@@ -178,7 +173,7 @@ TEST_CASE("HeadingCorrector: right parking ToParkingSide yaw>0 speeds top and sl
     REQUIRE(out.speed_command.rb_rpm == Approx(99.0f));
 }
 
-TEST_CASE("HeadingCorrector: right parking ToParkingSide yaw<0 slows top and speeds bottom",
+TEST_CASE("HeadingCorrector: primary dock B toward B yaw<0 slows top and speeds bottom",
           "[service][heading_pid]") {
     LocalUdsServer server(unique_socket_path());
     HeadingCorrector ctrl(test_params(server.path));
@@ -187,7 +182,7 @@ TEST_CASE("HeadingCorrector: right parking ToParkingSide yaw<0 slows top and spe
     server.send_line(R"({"valid":true,"yaw_deg":-0.10,"confidence":0.82})");
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
-    const auto out = ctrl.compute(make_input(HeadingCorrector::MotionPhase::ToParkingSide));
+    const auto out = ctrl.compute(make_input(Endpoint::B));
     REQUIRE(out.has_speed_command);
     REQUIRE(out.correction_rpm == Approx(1.0f));
     REQUIRE(out.speed_command.lt_rpm == Approx(-99.0f));
@@ -196,7 +191,7 @@ TEST_CASE("HeadingCorrector: right parking ToParkingSide yaw<0 slows top and spe
     REQUIRE(out.speed_command.rb_rpm == Approx(101.0f));
 }
 
-TEST_CASE("HeadingCorrector: left parking mirrors right parking yaw direction",
+TEST_CASE("HeadingCorrector: primary dock A mirrors primary dock B yaw direction",
           "[service][heading_pid]") {
     LocalUdsServer server(unique_socket_path());
     HeadingCorrector ctrl(test_params(server.path));
@@ -205,7 +200,7 @@ TEST_CASE("HeadingCorrector: left parking mirrors right parking yaw direction",
     server.send_line(R"({"valid":true,"yaw_deg":0.10,"confidence":0.82})");
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
-    auto out = ctrl.compute(make_input(HeadingCorrector::MotionPhase::ToFarEnd, ParkingSide::Left));
+    auto out = ctrl.compute(make_input(Endpoint::B, Endpoint::A));
     REQUIRE(out.has_speed_command);
     REQUIRE(out.correction_rpm == Approx(1.0f));
     REQUIRE(out.speed_command.lt_rpm == Approx(-99.0f));
@@ -213,7 +208,7 @@ TEST_CASE("HeadingCorrector: left parking mirrors right parking yaw direction",
     REQUIRE(out.speed_command.lb_rpm == Approx(101.0f));
     REQUIRE(out.speed_command.rb_rpm == Approx(101.0f));
 
-    out = ctrl.compute(make_input(HeadingCorrector::MotionPhase::ToParkingSide, ParkingSide::Left));
+    out = ctrl.compute(make_input(Endpoint::A, Endpoint::A));
     REQUIRE(out.has_speed_command);
     REQUIRE(out.correction_rpm == Approx(1.0f));
     REQUIRE(out.speed_command.lt_rpm == Approx(101.0f));
@@ -233,7 +228,7 @@ TEST_CASE("HeadingCorrector: stale or invalid samples fall back to base command"
     server.send_line(R"({"valid":true,"yaw_deg":0.10,"confidence":0.82})");
     std::this_thread::sleep_for(std::chrono::milliseconds(80));
 
-    auto out = ctrl.compute(make_input(HeadingCorrector::MotionPhase::ToFarEnd));
+    auto out = ctrl.compute(make_input(Endpoint::A));
     REQUIRE(out.has_speed_command);
     REQUIRE(out.correction_rpm == Approx(0.0f));
     REQUIRE(out.speed_command.lt_rpm == Approx(100.0f));
@@ -241,6 +236,6 @@ TEST_CASE("HeadingCorrector: stale or invalid samples fall back to base command"
 
     server.send_line(R"({"valid":false,"yaw_deg":0.0,"confidence":0.82})");
     std::this_thread::sleep_for(std::chrono::milliseconds(30));
-    out = ctrl.compute(make_input(HeadingCorrector::MotionPhase::ToFarEnd));
+    out = ctrl.compute(make_input(Endpoint::A));
     REQUIRE(out.correction_rpm == Approx(0.0f));
 }

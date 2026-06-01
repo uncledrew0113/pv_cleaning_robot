@@ -14,10 +14,10 @@ namespace robot::service {
 
 class SchedulerService;
 
-using robot::domain::ParkingSide;
+using robot::domain::Endpoint;
 using robot::domain::RuntimeConfig;
 using robot::domain::RuntimeScheduleEntry;
-using robot::domain::parking_side_config_string;
+using robot::domain::endpoint_config_string;
 
 struct SharedAttrApplyResult {
     bool accepted{false};
@@ -226,7 +226,7 @@ private:
     }
 
     static std::vector<std::string> split_path(const std::string& path);
-    static ParkingSide parse_parking_side_string(const std::string& value);
+    static Endpoint parse_endpoint_string(const std::string& value);
     static RuntimeConfig parse_runtime_config(const rapidjson::Value& root);
     static std::vector<RuntimeScheduleEntry> parse_schedule_entries(
         const rapidjson::Value& schedules_json);

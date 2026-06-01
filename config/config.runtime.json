@@ -6,13 +6,12 @@
     ]
   },
   "robot": {
-    "passes": 1.0,
-    "parking_side": "right",
+    "repeat_count": 1,
+    "dock_mode": "single_dock",
+    "primary_dock": "B",
     "clean_speed_rpm": 20.0,
     "return_speed_rpm": 20.0,
-    "return_brush_rpm": 3000,
     "brush_rpm": 3000,
-    "edge_reverse_rpm": 0.0,
     "heading_pid_en": false,
     "pid": {
       "uds_path": "/tmp/pv_edge_tracker.sock",
@@ -29,8 +28,7 @@
       "yaw_alpha": 0.35,
       "output_sign": 1.0
     },
-    "start_battery_soc": 30.0,
-    "charge_start_soc": 15.0,
+    "min_battery_soc": 30.0,
     "charge_stop_soc": 95.0
   }
 }

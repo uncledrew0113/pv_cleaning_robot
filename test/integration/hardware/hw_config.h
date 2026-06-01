@@ -5,7 +5,7 @@
  * @brief 硬件测试公共 Fixture
  *
  * DeviceFixture       — Driver + Device 层，用于限位和电机单元测试
- * FullSystemFixture   — 全层栈，用于集成测试（BrushMotor 用 MockSerialPort）
+ * ImuGpsHealthFixture — IMU/GPS/HealthService 本地落盘测试底座
  *
  * 硬件接线（默认值与仓库 split config 对齐，可通过 hw_test_config.json 覆盖）：
  *   CAN      : can0（默认），行走电机 M1502E_111，motor_id_base=1
@@ -15,15 +15,10 @@
  *   距离传感器: /dev/ttyS9（默认），RS485 Modbus RTU，9600 baud
  *   GPIO     : gpiochip5 line0=左限位，line1=右限位（默认）
  */
-#include <atomic>
-#include <chrono>
-#include <cmath>
 #include <filesystem>
 #include <memory>
-#include <optional>
 #include <spdlog/spdlog.h>
 #include <string>
-#include <thread>
 
 // Driver
 #include "pv_cleaning_robot/driver/libgpiod_pin.h"
@@ -39,33 +34,10 @@
 #include "pv_cleaning_robot/device/limit_switch.h"
 #include "pv_cleaning_robot/device/walk_motor_group.h"
 
-// Middleware
-#include "pv_cleaning_robot/middleware/data_cache.h"
-#include "pv_cleaning_robot/middleware/event_bus.h"
-#include "pv_cleaning_robot/middleware/mqtt_transport.h"
-#include "pv_cleaning_robot/middleware/network_manager.h"
-#include "pv_cleaning_robot/middleware/safety_monitor.h"
-
 // Service
-#include "pv_cleaning_robot/service/cloud_service.h"
-#include "pv_cleaning_robot/service/command_tracker.h"
-#include "pv_cleaning_robot/service/fault_service.h"
 #include "pv_cleaning_robot/service/health_service.h"
-#include "pv_cleaning_robot/service/motion_service.h"
-#include "pv_cleaning_robot/service/nav_service.h"
-#include "pv_cleaning_robot/service/scheduler_service.h"
-#include "pv_cleaning_robot/service/thingsboard_control_plane.h"
-
-// App
-#include "pv_cleaning_robot/app/fault_handler.h"
-#include "pv_cleaning_robot/domain/robot_domain.h"
-#include "pv_cleaning_robot/app/robot_fsm.h"
-#include "pv_cleaning_robot/app/robot_supervisor.h"
-#include "pv_cleaning_robot/app/watchdog_mgr.h"
 
 // Mock（滚刷电机未安装）
-#include "integration/thingsboard_test_support.h"
-#include "integration/hardware/hw_exit_guard.h"
 #include "mock/mock_can_bus.h"
 #include "mock/mock_serial_port.h"
 #include "pv_cleaning_robot/service/config_service.h"
@@ -112,9 +84,8 @@ struct HwParams {
     float sweep_rpm = 20.0f;
     float limit_test_rpm = 10.0f;
     float brush_test_rpm = 3000.0f;  ///< ODrive 滚刷硬件测试目标转速
-    float combined_passes = 50.0f;   ///< combined 测试趟数（1=一来回，2=两来回…）
-    robot::service::ParkingSide parking_side =
-        robot::service::ParkingSide::Right;  ///< 硬件测试运行时停机位配置
+    robot::domain::Endpoint primary_dock =
+        robot::domain::Endpoint::B;  ///< 硬件测试运行时主停机端配置
     std::string health_jsonl_path = "/tmp/hw_system_test_health.jsonl";
     size_t health_log_max_bytes = 10u * 1024u * 1024u;  ///< HealthService 本地轮转单文件上限
     size_t health_log_max_files = 3u;  ///< HealthService 本地轮转保留文件数
@@ -206,19 +177,18 @@ inline HwParams load_hw_test_config() {
         p.sweep_rpm = cfg.get<float>("behavior.sweep_rpm", p.sweep_rpm);
         p.limit_test_rpm = cfg.get<float>("behavior.limit_test_rpm", p.limit_test_rpm);
         p.brush_test_rpm = cfg.get<float>("behavior.brush_test_rpm", p.brush_test_rpm);
-        p.combined_passes = cfg.get<float>("behavior.combined_passes", p.combined_passes);
         {
-            const auto parking_side =
-                cfg.get<std::string>("behavior.parking_side", "right");
-            if (parking_side == "left") {
-                p.parking_side = robot::service::ParkingSide::Left;
-            } else if (parking_side == "right") {
-                p.parking_side = robot::service::ParkingSide::Right;
+            const auto primary_dock =
+                cfg.get<std::string>("behavior.primary_dock", "B");
+            if (primary_dock == "A") {
+                p.primary_dock = robot::domain::Endpoint::A;
+            } else if (primary_dock == "B") {
+                p.primary_dock = robot::domain::Endpoint::B;
             } else {
                 spdlog::warn(
-                    "[hw_config] invalid behavior.parking_side='{}', fallback to right",
-                    parking_side);
-                p.parking_side = robot::service::ParkingSide::Right;
+                    "[hw_config] invalid behavior.primary_dock='{}', fallback to B",
+                    primary_dock);
+                p.primary_dock = robot::domain::Endpoint::B;
             }
         }
         p.health_jsonl_path =
@@ -260,12 +230,6 @@ inline HwParams load_hw_test_config() {
                      e.what());
     }
     return p;
-}
-
-inline robot::middleware::MqttTransport::Config build_tb_mqtt_config(
-    robot::service::ConfigService& cfg,
-    const std::filesystem::path& repo_root) {
-    return tb_test_support::build_mqtt_config(cfg, repo_root, "_hw_tb_itest");
 }
 
 // ── DeviceFixture：Driver + Device 层（限位 / 电机单元测试使用）────────────
@@ -315,314 +279,6 @@ struct DeviceFixture {
             walk_group->close();
         }
         // bms_serial 由 shared_ptr 析构时自动关闭
-    }
-};
-
-// ── FullSystemFixture：全层栈（集成测试使用）─────────────────────────────────
-struct FullSystemFixture : DeviceFixture, IGracefulShutdown {
-    robot::middleware::EventBus event_bus;
-    bool use_real_brush_{false};
-    std::shared_ptr<robot::driver::LibSerialPort> real_brush_serial;
-    std::shared_ptr<MockSerialPort> mock_brush_serial;
-    std::shared_ptr<robot::device::BrushMotor> brush;
-    std::shared_ptr<robot::device::GpsDevice> gps;
-    std::unique_ptr<robot::middleware::SafetyMonitor> safety;
-    std::shared_ptr<robot::service::NavService> nav;
-    std::shared_ptr<robot::service::MotionService> motion;
-    std::shared_ptr<robot::service::FaultService> fault;
-    std::shared_ptr<robot::service::HealthService> health;  ///< null cloud，本地 JSONL 落盘
-    std::unique_ptr<robot::app::WatchdogMgr> watchdog;
-    std::shared_ptr<robot::app::RobotFsm> fsm;
-    std::shared_ptr<robot::app::FaultHandler> fault_handler;
-    std::vector<robot::service::FaultService::FaultEvent> dispatched_faults;
-    robot::service::RuntimeConfig runtime_cfg_;
-
-    static robot::hal::UartConfig build_brush_uart_config_(const HwParams& p) {
-        robot::hal::UartConfig cfg;
-        cfg.baudrate = p.brush_baud;
-        cfg.data_bits = 8;
-        cfg.parity = 'N';
-        cfg.stop_bits = 1;
-        cfg.write_timeout_ms = 500;
-        return cfg;
-    }
-
-    /// @param pid_enabled 是否开启视觉纠偏
-    /// @param use_real_brush 是否接入真实 ODrive 滚刷链路
-    explicit FullSystemFixture(bool pid_enabled = false, bool use_real_brush = false)
-        : DeviceFixture()
-        , use_real_brush_(use_real_brush) {
-        using namespace robot;
-
-        std::shared_ptr<hal::ISerialPort> brush_serial;
-        if (use_real_brush_) {
-            real_brush_serial = std::make_shared<driver::LibSerialPort>(
-                p.brush_port, build_brush_uart_config_(p));
-            brush_serial = real_brush_serial;
-        } else {
-            mock_brush_serial = std::make_shared<MockSerialPort>();
-            brush_serial = mock_brush_serial;
-        }
-        brush = std::make_shared<device::BrushMotor>(brush_serial, p.brush_axis);
-
-        // SafetyMonitor 构造时内部绑定 LimitSwitch 回调
-        safety = std::make_unique<middleware::SafetyMonitor>(
-            [this]() { walk_group->emergency_override(0.0f); },
-            left_sw,
-            right_sw,
-            event_bus);
-
-        robot::device::GpsdSourceConfig gpsd_cfg;
-        gpsd_cfg.host = p.gpsd_host;
-        gpsd_cfg.port = p.gpsd_port;
-        gpsd_cfg.watch = p.gpsd_watch;
-        gps = device::GpsDevice::create_gpsd(gpsd_cfg);
-
-        nav = std::make_shared<service::NavService>(walk_group, imu, gps, 0.3f);
-
-        service::MotionService::Config motion_cfg;
-        motion_cfg.clean_speed_rpm = p.test_speed_rpm;
-        motion_cfg.return_speed_rpm = p.test_return_rpm;
-        motion_cfg.brush_rpm = use_real_brush_ ? static_cast<int>(std::lround(p.brush_test_rpm)) : 0;
-        motion_cfg.edge_reverse_rpm = 0.0f;
-        motion_cfg.heading_pid_en = pid_enabled;
-        // 将配置文件中的视觉纠偏参数传入（无论是否使能，均写入供 start_cleaning 时生效）
-        motion_cfg.pid.uds_path = p.pid.uds_path;
-        motion_cfg.pid.reconnect_interval_ms = p.pid.reconnect_interval_ms;
-        motion_cfg.pid.result_timeout_ms = p.pid.result_timeout_ms;
-        motion_cfg.pid.min_confidence = p.pid.min_confidence;
-        motion_cfg.pid.deadband_yaw_deg = p.pid.deadband_yaw_deg;
-        motion_cfg.pid.kp = p.pid.kp;
-        motion_cfg.pid.ki = p.pid.ki;
-        motion_cfg.pid.kd = p.pid.kd;
-        motion_cfg.pid.integral_limit = p.pid.integral_limit;
-        motion_cfg.pid.max_output = p.pid.max_output;
-        motion_cfg.pid.min_effective_output = p.pid.min_effective_output;
-        motion_cfg.pid.yaw_alpha = p.pid.yaw_alpha;
-        motion_cfg.pid.output_sign = p.pid.output_sign;
-
-        motion =
-            std::make_shared<service::MotionService>(walk_group, brush, imu, event_bus, motion_cfg);
-        runtime_cfg_.passes = 1.0f;
-        runtime_cfg_.clean_speed_rpm = motion_cfg.clean_speed_rpm;
-        runtime_cfg_.return_speed_rpm = motion_cfg.return_speed_rpm;
-        runtime_cfg_.brush_rpm = motion_cfg.brush_rpm;
-        runtime_cfg_.parking_side = p.parking_side;
-        motion->set_parking_side_query([this]() { return runtime_cfg_.parking_side; });
-        motion->set_runtime_config_query([this]() { return runtime_cfg_; });
-        fault = std::make_shared<service::FaultService>(event_bus);
-
-        // WatchdogMgr：路径为空 = 不操作 /dev/watchdog
-        watchdog = std::make_unique<app::WatchdogMgr>("");
-
-        fsm = std::make_shared<app::RobotFsm>(motion, fault, event_bus);
-
-        // SafetyMonitor LimitSettledEvent → RobotFsm
-        event_bus.subscribe<middleware::SafetyMonitor::LimitSettledEvent>(
-            [this](const middleware::SafetyMonitor::LimitSettledEvent& evt) {
-                const bool parking_side_hit =
-                    (runtime_cfg_.parking_side == service::ParkingSide::Left &&
-                     evt.side == robot::domain::PhysicalLimitSide::Left) ||
-                    (runtime_cfg_.parking_side == service::ParkingSide::Right &&
-                     evt.side == robot::domain::PhysicalLimitSide::Right);
-                if (parking_side_hit) {
-                    fsm->dispatch(app::EvParkingSideLimitSettled{});
-                } else {
-                    fsm->dispatch(app::EvFarEndLimitSettled{});
-                }
-            });
-
-        // FaultHandler: P0→emergency_stop+EvFaultP0，P1→stop+EvFaultP1；同时记录 dispatched_faults
-        fault_handler = std::make_shared<app::FaultHandler>(
-            motion, fault, event_bus, [this](service::FaultService::FaultEvent e) {
-                dispatched_faults.push_back(e);
-                using Level = service::FaultService::FaultEvent::Level;
-                if (e.level == Level::P0)
-                    fsm->dispatch(app::EvFaultP0{});
-                else if (e.level == Level::P1)
-                    fsm->dispatch(app::EvFaultP1{});
-            });
-    }
-
-    /// 初始化所有硬件并启动后台线程，dispatch EvInitDone → FSM = "Idle"
-    /// @param health_jsonl_path  HealthService JSONL 落盘路径（空字符串=不落盘）
-    /// @return false 表示关键硬件（walk_group）初始化失败
-    bool init(const std::string& health_jsonl_path = "") {
-        using robot::device::DeviceError;
-        if (walk_group->open() != DeviceError::OK) {
-            spdlog::error("[FullSystemFixture] walk_group open 失败");
-            return false;
-        }
-        walk_group->set_feedback_mode_all(10u);  // 10ms 主动上报
-
-        if (!imu->open())
-            spdlog::warn("[FullSystemFixture] IMU open 失败（非致命）");
-
-        if (bms->open() != DeviceError::OK)
-            spdlog::warn("[FullSystemFixture] BMS open 失败（非致命）");
-
-        if (!gps || !gps->open())
-            spdlog::warn("[FullSystemFixture] GPS(gpsd) open 失败（非致命）");
-
-        if (!brush->open()) {
-            if (use_real_brush_) {
-                spdlog::error("[FullSystemFixture] 真实滚刷串口打开失败: {}", p.brush_port);
-                return false;
-            }
-            spdlog::warn("[FullSystemFixture] mock brush open 失败（非致命）");
-        } else if (use_real_brush_) {
-            if (brush->clear_fault() != DeviceError::OK)
-                spdlog::warn("[FullSystemFixture] 真实滚刷 clear_fault 失败");
-        }
-
-        // 限位开关：gpiochip5 不支持 IRQ，使用 1ms 软件轮询；测试中不设 RT 优先级，无 CPU 绑定
-        if (!left_sw->open(0, 2, 0, false))
-            spdlog::warn("[FullSystemFixture] left_sw open 失败");
-        if (!right_sw->open(0, 2, 0, false))
-            spdlog::warn("[FullSystemFixture] right_sw open 失败");
-
-        if (!safety->start()) {
-            spdlog::error("[FullSystemFixture] safety monitor start 失败");
-            return false;
-        }
-        watchdog->start();
-        fault_handler->start_listening();
-        start_loops_();
-
-        // HealthService 在硬件 open 之后构造，保证设备状态缓存已就绪
-        if (!health_jsonl_path.empty()) {
-            // std::filesystem::remove(health_jsonl_path);  // 保留旧 health 文件，不在测试前删除
-
-            health = std::make_shared<robot::service::HealthService>(
-                walk_group,
-                brush,
-                bms,
-                imu,
-                gps,
-                nullptr,  // cloud = null，不需要 MQTT/LoRaWAN
-                robot::service::HealthService::Mode::DIAGNOSTICS,
-                health_jsonl_path,
-                p.health_log_max_bytes,
-                p.health_log_max_files);
-            spdlog::info("[FullSystemFixture] HealthService 已创建: {}", health_jsonl_path);
-        }
-
-        // FSM: StateInit → Idle
-        fsm->dispatch(robot::app::EvInitDone{});
-        return true;
-    }
-
-    /// 轮询等待 FSM 进入指定状态，超时返回 false
-    bool wait_state(const std::string& expected,
-                    std::chrono::milliseconds timeout = std::chrono::milliseconds(5000)) {
-        auto deadline = std::chrono::steady_clock::now() + timeout;
-        while (std::chrono::steady_clock::now() < deadline) {
-            if (HwExitGuard::instance().exit_requested()) {
-                shutdown();
-                return false;
-            }
-            if (fsm->current_state() == expected)
-                return true;
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        }
-        spdlog::warn(
-            "[FullSystemFixture] wait_state 超时: 期望={} 实际={}", expected, fsm->current_state());
-        return false;
-    }
-
-    bool wait_segment_direction(robot::app::SegmentDirection expected,
-                                std::chrono::milliseconds timeout =
-                                    std::chrono::milliseconds(5000)) {
-        auto deadline = std::chrono::steady_clock::now() + timeout;
-        while (std::chrono::steady_clock::now() < deadline) {
-            if (HwExitGuard::instance().exit_requested()) {
-                shutdown();
-                return false;
-            }
-            const auto direction = fsm->current_segment_direction();
-            if (direction.has_value() && *direction == expected) {
-                return true;
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        }
-        spdlog::warn("[FullSystemFixture] wait_segment_direction 超时: 期望方向={}",
-                     expected == robot::app::SegmentDirection::ToFarEnd ? "ToFarEnd"
-                                                                        : "ToParkingSide");
-        return false;
-    }
-
-    ~FullSystemFixture() override {
-        shutdown();
-    }
-
-    void shutdown() override {
-        bool expected = false;
-        if (!shutdown_called_.compare_exchange_strong(expected, true)) {
-            return;
-        }
-
-        stop_loops_();
-        if (safety)
-            safety->stop();
-        if (motion)
-            motion->emergency_stop();
-        if (brush)
-            brush->close();
-        if (walk_group)
-            walk_group->close();
-        if (gps)
-            gps->close();
-        if (imu)
-            imu->close();
-        if (bms)
-            bms->close();
-        if (left_sw)
-            left_sw->close();
-        if (right_sw)
-            right_sw->close();
-        if (watchdog)
-            watchdog->stop();
-    }
-
-   private:
-    std::thread walk_ctrl_thread_;
-    std::thread nav_exec_thread_;
-    std::thread brush_poll_thread_;
-    std::atomic<bool> loops_running_{false};
-    std::atomic<bool> shutdown_called_{false};
-
-    void start_loops_() {
-        loops_running_.store(true);
-        walk_ctrl_thread_ = std::thread([this] {
-            while (loops_running_.load() && !HwExitGuard::instance().exit_requested()) {
-                motion->update();
-                std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            }
-        });
-        nav_exec_thread_ = std::thread([this] {
-            while (loops_running_.load() && !HwExitGuard::instance().exit_requested()) {
-                nav->update();
-                std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            }
-        });
-        if (use_real_brush_) {
-            brush_poll_thread_ = std::thread([this] {
-                while (loops_running_.load() && !HwExitGuard::instance().exit_requested()) {
-                    brush->update();
-                    std::this_thread::sleep_for(std::chrono::milliseconds(200));
-                }
-            });
-        }
-    }
-
-    void stop_loops_() {
-        loops_running_.store(false);
-        if (walk_ctrl_thread_.joinable())
-            walk_ctrl_thread_.join();
-        if (nav_exec_thread_.joinable())
-            nav_exec_thread_.join();
-        if (brush_poll_thread_.joinable())
-            brush_poll_thread_.join();
     }
 };
 
@@ -694,164 +350,6 @@ struct ImuGpsHealthFixture {
             gps->close();
         if (imu)
             imu->close();
-    }
-};
-
-// ── ThingsBoardRuntimeFixture：真实硬件 + 真实 ThingsBoard 运行时联调 ─────────
-struct ThingsBoardRuntimeFixture : FullSystemFixture {
-    std::optional<tb_test_support::RepoPaths> tb_paths;
-    std::string tb_cache_path{"/tmp/hw_tb_runtime_cache.jsonl"};
-    std::unique_ptr<robot::service::ConfigService> tb_cfg_file;
-    robot::service::SchedulerService scheduler;
-    std::shared_ptr<robot::middleware::MqttTransport> mqtt;
-    std::shared_ptr<robot::middleware::NetworkManager> net_mgr;
-    std::shared_ptr<robot::middleware::DataCache> data_cache;
-    std::shared_ptr<robot::service::CloudService> cloud;
-    std::shared_ptr<robot::service::CommandTracker> command_tracker;
-    std::shared_ptr<robot::app::RobotSupervisor> supervisor;
-    std::shared_ptr<robot::service::ThingsBoardControlPlane> tb_control;
-
-    ThingsBoardRuntimeFixture() : FullSystemFixture(false) {}
-
-    bool right_limit_active() const {
-        return right_sw && !right_sw->read_current_level();
-    }
-
-    bool left_limit_active() const {
-        return left_sw && !left_sw->read_current_level();
-    }
-
-    robot::domain::ParkingSideFacts parking_facts() const {
-        const bool left_sensor_active = left_limit_active();
-        const bool right_sensor_active = right_limit_active();
-        return robot::domain::ParkingSideRuntime::from_physical_limits(
-            tb_cfg_file ? tb_cfg_file->active_runtime_config().parking_side
-                        : robot::service::ParkingSide::Left,
-            left_sensor_active,
-            right_sensor_active);
-    }
-
-    bool is_at_parking_side() const {
-        return parking_facts().at_parking_side;
-    }
-
-    bool is_at_far_end() const {
-        return parking_facts().at_far_end;
-    }
-
-    bool init_thingsboard_runtime(const std::string& health_jsonl_path = "") {
-        tb_paths = tb_test_support::find_repo_paths();
-        if (!tb_paths.has_value()) {
-            spdlog::error("[ThingsBoardRuntimeFixture] 未找到 config.runtime.json/config.fixed.json");
-            return false;
-        }
-
-        tb_cfg_file = std::make_unique<robot::service::ConfigService>(
-            tb_paths->runtime_config_path.string(), tb_paths->fixed_config_path.string());
-        if (!tb_cfg_file->load()) {
-            spdlog::error("[ThingsBoardRuntimeFixture] 配置加载失败: {}",
-                          tb_paths->runtime_config_path.string());
-            return false;
-        }
-
-        if (!FullSystemFixture::init(health_jsonl_path)) {
-            return false;
-        }
-
-        std::filesystem::remove(tb_cache_path);
-        data_cache = std::make_shared<robot::middleware::DataCache>(tb_cache_path);
-        if (!data_cache->open()) {
-            spdlog::error("[ThingsBoardRuntimeFixture] DataCache open 失败");
-            return false;
-        }
-
-        auto mqtt_cfg = build_tb_mqtt_config(*tb_cfg_file, tb_paths->repo_root);
-        if (mqtt_cfg.broker_uri.empty()) {
-            spdlog::error("[ThingsBoardRuntimeFixture] network.mqtt.broker_uri 为空");
-            return false;
-        }
-
-        mqtt = std::make_shared<robot::middleware::MqttTransport>(mqtt_cfg);
-        net_mgr = std::make_shared<robot::middleware::NetworkManager>(
-            mqtt, nullptr, robot::middleware::NetworkManager::Mode::MQTT_ONLY);
-        cloud = std::make_shared<robot::service::CloudService>(net_mgr, data_cache);
-        tb_cfg_file->apply_active_runtime_schedules(scheduler);
-        command_tracker = std::make_shared<robot::service::CommandTracker>();
-        if (motion) {
-            motion->set_parking_side_query(
-                [this]() { return tb_cfg_file->active_runtime_config().parking_side; });
-            motion->set_runtime_config_query([this]() { return tb_cfg_file->active_runtime_config(); });
-        }
-        supervisor =
-            std::make_shared<robot::app::RobotSupervisor>(fsm, *tb_cfg_file, fault, nav);
-        tb_control = std::make_shared<robot::service::ThingsBoardControlPlane>(
-            *tb_cfg_file,
-            &scheduler,
-            cloud,
-            command_tracker,
-            robot::app::RobotSupervisor::make_control_port(supervisor));
-
-        tb_control->subscribe_shared_attributes();
-        tb_control->register_rpc_handlers(
-            [this] { return parking_facts().is_valid_start_position(); },
-            [this] { return is_at_parking_side(); },
-            [this] { return parking_facts().at_far_end; },
-            [this] { return is_at_parking_side(); },
-            [this] { return 80.0f; },
-            []() {});
-
-        if (!net_mgr->connect()) {
-            return false;
-        }
-        tb_control->request_shared_attributes_snapshot();
-        return true;
-    }
-
-    bool wait_state_with_thingsboard(
-        const std::vector<std::string>& expected,
-        std::chrono::seconds timeout,
-        std::chrono::milliseconds poll_period = std::chrono::milliseconds(500)) {
-        const auto deadline = std::chrono::steady_clock::now() + timeout;
-        while (std::chrono::steady_clock::now() < deadline) {
-            if (HwExitGuard::instance().exit_requested()) {
-                shutdown();
-                return false;
-            }
-            const auto state = fsm->current_state();
-            for (const auto& item : expected) {
-                if (state == item) {
-                    return true;
-                }
-            }
-            if (bms) {
-                bms->update();
-            }
-            if (health) {
-                health->update();
-            }
-            if (tb_control) {
-                tb_control->publish_business_telemetry();
-            }
-            std::this_thread::sleep_for(poll_period);
-        }
-
-        const auto final_state = fsm->current_state();
-        for (const auto& item : expected) {
-            if (final_state == item) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    ~ThingsBoardRuntimeFixture() {
-        if (net_mgr) {
-            net_mgr->disconnect();
-        }
-        if (data_cache) {
-            data_cache->close();
-        }
-        std::filesystem::remove(tb_cache_path);
     }
 };
 

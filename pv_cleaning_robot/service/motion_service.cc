@@ -39,18 +39,21 @@ MotionService::MotionService(std::shared_ptr<device::WalkMotorGroup> group,
     , heading_corrector_(cfg.pid)
     , last_override_clear_generation_(group_ ? group_->override_clear_generation() : 0u) {}
 
-void MotionService::set_parking_side_query(std::function<ParkingSide()> query) {
-    parking_side_query_ = std::move(query);
+void MotionService::set_primary_dock_query(std::function<domain::Endpoint()> query) {
+    primary_dock_query_ = std::move(query);
 }
 
 void MotionService::set_runtime_config_query(std::function<RuntimeConfig()> query) {
     runtime_config_query_ = std::move(query);
 }
 
-int MotionService::task_direction_sign() const {
-    if (!parking_side_query_)
-        return 1;
-    return parking_side_query_() == ParkingSide::Left ? -1 : 1;
+domain::Endpoint MotionService::primary_dock() const {
+    return primary_dock_query_ ? primary_dock_query_() : domain::Endpoint::B;
+}
+
+int MotionService::target_direction_sign(domain::Endpoint target) const {
+    // 物理标定：向 A 端运行时上轨道轮正转、下轨道轮反转；向 B 端整体取反。
+    return target == domain::Endpoint::A ? 1 : -1;
 }
 
 void MotionService::sync_runtime_config() {
@@ -89,36 +92,36 @@ void MotionService::set_base_speed_command(const device::WalkMotorGroup::SpeedCm
     walk_command_active_ = true;
 }
 
-bool MotionService::start_returning_impl(bool run_brush) {
+bool MotionService::start_brush_off_return_to(domain::Endpoint target) {
+    if (target != primary_dock()) {
+        return false;
+    }
+
     sync_runtime_config();
     group_->clear_override();
     walk_command_active_ = false;
 
-    const int dir = task_direction_sign();
-    if (run_brush) {
-        brush_->set_rpm(-std::abs(cfg_.brush_rpm) * dir);
-    } else {
-        brush_->stop();
-    }
+    brush_->stop();
 
     sync_heading_pid_enabled();
     if (!enable_speed_mode()) {
         return false;
     }
 
+    const int dir = target_direction_sign(target);
     const float spd = std::abs(cfg_.return_speed_rpm) * static_cast<float>(dir);
-    const device::WalkMotorGroup::SpeedCmd cmd{-spd, -spd, +spd, +spd};
+    const device::WalkMotorGroup::SpeedCmd cmd{spd, spd, -spd, -spd};
     if (group_->set_speeds(cmd) != device::DeviceError::OK) {
         return false;
     }
-    motion_phase_ = HeadingCorrector::MotionPhase::ToParkingSide;
+    travel_direction_ = domain::travel_direction_to(target);
     set_base_speed_command(cmd);
     return true;
 }
 
 // ── 运动控制 ──────────────────────────────────────────────────────────────
 
-bool MotionService::start_cleaning() {
+bool MotionService::start_cleaning_to(domain::Endpoint target) {
     sync_runtime_config();
     // 解除可能由 SafetyMonitor::on_limit_trigger() 触发的 emergency_override 锁
     group_->clear_override();
@@ -131,14 +134,14 @@ bool MotionService::start_cleaning() {
     // 清扫和返程都使用同一套视觉纠偏，只是轮速方向不同。
     sync_heading_pid_enabled();
 
-    // 物理安装：LT/RT 正转=前进，LB/RB 因安装方向相反，负转=前进
-    // 车辆前进：LT=+spd, RT=+spd, LB=-spd, RB=-spd
-    const int dir = task_direction_sign();
-    const float spd = std::abs(cfg_.clean_speed_rpm) * static_cast<float>(dir);
+    // 物理安装：LT/RT 与 LB/RB 方向相反；target_direction_sign() 决定沿 A/B 轴正反向。
+    const int dir = target_direction_sign(target);
+    const float speed = target == primary_dock() ? cfg_.return_speed_rpm : cfg_.clean_speed_rpm;
+    const float spd = std::abs(speed) * static_cast<float>(dir);
     const device::WalkMotorGroup::SpeedCmd cmd{spd, spd, -spd, -spd};
     if (group_->set_speeds(cmd) != device::DeviceError::OK)
         return false;
-    motion_phase_ = HeadingCorrector::MotionPhase::ToFarEnd;
+    travel_direction_ = domain::travel_direction_to(target);
     set_base_speed_command(cmd);
 
     brush_->set_rpm(std::abs(cfg_.brush_rpm) * dir);
@@ -153,13 +156,14 @@ void MotionService::stop_cleaning() {
     group_->disable_all();
 }
 
-bool MotionService::start_returning() {
-    return start_returning_impl(true);
-}
-
-bool MotionService::start_returning_no_brush() {
-    // P1 故障返回只和正常返程差一个动作：停刷，不再反向继续扫。
-    return start_returning_impl(false);
+bool MotionService::start_segment(const domain::MissionSegment& segment) {
+    switch (segment.mode) {
+    case domain::SegmentMode::Cleaning:
+        return start_cleaning_to(segment.target);
+    case domain::SegmentMode::BrushOffReturn:
+        return start_brush_off_return_to(segment.target);
+    }
+    return false;
 }
 
 void MotionService::emergency_stop() {
@@ -180,8 +184,8 @@ void MotionService::update() {
         input.dt_s = 0.02f;
         input.has_base_command = true;
         input.base_command = to_corrector_command(base_speed_cmd_);
-        input.motion_phase = motion_phase_;
-        input.parking_side = parking_side_query_ ? parking_side_query_() : ParkingSide::Right;
+        input.travel_direction = travel_direction_;
+        input.primary_dock = primary_dock();
 
         const auto status = group_->get_group_status();
         const auto diagnostics = group_->get_group_diagnostics();

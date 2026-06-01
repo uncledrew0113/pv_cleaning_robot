@@ -50,6 +50,10 @@ void FaultHandler::on_fault(const service::FaultEvent& evt) {
             dispatch_fn_(evt);
             break;
         case Level::P2:
+            if (evt.code == service::FaultCode::kTransientAttitudeError) {
+                dispatch_fn_(evt);
+                break;
+            }
             if (should_promote_p2_to_p1(evt.code)) {
                 // 统一通过 FaultService::report() 走“记录 active fault → EventBus → FaultHandler(P1) →
                 // FSM”的单一真相链，避免重复 dispatch 和外部 fault 失真。

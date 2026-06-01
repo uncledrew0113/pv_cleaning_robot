@@ -36,13 +36,13 @@ namespace robot::middleware {
 class SafetyMonitor {
    public:
     /// @brief 限位防抖完成事件（monitor_loop 确认持续触发稳定后发布）
-    /// 订阅者（main.cc）将其转发给 RobotFsm::dispatch<EvFarEndLimitSettled/EvParkingSideLimitSettled>
+    /// device 层左/右接近传感器在本模块边界转换为 domain 的 Endpoint::A/B。
     struct LimitSettledEvent {
-        domain::PhysicalLimitSide side;
+        domain::Endpoint endpoint;
     };
     /// @brief 限位触发已急停，但未保持到稳定时间即释放；业务层应按异常收口。
     struct LimitUnstableEvent {
-        domain::PhysicalLimitSide side;
+        domain::Endpoint endpoint;
     };
 
     SafetyMonitor(std::function<void()> emergency_stop,
@@ -57,9 +57,9 @@ class SafetyMonitor {
     /// 停止安全监控
     void stop();
 
-   private:
+    private:
     /// LimitSwitch 触发回调（在 GPIO 监控线程中被调用，必须极短）
-    void on_limit_trigger(domain::PhysicalLimitSide side);
+    void on_limit_trigger(domain::Endpoint endpoint);
 
     /// 安全监视主循环（SCHED_FIFO 94，5ms 轮询）
     void monitor_loop();

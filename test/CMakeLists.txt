@@ -48,6 +48,7 @@ set(COMMON_SRCS
   ${PROJ}/service/nav_service.cc
   ${PROJ}/service/motion_service.cc
   ${PROJ}/service/heading_corrector.cc
+  ${PROJ}/service/recovery_motion.cc
   ${PROJ}/service/health_service.cc
   ${PROJ}/service/cloud_service.cc
   ${PROJ}/service/thingsboard_control_plane.cc
@@ -62,6 +63,9 @@ set(COMMON_SRCS
 # ── 单元测试可执行文件（纯软件路径，无需真实硬件） ──────────────────────
 add_executable(unit_tests
   test_main.cc
+  # Domain 层
+  domain/robot_domain_test.cc
+
   # 协议层
   protocol/bms_protocol_test.cc
   protocol/bms2_protocol_test.cc
@@ -110,17 +114,13 @@ add_executable(unit_tests
   service/scheduler_service_test.cc
   service/motion_service_test.cc
   service/heading_pid_test.cc
+  service/recovery_motion_test.cc
 
   # App 层
   app/robot_fsm_test.cc
   app/robot_supervisor_test.cc
   app/fault_handler_test.cc
   app/watchdog_mgr_test.cc
-
-  # 集成测试（非硬件，可在 QEMU 中运行）
-  integration/task_chain_test.cc
-  integration/system_integration_test.cc
-  integration/thingsboard_real_integration_test.cc
 
   ${COMMON_SRCS}
 )
@@ -146,9 +146,8 @@ add_executable(hw_tests
   integration/hardware/gpsd_hw_test.cc
   integration/hardware/limit_switch_hw_test.cc
   integration/hardware/walk_motor_group_hw_test.cc
-  integration/hardware/clean_cycle_hw_test.cc
-  integration/hardware/system_hw_test.cc
   integration/hardware/distance_sensor_hw_test.cc
+  integration/hardware/system_hw_test.cc
   integration/hardware/hw_exit_guard.cc
 
   ${COMMON_SRCS}

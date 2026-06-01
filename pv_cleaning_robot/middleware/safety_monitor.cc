@@ -7,10 +7,9 @@
 #include "pv_cleaning_robot/device/limit_switch.h"
 
 namespace {
-robot::domain::PhysicalLimitSide to_physical_side(robot::device::LimitSide side) {
-    return side == robot::device::LimitSide::LEFT
-               ? robot::domain::PhysicalLimitSide::Left
-               : robot::domain::PhysicalLimitSide::Right;
+robot::domain::Endpoint to_endpoint(robot::device::LimitSide side) {
+    return side == robot::device::LimitSide::LEFT ? robot::domain::Endpoint::A
+                                                  : robot::domain::Endpoint::B;
 }
 
 /// 返回单调时钟毫秒时间戳（用于防抖计时）
@@ -48,9 +47,9 @@ bool SafetyMonitor::start()
 {
     // 注册限位触发回调（在各自 GPIO 监控线程内同步调用）
     left_switch_->set_trigger_callback(
-        [this](device::LimitSide side) { on_limit_trigger(to_physical_side(side)); });
+        [this](device::LimitSide side) { on_limit_trigger(to_endpoint(side)); });
     right_switch_->set_trigger_callback(
-        [this](device::LimitSide side) { on_limit_trigger(to_physical_side(side)); });
+        [this](device::LimitSide side) { on_limit_trigger(to_endpoint(side)); });
 
     // 启动 GPIO 边沿监控
     left_switch_->start_monitoring();
@@ -72,7 +71,7 @@ void SafetyMonitor::stop()
     if (monitor_thread_.joinable()) monitor_thread_.join();
 }
 
-void SafetyMonitor::on_limit_trigger(domain::PhysicalLimitSide side)
+void SafetyMonitor::on_limit_trigger(domain::Endpoint endpoint)
 {
     // ============================================================
     // 安全优先关键路径：此函数在 GPIO 监控线程中被调用（SCHED_FIFO 95）
@@ -83,13 +82,13 @@ void SafetyMonitor::on_limit_trigger(domain::PhysicalLimitSide side)
     // pending 时间戳本身就是去重门闩：同一侧在 settled 前不接受重复触发。
     // ============================================================
     std::atomic<uint64_t>& pending_ts =
-        side == domain::PhysicalLimitSide::Left ? pending_left_ts_ : pending_right_ts_;
+        endpoint == domain::Endpoint::A ? pending_left_ts_ : pending_right_ts_;
     std::atomic<bool>& wait_release =
-        side == domain::PhysicalLimitSide::Left ? left_wait_release_ : right_wait_release_;
+        endpoint == domain::Endpoint::A ? left_wait_release_ : right_wait_release_;
     std::atomic<uint64_t>& release_ts =
-        side == domain::PhysicalLimitSide::Left ? left_release_ts_ : right_release_ts_;
+        endpoint == domain::Endpoint::A ? left_release_ts_ : right_release_ts_;
     auto& limit_switch =
-        side == domain::PhysicalLimitSide::Left ? left_switch_ : right_switch_;
+        endpoint == domain::Endpoint::A ? left_switch_ : right_switch_;
 
     if (wait_release.load(std::memory_order_acquire) ||
         pending_ts.load(std::memory_order_acquire) != 0) {
@@ -127,18 +126,18 @@ void SafetyMonitor::monitor_loop()
     // 非阻塞并行防抖：前后端各自独立计时，互不阻塞。
     // check_settled 每 5ms 被调用一次，持续低有效稳定后发布事件。
     auto check_settled = [&](std::atomic<uint64_t>& ts_atom,
-                             domain::PhysicalLimitSide side,
+                             domain::Endpoint endpoint,
                              const std::shared_ptr<device::LimitSwitch>& sw) {
         uint64_t t = ts_atom.load(std::memory_order_acquire);
         if (t == 0) return;
         if (sw->read_current_level()) {
             ts_atom.store(0, std::memory_order_release);
-            event_bus_.publish(LimitUnstableEvent{side});
+            event_bus_.publish(LimitUnstableEvent{endpoint});
             return;
         }
         if (now_ms() - t >= kLimitSettleStableMs) {
             ts_atom.store(0, std::memory_order_release);  // 清除，防止重复触发
-            event_bus_.publish(LimitSettledEvent{side});
+            event_bus_.publish(LimitSettledEvent{endpoint});
         }
     };
 
@@ -172,19 +171,19 @@ void SafetyMonitor::monitor_loop()
         check_release(right_wait_release_, right_release_ts_, right_switch_);
 
         // ── 非阻塞并行防抖检查（前后端独立计时）──────────────────────
-        check_settled(pending_left_ts_, domain::PhysicalLimitSide::Left, left_switch_);
-        check_settled(pending_right_ts_, domain::PhysicalLimitSide::Right, right_switch_);
+        check_settled(pending_left_ts_, domain::Endpoint::A, left_switch_);
+        check_settled(pending_right_ts_, domain::Endpoint::B, right_switch_);
 
         // ── 备用轮询路径：以防 GPIO 边沿回调丢失（双保险）────────────
         // 注意：on_limit_trigger() 内部已调用 clear_trigger()，
         // 因此重复触发被抑制，无需额外去重计数器。
         if (left_switch_->is_triggered() &&
             pending_left_ts_.load(std::memory_order_acquire) == 0) {
-            on_limit_trigger(domain::PhysicalLimitSide::Left);
+            on_limit_trigger(domain::Endpoint::A);
         }
         if (right_switch_->is_triggered() &&
             pending_right_ts_.load(std::memory_order_acquire) == 0) {
-            on_limit_trigger(domain::PhysicalLimitSide::Right);
+            on_limit_trigger(domain::Endpoint::B);
         }
         // 5 ms 轮询（SCHED_FIFO 94，低于 GPIO 95，避免兜底轮询反向压制边沿线程）
         struct timespec poll_ts{0, 5 * 1000 * 1000};

@@ -99,16 +99,16 @@ void write_runtime_config(const char* key, const RuntimeConfig& config, WriterT&
     // 将 RuntimeConfig 序列化为 JSON 对象，键名由调用方指定。
     writer.Key(key);
     writer.StartObject();
-    writer.Key("passes");
-    writer.Double(config.passes);
+    writer.Key("repeat_count");
+    writer.Uint(config.repeat_count);
     writer.Key("clean_speed_rpm");
     writer.Double(config.clean_speed_rpm);
     writer.Key("return_speed_rpm");
     writer.Double(config.return_speed_rpm);
     writer.Key("brush_rpm");
     writer.Int(config.brush_rpm);
-    writer.Key("parking_side");
-    writer.String(parking_side_config_string(config.parking_side));
+    writer.Key("primary_dock");
+    writer.String(endpoint_config_string(config.primary_dock));
     writer.Key("min_battery_soc");
     writer.Double(config.min_battery_soc);
     writer.Key("charge_stop_soc");
@@ -164,6 +164,10 @@ size_t ThingsBoardJsonCodec::build_business_telemetry(const domain::RobotRuntime
     writer.Uint(view.fault);
     writer.Key("cfg_ver");
     writer.Uint64(view.cfg_ver);
+    writer.Key("repeat_count");
+    writer.Uint(view.repeat_count);
+    writer.Key("completed_cycles");
+    writer.Uint(view.completed_cycles);
 
     writer.EndObject();
     return stream.overflow() ? 0u : stream.size();
@@ -173,7 +177,7 @@ ThingsBoardControlPlane::ThingsBoardControlPlane(ConfigService& config,
                                                  SchedulerService* scheduler,
                                                  std::shared_ptr<CloudService> cloud,
                                                  std::shared_ptr<CommandTracker> command_tracker,
-                                                 domain::RobotControlPort robot)
+                                                 RobotCommandPort robot)
     : config_(config)
     , scheduler_(scheduler)
     , cloud_(std::move(cloud))
@@ -199,11 +203,11 @@ void ThingsBoardControlPlane::subscribe_shared_attributes() {
 void ThingsBoardControlPlane::request_shared_attributes_snapshot() const {
     // 向 ThingsBoard 请求当前 shared attributes 快照，避免启动后配置不一致。
     static const std::vector<std::string> kReleaseSharedKeys{
-        "passes",
+        "repeat_count",
         "clean_speed_rpm",
         "return_speed_rpm",
         "brush_rpm",
-        "parking_side",
+        "primary_dock",
         "min_battery_soc",
         "charge_stop_soc",
         "schedules",
@@ -213,102 +217,23 @@ void ThingsBoardControlPlane::request_shared_attributes_snapshot() const {
     }
 }
 
-void ThingsBoardControlPlane::register_rpc_handlers(
-    const std::function<bool()>& is_start_position_valid,
-    const std::function<bool()>& is_at_start_parking_side,
-    const std::function<bool()>& is_at_start_far_end,
-    const std::function<bool()>& is_at_active_parking_side,
-    const std::function<float()>& current_battery_soc,
-    std::function<void()> reboot_device) {
-    // 注册 ThingsBoard RPC 处理器，包括 start、stop、return 和 reset。
-    // 这些处理器使用外部回调查询当前状态/位置/电量，并通过 RobotSupervisor 执行任务控制。
-    cloud_->register_rpc(
-        "start",
-        [this, is_start_position_valid, is_at_start_parking_side, is_at_start_far_end, current_battery_soc](
-            const std::string& request_id, const std::string& /*params*/) {
-            const auto state = robot_.current_state();
-            const bool at_parking_side = is_at_start_parking_side();
-            const bool at_far_end = is_at_start_far_end();
-            const bool dual_dock_mode = config_.get<bool>("robot.dual_dock_mode", false);
-            const bool position_valid =
-                is_start_position_valid() || (!dual_dock_mode && !at_parking_side && !at_far_end);
-            const float battery_soc = current_battery_soc();
-            spdlog::info(
-                "[ThingsBoardControlPlane] RPC start received: state='{}' position_valid={} "
-                "at_parking_side={} at_far_end={} battery_soc={:.1f}",
-                state,
-                position_valid,
-                at_parking_side,
-                at_far_end,
-                battery_soc);
-
-            if (!robot_.start_task_from_current_position(
-                    at_parking_side, at_far_end, position_valid, battery_soc)) {
-                const auto runtime_cfg = config_.has_pending_runtime_config()
-                                             ? *config_.pending_runtime_config()
-                                             : config_.active_runtime_config();
-                const std::string reason =
-                    (state != "Idle" && state != "Charging")
-                        ? "start_not_allowed_in_current_state"
-                    : !position_valid  ? "robot_position_invalid"
-                    : battery_soc < static_cast<float>(runtime_cfg.min_battery_soc)
-                        ? "battery_below_start_threshold"
-                    : "start_rejected_by_supervisor";
-                spdlog::warn("[ThingsBoardControlPlane] RPC start rejected: {}", reason);
-                return reject_rpc_command("start", request_id, reason.c_str());
-            }
-
-            spdlog::info("[ThingsBoardControlPlane] RPC start completed: started_new_task");
-            return complete_rpc_command("start", request_id, "started_new_task");
-        });
-
-    cloud_->register_rpc(
-        "stop", [this](const std::string& request_id, const std::string& /*params*/) {
-            // stop RPC 仅允许在当前任务可停止时调用。
-            spdlog::info("[ThingsBoardControlPlane] RPC stop received: state='{}'",
-                         robot_.current_state());
-            if (!robot_.stop_task()) {
-                spdlog::warn(
-                    "[ThingsBoardControlPlane] RPC stop rejected: "
-                    "stop_not_allowed_in_current_state");
-                return reject_rpc_command("stop", request_id, "stop_not_allowed_in_current_state");
-            }
-
-            spdlog::info("[ThingsBoardControlPlane] RPC stop completed: stopped_task");
-            return complete_rpc_command("stop", request_id, "stopped_task");
-        });
-
-    cloud_->register_rpc(
-        "return",
-        [this, is_at_active_parking_side](const std::string& request_id,
-                                          const std::string& /*params*/) {
-            // return RPC 用于请求机器人返回当前活动停车侧。
-            const bool at_parking_side = is_at_active_parking_side();
-            spdlog::info(
-                "[ThingsBoardControlPlane] RPC return received: state='{}' at_parking_side={}",
-                robot_.current_state(),
-                at_parking_side);
-            if (!robot_.return_task(at_parking_side)) {
-                spdlog::warn(
-                    "[ThingsBoardControlPlane] RPC return rejected: "
-                    "return_not_allowed_in_current_state");
-                return reject_rpc_command(
-                    "return", request_id, "return_not_allowed_in_current_state");
-            }
-
-            spdlog::info(
-                "[ThingsBoardControlPlane] RPC return completed: returning_to_parking_side");
-            return complete_rpc_command("return", request_id, "returning_to_parking_side");
-        });
+void ThingsBoardControlPlane::register_rpc_handlers(std::function<void()> reboot_device) {
+    register_command_rpc("clean_to_return", domain::RobotCommandKind::CleanTowardOppositeEndpoint);
+    register_command_rpc("clean_to_parking",
+                         domain::RobotCommandKind::CleanTowardPrimaryDock);
+    register_command_rpc("start_configured", domain::RobotCommandKind::StartConfiguredMission);
+    register_command_rpc("stop", domain::RobotCommandKind::Stop);
+    register_command_rpc("fault_reset", domain::RobotCommandKind::FaultReset);
 
     cloud_->register_rpc(
         "reset",
         [this, reboot_device = std::move(reboot_device)](const std::string& request_id,
                                                          const std::string& /*params*/) {
             // reset RPC 立即响应 rebooting_device，然后异步重启设备。
-            spdlog::info("[ThingsBoardControlPlane] RPC reset received: state='{}'",
-                         robot_.current_state());
-            auto reply = complete_rpc_command("reset", request_id, "rebooting_device");
+            spdlog::info("[ThingsBoardControlPlane] RPC reset received");
+            command_tracker_->finish_success(
+                command_tracker_->accept("reset", request_id), "rebooting_device");
+            auto reply = rpc_reply("rebooting_device");
             std::thread([reboot_device]() {
                 std::this_thread::sleep_for(std::chrono::milliseconds(200));
                 if (reboot_device) {
@@ -386,7 +311,7 @@ std::string ThingsBoardControlPlane::rpc_reply(const std::string& code) {
 }
 
 bool ThingsBoardControlPlane::publish_attributes_payload(size_t len,
-                                                         const char* error_message) const {
+                         const char* error_message) const {
     if (len == 0u) {
         spdlog::error("{}", error_message);
         return false;
@@ -394,6 +319,29 @@ bool ThingsBoardControlPlane::publish_attributes_payload(size_t len,
     event_payload_cache_.assign(event_payload_buf_.data(), len);
     cloud_->publish_attributes(event_payload_cache_);
     return true;
+}
+
+void ThingsBoardControlPlane::register_command_rpc(const char* method,
+                                                   domain::RobotCommandKind kind) {
+    cloud_->register_rpc(method,
+                         [this, method, kind](const std::string& request_id,
+                                              const std::string& /*params*/) {
+        spdlog::info("[ThingsBoardControlPlane] RPC {} received", method);
+        if (!robot_.submit_command) {
+            return reject_rpc_command(method, request_id, "robot_command_port_missing");
+        }
+
+        const auto result = robot_.submit_command(
+            domain::RobotCommand{kind, domain::CommandSource::Rpc, request_id});
+        if (!result.accepted) {
+            const auto reason = result.reason.empty() ? "rejected" : result.reason;
+            spdlog::warn("[ThingsBoardControlPlane] RPC {} rejected: {}", method, reason);
+            return reject_rpc_command(method, request_id, reason.c_str());
+        }
+
+        spdlog::info("[ThingsBoardControlPlane] RPC {} accepted", method);
+        return accept_rpc_command(method, request_id);
+    });
 }
 
 bool ThingsBoardControlPlane::publish_event_payload(size_t len, const char* error_message) const {
@@ -425,13 +373,9 @@ std::string ThingsBoardControlPlane::reject_rpc_command(const char* command_name
     return rpc_reply(reason);
 }
 
-std::string ThingsBoardControlPlane::complete_rpc_command(const char* command_name,
-                                                          const std::string& request_id,
-                                                          const char* completion_reason) {
-    // 保留本地命令生命周期真相，但不再发布高频 command event。
-    spdlog::info("[ThingsBoardControlPlane] complete_rpc_command begin: command='{}' reason='{}'",
-                 command_name,
-                 completion_reason);
+std::string ThingsBoardControlPlane::accept_rpc_command(const char* command_name,
+                                                        const std::string& request_id) {
+    // RPC 回复只表示本地业务层已接受命令，最终完成/失败由 app 状态上报闭环。
     const auto cmd_id = command_tracker_->accept(command_name, request_id);
     spdlog::info(
         "[ThingsBoardControlPlane] command accepted: command='{}' cmd_id={}", command_name, cmd_id);
@@ -439,13 +383,7 @@ std::string ThingsBoardControlPlane::complete_rpc_command(const char* command_na
     spdlog::info("[ThingsBoardControlPlane] command marked running: command='{}' cmd_id={}",
                  command_name,
                  cmd_id);
-    command_tracker_->finish_success(cmd_id, completion_reason);
-    spdlog::info(
-        "[ThingsBoardControlPlane] command finished success: command='{}' cmd_id={} reason='{}'",
-        command_name,
-        cmd_id,
-        completion_reason);
-    return rpc_reply(completion_reason);
+    return rpc_reply("accepted");
 }
 
 }  // namespace robot::service

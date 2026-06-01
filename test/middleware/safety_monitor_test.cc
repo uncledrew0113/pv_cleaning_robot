@@ -108,7 +108,7 @@ TEST_CASE("SafetyMonitor: 持续触发稳定后发布 LimitSettledEvent", "[midd
     bool settled_left = false;
     f.bus.subscribe<SafetyMonitor::LimitSettledEvent>(
         [&](const SafetyMonitor::LimitSettledEvent& e) {
-            if (e.side == robot::domain::PhysicalLimitSide::Left)
+            if (e.endpoint == robot::domain::Endpoint::A)
                 settled_left = true;
         });
 
@@ -131,11 +131,11 @@ TEST_CASE("SafetyMonitor: 短暂触发释放后不发布 LimitSettledEvent",
     int unstable_count = 0;
     f.bus.subscribe<SafetyMonitor::LimitSettledEvent>(
         [&](const SafetyMonitor::LimitSettledEvent& e) {
-            if (e.side == robot::domain::PhysicalLimitSide::Left) ++settled_count;
+            if (e.endpoint == robot::domain::Endpoint::A) ++settled_count;
         });
     f.bus.subscribe<SafetyMonitor::LimitUnstableEvent>(
         [&](const SafetyMonitor::LimitUnstableEvent& e) {
-            if (e.side == robot::domain::PhysicalLimitSide::Left) ++unstable_count;
+            if (e.endpoint == robot::domain::Endpoint::A) ++unstable_count;
         });
 
     f.monitor.start();
@@ -160,7 +160,7 @@ TEST_CASE("SafetyMonitor: 短时间内多次触发只发一次 LimitSettledEvent
     int settled_count = 0;
     f.bus.subscribe<SafetyMonitor::LimitSettledEvent>(
         [&](const SafetyMonitor::LimitSettledEvent& e) {
-            if (e.side == robot::domain::PhysicalLimitSide::Right)
+            if (e.endpoint == robot::domain::Endpoint::B)
                 ++settled_count;
         });
 
@@ -186,7 +186,7 @@ TEST_CASE("SafetyMonitor: 同一侧 release 后第二次触发也能发布 Limit
     int settled_count = 0;
     f.bus.subscribe<SafetyMonitor::LimitSettledEvent>(
         [&](const SafetyMonitor::LimitSettledEvent& e) {
-            if (e.side == robot::domain::PhysicalLimitSide::Left) ++settled_count;
+            if (e.endpoint == robot::domain::Endpoint::A) ++settled_count;
         });
 
     f.monitor.start();

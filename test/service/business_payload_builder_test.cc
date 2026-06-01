@@ -22,23 +22,22 @@ TEST_CASE("ThingsBoardJsonCodec emits periodic business telemetry into caller bu
     robot::domain::RobotRuntimeSnapshot snap;
     snap.state = "FaultStopped";
     snap.fault = 0x2001;
-    snap.target_passes = 2;
-    snap.completed_passes = 0;
-    snap.clean_count = 7;
+    snap.repeat_count = 2;
+    snap.completed_cycles = 0;
     snap.cfg_ver = 42;
 
     robot::service::RuntimeConfig active_config;
-    active_config.passes = 2.0;
+    active_config.repeat_count = 2;
     active_config.clean_speed_rpm = 180.0;
     active_config.return_speed_rpm = 120.0;
     active_config.brush_rpm = 900;
     active_config.min_battery_soc = 30.0;
-    active_config.parking_side = robot::service::ParkingSide::Right;
+    active_config.primary_dock = robot::domain::Endpoint::B;
     active_config.schedules = {{8, 30}};
     snap.active_config = active_config;
 
     robot::service::RuntimeConfig pending_config = active_config;
-    pending_config.parking_side = robot::service::ParkingSide::Left;
+    pending_config.primary_dock = robot::domain::Endpoint::A;
     snap.pending_config = pending_config;
 
     char out[2048];
@@ -50,5 +49,7 @@ TEST_CASE("ThingsBoardJsonCodec emits periodic business telemetry into caller bu
     CHECK(std::string(payload["state"].GetString()) == "FaultStopped");
     CHECK(payload["fault"].GetUint() == 0x2001);
     CHECK(payload["cfg_ver"].GetUint64() == 42);
-    CHECK(payload.MemberCount() == 3);
+    CHECK(payload["repeat_count"].GetUint() == 2);
+    CHECK(payload["completed_cycles"].GetUint() == 0);
+    CHECK(payload.MemberCount() == 5);
 }

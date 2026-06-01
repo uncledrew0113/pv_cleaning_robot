@@ -55,7 +55,7 @@ class LimitSwitch {
     void clear_trigger();
 
     /// @brief 直接读取 GPIO 当前电平（true=高/1，false=低/0）
-    /// @note 用于上电自检：左右两侧的业务语义由 ParkingSideRuntime 决定。
+    /// @note 用于上电自检：左右两侧的业务语义由 domain::estimate_endpoint() 决定。
     /// @pre  必须在 open() 之后调用
     bool read_current_level() const;
 
