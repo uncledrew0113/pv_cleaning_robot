@@ -36,6 +36,7 @@ struct RecordingRobotActions {
 TEST_CASE("RobotController starts configured mission through SelfChecking",
           "[app][robot_controller]") {
     RobotController controller;
+    controller.set_position_state_query([] { return robot::domain::PositionState::AtA; });
 
     const auto result = controller.submit_command(
         RobotCommand{RobotCommandKind::StartConfiguredMission, CommandSource::Rpc, "cmd-1"});
@@ -46,6 +47,7 @@ TEST_CASE("RobotController starts configured mission through SelfChecking",
 
 TEST_CASE("RobotController rejects start while busy", "[app][robot_controller]") {
     RobotController controller;
+    controller.set_position_state_query([] { return robot::domain::PositionState::AtA; });
     REQUIRE(controller
                 .submit_command(RobotCommand{
                     RobotCommandKind::StartConfiguredMission, CommandSource::Rpc, "cmd-1"})
@@ -61,6 +63,7 @@ TEST_CASE("RobotController rejects start while busy", "[app][robot_controller]")
 TEST_CASE("RobotController stop is only accepted while mission is active",
           "[app][robot_controller]") {
     RobotController controller;
+    controller.set_position_state_query([] { return robot::domain::PositionState::AtA; });
 
     auto result =
         controller.submit_command(RobotCommand{RobotCommandKind::Stop, CommandSource::Rpc, "stop-idle"});
@@ -82,6 +85,7 @@ TEST_CASE("RobotController stop is only accepted while mission is active",
 TEST_CASE("RobotController serializes posted callbacks on controller thread",
           "[app][robot_controller]") {
     RobotController controller;
+    controller.set_position_state_query([] { return robot::domain::PositionState::AtA; });
     controller.start();
 
     std::atomic<int> count{0};
@@ -106,6 +110,7 @@ TEST_CASE("RobotController serializes posted callbacks on controller thread",
 TEST_CASE("RobotController submit_command works through running queue",
           "[app][robot_controller]") {
     RobotController controller;
+    controller.set_position_state_query([] { return robot::domain::PositionState::AtA; });
     controller.start();
 
     const auto result = controller.submit_command(
@@ -121,6 +126,7 @@ TEST_CASE("RobotController submit_command works through running queue",
 TEST_CASE("RobotController completes configured single-dock mission through two endpoints",
           "[app][robot_controller]") {
     RobotController controller;
+    controller.set_position_state_query([] { return robot::domain::PositionState::AtA; });
     REQUIRE(controller
                 .submit_command(RobotCommand{
                     RobotCommandKind::StartConfiguredMission, CommandSource::Rpc, "cmd-1"})
@@ -139,6 +145,7 @@ TEST_CASE("RobotController completes configured single-dock mission through two 
 TEST_CASE("RobotController unexpected endpoint enters FaultStopped",
           "[app][robot_controller]") {
     RobotController controller;
+    controller.set_position_state_query([] { return robot::domain::PositionState::AtA; });
     REQUIRE(controller
                 .submit_command(RobotCommand{
                     RobotCommandKind::CleanTowardPrimaryDock, CommandSource::Rpc, "cmd-1"})
@@ -154,6 +161,7 @@ TEST_CASE("RobotController unexpected endpoint enters FaultStopped",
 TEST_CASE("RobotController P0 fault enters FaultStopped and reset returns Idle",
           "[app][robot_controller]") {
     RobotController controller;
+    controller.set_position_state_query([] { return robot::domain::PositionState::AtA; });
     controller.handle_fault_for_test(robot::app::FaultFact{
         robot::app::FaultSource::Watchdog,
         robot::domain::FaultCode::kCanCommunicationLost,
@@ -190,6 +198,7 @@ TEST_CASE("RobotController starts motion after successful self check",
           "[app][robot_controller]") {
     RecordingRobotActions actions;
     RobotController controller(actions.ports());
+    controller.set_position_state_query([] { return robot::domain::PositionState::AtA; });
 
     REQUIRE(controller
                 .submit_command(RobotCommand{
@@ -206,6 +215,7 @@ TEST_CASE("RobotController converts motion start failure into FaultStopped",
     auto ports = actions.ports();
     ports.start_segment = [](const robot::domain::MissionSegment&) { return false; };
     RobotController controller(ports);
+    controller.set_position_state_query([] { return robot::domain::PositionState::AtA; });
 
     REQUIRE(controller
                 .submit_command(RobotCommand{
@@ -243,4 +253,27 @@ TEST_CASE("RobotController posted limit unstable enters FaultStopped",
     REQUIRE(controller.snapshot().state == "FaultStopped");
     REQUIRE(controller.snapshot().fault ==
             robot::domain::FaultCode::kLimitUnstableAfterEmergencyStop);
+}
+
+TEST_CASE("RobotController rejects configured mission away from dock", "[app][robot_controller]") {
+    RobotController controller;
+    controller.set_position_state_query([] { return robot::domain::PositionState::OnSegment; });
+
+    const auto result = controller.submit_command(
+        RobotCommand{RobotCommandKind::StartConfiguredMission, CommandSource::Rpc, "cmd-1"});
+
+    REQUIRE_FALSE(result.accepted);
+    REQUIRE(result.reason == "configured_mission_requires_start_endpoint");
+}
+
+TEST_CASE("RobotController rejects low battery before start", "[app][robot_controller]") {
+    RobotController controller;
+    controller.set_position_state_query([] { return robot::domain::PositionState::AtA; });
+    controller.set_battery_soc_query([] { return 10.0f; });
+
+    const auto result = controller.submit_command(
+        RobotCommand{RobotCommandKind::StartConfiguredMission, CommandSource::Rpc, "cmd-1"});
+
+    REQUIRE_FALSE(result.accepted);
+    REQUIRE(result.reason == "battery_below_start_threshold");
 }

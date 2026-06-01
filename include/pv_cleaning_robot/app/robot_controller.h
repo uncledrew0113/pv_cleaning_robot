@@ -32,7 +32,11 @@ struct CommandResult {
 struct RobotControllerSnapshot {
     std::string state{"Idle"};
     std::optional<uint32_t> fault;
+    uint32_t repeat_count{0};
     int completed_cycles{0};
+    uint64_t cfg_ver{0};
+    std::optional<domain::RuntimeConfig> active_config;
+    std::optional<domain::RuntimeConfig> pending_config;
 };
 
 class RobotController {
@@ -45,12 +49,23 @@ public:
         std::function<void()> clear_fault;
     };
 
+    struct ConfigPorts {
+        std::function<domain::RuntimeConfig()> active_runtime_config;
+        std::function<std::optional<domain::RuntimeConfig>()> pending_runtime_config;
+        std::function<uint64_t(const domain::RuntimeConfig&)> runtime_config_version;
+        std::function<bool()> promote_pending_runtime_config;
+        std::function<domain::LaneConfig()> lane_config;
+    };
+
     RobotController() = default;
     explicit RobotController(ActionPorts ports);
     ~RobotController();
 
     void start();
     void stop();
+    void set_config_ports(ConfigPorts ports);
+    void set_position_state_query(std::function<domain::PositionState()> query);
+    void set_battery_soc_query(std::function<float()> query);
 
     CommandResult submit_command(const domain::RobotCommand& command);
     RobotControllerSnapshot snapshot() const;
@@ -75,6 +90,12 @@ private:
     bool mission_active() const noexcept;
     CommandResult submit_command_locked(const domain::RobotCommand& command);
     CommandResult start_command_locked(const domain::RobotCommand& command);
+    CommandResult validate_start_command_locked(const domain::RobotCommand& command,
+                                                const domain::LaneConfig& lane,
+                                                domain::PositionState position_state) const;
+    domain::MissionContext build_start_mission_locked(const domain::RobotCommand& command,
+                                                      const domain::LaneConfig& lane,
+                                                      domain::PositionState position_state) const;
     CommandResult stop_locked();
     bool start_current_segment_locked();
     void handle_limit_settled_locked(domain::Endpoint endpoint);
@@ -89,6 +110,9 @@ private:
     std::optional<uint32_t> active_fault_;
     FaultPolicy fault_policy_;
     ActionPorts actions_{};
+    ConfigPorts config_{};
+    std::function<domain::PositionState()> position_state_query_;
+    std::function<float()> battery_soc_query_;
 
     mutable std::mutex queue_mtx_;
     std::condition_variable queue_cv_;

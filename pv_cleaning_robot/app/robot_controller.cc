@@ -21,6 +21,21 @@ void RobotController::start() {
     worker_ = std::thread([this] { loop(); });
 }
 
+void RobotController::set_config_ports(ConfigPorts ports) {
+    std::lock_guard<std::mutex> lk(mtx_);
+    config_ = std::move(ports);
+}
+
+void RobotController::set_position_state_query(std::function<domain::PositionState()> query) {
+    std::lock_guard<std::mutex> lk(mtx_);
+    position_state_query_ = std::move(query);
+}
+
+void RobotController::set_battery_soc_query(std::function<float()> query) {
+    std::lock_guard<std::mutex> lk(mtx_);
+    battery_soc_query_ = std::move(query);
+}
+
 void RobotController::stop() {
     {
         std::lock_guard<std::mutex> lk(queue_mtx_);
@@ -202,33 +217,84 @@ CommandResult RobotController::start_command_locked(const domain::RobotCommand& 
         return {false, "busy"};
     }
 
-    domain::LaneConfig lane{};
-    lane.primary_dock = domain::Endpoint::A;
-    lane.dock_mode = domain::DockMode::SingleDock;
-
-    if (command.kind == domain::RobotCommandKind::CleanTowardOppositeEndpoint) {
-        mission_ = domain::build_directional_clean_context(
-            domain::MissionKind::CleanTowardOppositeEndpoint,
-            lane,
-            command.source,
-            command.command_id);
-    } else if (command.kind == domain::RobotCommandKind::CleanTowardPrimaryDock) {
-        mission_ = domain::build_directional_clean_context(
-            domain::MissionKind::CleanTowardPrimaryDock,
-            lane,
-            command.source,
-            command.command_id);
-    } else {
-        mission_ = domain::build_configured_mission_context(
-            lane,
-            domain::PositionState::AtA,
-            command.source,
-            command.command_id,
-            1);
+    const auto active_cfg = config_.active_runtime_config ? config_.active_runtime_config()
+                                                          : domain::RuntimeConfig{};
+    const auto pending_cfg = config_.pending_runtime_config ? config_.pending_runtime_config()
+                                                            : std::optional<domain::RuntimeConfig>{};
+    const auto start_cfg = pending_cfg.value_or(active_cfg);
+    if (battery_soc_query_ && battery_soc_query_() < static_cast<float>(start_cfg.min_battery_soc)) {
+        return {false, "battery_below_start_threshold"};
     }
 
+    domain::LaneConfig lane = config_.lane_config ? config_.lane_config() : domain::LaneConfig{};
+    lane.primary_dock = start_cfg.primary_dock;
+
+    const auto position_state = position_state_query_ ? position_state_query_()
+                                                      : domain::PositionState::Unknown;
+    const auto validation = validate_start_command_locked(command, lane, position_state);
+    if (!validation.accepted || validation.reason == "already_at_target") {
+        return validation;
+    }
+
+    if (pending_cfg && config_.promote_pending_runtime_config &&
+        !config_.promote_pending_runtime_config()) {
+        return {false, "runtime_config_promote_failed"};
+    }
+
+    mission_ = build_start_mission_locked(command, lane, position_state);
     state_ = RobotState::SelfChecking;
     return {true, "accepted"};
+}
+
+CommandResult RobotController::validate_start_command_locked(
+    const domain::RobotCommand& command,
+    const domain::LaneConfig& lane,
+    domain::PositionState position_state) const {
+    if (command.kind == domain::RobotCommandKind::StartConfiguredMission &&
+        !domain::can_start_configured_mission(lane, position_state)) {
+        return {false, "configured_mission_requires_start_endpoint"};
+    }
+
+    if (command.kind != domain::RobotCommandKind::StartConfiguredMission) {
+        if (!domain::is_trusted_position_state(position_state)) {
+            return {false,
+                    position_state == domain::PositionState::Inconsistent
+                        ? "robot_position_inconsistent"
+                        : "robot_position_unknown"};
+        }
+        const auto target = command.kind == domain::RobotCommandKind::CleanTowardPrimaryDock
+                                ? lane.primary_dock
+                                : domain::opposite_endpoint(lane.primary_dock);
+        if (domain::is_at_target(position_state, target)) {
+            return {true, "already_at_target"};
+        }
+    }
+
+    return {true, "start_allowed"};
+}
+
+domain::MissionContext RobotController::build_start_mission_locked(
+    const domain::RobotCommand& command,
+    const domain::LaneConfig& lane,
+    domain::PositionState position_state) const {
+    if (command.kind == domain::RobotCommandKind::StartConfiguredMission) {
+        const auto active_cfg = config_.active_runtime_config ? config_.active_runtime_config()
+                                                              : domain::RuntimeConfig{};
+        return domain::build_configured_mission_context(
+            lane,
+            position_state,
+            command.source,
+            command.command_id,
+            std::max<uint32_t>(1u, active_cfg.repeat_count));
+    }
+
+    return domain::build_directional_clean_context(
+        command.kind == domain::RobotCommandKind::CleanTowardPrimaryDock
+            ? domain::MissionKind::CleanTowardPrimaryDock
+            : domain::MissionKind::CleanTowardOppositeEndpoint,
+        lane,
+        command.source,
+        command.command_id);
 }
 
 CommandResult RobotController::stop_locked() {
@@ -275,7 +341,17 @@ RobotControllerSnapshot RobotController::snapshot() const {
     snap.state = state_name(state_);
     snap.fault = active_fault_;
     if (mission_) {
+        snap.repeat_count = mission_->repeat_count;
         snap.completed_cycles = static_cast<int>(mission_->completed_cycles);
+    }
+    if (config_.active_runtime_config) {
+        snap.active_config = config_.active_runtime_config();
+    }
+    if (config_.pending_runtime_config) {
+        snap.pending_config = config_.pending_runtime_config();
+    }
+    if (snap.active_config && config_.runtime_config_version) {
+        snap.cfg_ver = config_.runtime_config_version(*snap.active_config);
     }
     return snap;
 }
