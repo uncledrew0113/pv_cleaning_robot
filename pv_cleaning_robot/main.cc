@@ -12,9 +12,7 @@
  *   7. 捕获 SIGINT/SIGTERM，优雅关闭
  */
 #include <cmath>
-#include <linux/reboot.h>
 #include <sys/mman.h>
-#include <sys/syscall.h>
 #include <unistd.h>
 
 #include "pv_cleaning_robot/middleware/logger.h"
@@ -67,10 +65,8 @@
 #include <string_view>
 #include <thread>
 
-#include "pv_cleaning_robot/app/fault_handler.h"
+#include "pv_cleaning_robot/app/robot_controller.h"
 #include "pv_cleaning_robot/domain/robot_domain.h"
-#include "pv_cleaning_robot/app/robot_fsm.h"
-#include "pv_cleaning_robot/app/robot_supervisor.h"
 #include "pv_cleaning_robot/app/watchdog_mgr.h"
 
 // ── 优雅退出信号 ──────────────────────────────────────────────────────────
@@ -83,29 +79,22 @@ static void signal_handler(int /*sig*/) {
 namespace {
 
 void publish_startup_position_status(
-    const std::shared_ptr<robot::app::RobotSupervisor>& supervisor,
     const std::shared_ptr<spdlog::logger>& log,
-    const robot::app::RobotSupervisor::StartupPositionAssessment& startup_position) {
-    const std::string_view reason(startup_position.status_reason);
-    if (reason == "ok") {
+    robot::domain::PositionState startup_position,
+    bool configured_mission_allowed) {
+    if (startup_position == robot::domain::PositionState::AtA ||
+        startup_position == robot::domain::PositionState::AtB) {
+        if (configured_mission_allowed) {
+            return;
+        }
+        log->warn("[Main] 启动位置异常：当前不在主停机端，禁止自动启动清扫");
         return;
     }
-    if (reason == "dual_endpoint_active") {
+    if (startup_position == robot::domain::PositionState::Inconsistent) {
         log->warn("[Main] 启动位置异常：A/B 两端同时触发，禁止启动清扫");
         return;
     }
-    if (reason == "robot_not_at_any_endpoint") {
-        log->warn("[Main] 启动位置异常：当前不在任一端点，尝试返回停机位");
-        (void)supervisor;
-        return;
-    }
-    if (reason == "robot_not_at_primary_dock") {
-        if (startup_position.should_request_return) {
-            log->warn("[Main] 启动位置异常：当前不在主停机端，正在尝试回到主停机端");
-        } else {
-            log->warn("[Main] 启动位置异常：当前不在主停机端，禁止自动启动清扫");
-        }
-    }
+    log->warn("[Main] 启动位置异常：当前不在任一端点，禁止配置任务自动启动");
 }
 
 }  // namespace
@@ -371,15 +360,33 @@ int main() {
     auto fault = std::make_shared<robot::service::FaultService>(event_bus);
 
     // ── 14. 应用层 ─────────────────────────────────────────────────────
-    auto fsm = std::make_shared<robot::app::RobotFsm>();
-    auto supervisor =
-        std::make_shared<robot::app::RobotSupervisor>(fsm, cfg, fault, nav);
+    auto controller = std::make_shared<robot::app::RobotController>(
+        robot::app::RobotController::ActionPorts{
+            [motion](const robot::domain::MissionSegment& segment) {
+                return motion->start_segment(segment);
+            },
+            [motion] { motion->stop_cleaning(); },
+            [motion] { motion->emergency_stop(); },
+            [recovery] { recovery->start(); },
+            [fault] { fault->clear_active_fault(); },
+        });
     auto command_port = robot::service::RobotCommandPort{
-        [supervisor](const robot::domain::RobotCommand& command) {
-            const auto result = supervisor->submit_command(command);
+        [controller](const robot::domain::RobotCommand& command) {
+            const auto result = controller->submit_command(command);
             return robot::service::RobotCommandResult{result.accepted, result.reason};
         },
-        [supervisor]() { return supervisor->snapshot(); }};
+        [controller]() {
+            const auto snap = controller->snapshot();
+            robot::domain::RobotRuntimeSnapshot runtime;
+            runtime.state = snap.state;
+            runtime.fault = snap.fault.value_or(0u);
+            runtime.repeat_count = snap.repeat_count;
+            runtime.completed_cycles = static_cast<uint32_t>(snap.completed_cycles);
+            runtime.cfg_ver = snap.cfg_ver;
+            runtime.active_config = snap.active_config;
+            runtime.pending_config = snap.pending_config;
+            return runtime;
+        }};
     auto tb_control = std::make_shared<robot::service::ThingsBoardControlPlane>(
         cfg, &scheduler, cloud, command_tracker, command_port);
     cfg.apply_active_runtime_schedules(scheduler);
@@ -393,19 +400,34 @@ int main() {
             const bool right_sensor_active = right_open_ok && !right_switch->read_current_level();
             return {left_sensor_active, right_sensor_active};
         };
-    const auto current_start_position_state = [supervisor, current_limit_levels]() {
+    const auto current_start_position_state = [current_limit_levels]() {
         const auto [left_sensor_active, right_sensor_active] = current_limit_levels();
-        return supervisor->start_position_state(left_sensor_active, right_sensor_active);
+        return robot::domain::estimate_position(
+            robot::domain::LimitState{left_sensor_active, right_sensor_active});
     };
-    supervisor->set_position_state_query(current_start_position_state);
-    supervisor->set_motion_service(motion);
-    supervisor->set_recovery_motion(recovery);
-    supervisor->set_battery_soc_query(current_battery_soc);
+    controller->set_position_state_query(current_start_position_state);
+    controller->set_battery_soc_query(current_battery_soc);
+    controller->set_config_ports(robot::app::RobotController::ConfigPorts{
+        [&cfg] { return cfg.active_runtime_config(); },
+        [&cfg] { return cfg.pending_runtime_config(); },
+        [&cfg](const robot::domain::RuntimeConfig& runtime_cfg) {
+            return cfg.runtime_config_version(runtime_cfg);
+        },
+        [&cfg] { return cfg.promote_pending_runtime_to_active(); },
+        [&cfg] {
+            const auto dock_mode =
+                cfg.get<std::string>("robot.dock_mode", "single_dock") == "dual_dock"
+                    ? robot::domain::DockMode::DualDock
+                    : robot::domain::DockMode::SingleDock;
+            return robot::domain::LaneConfig{dock_mode, cfg.active_runtime_config().primary_dock};
+        },
+    });
+    controller->start();
     const auto configured_primary_dock_text = robot::domain::endpoint_config_string(
         cfg.active_runtime_config().primary_dock);
     const auto [startup_left_limit_active, startup_right_limit_active] = current_limit_levels();
-    const auto startup_state =
-        supervisor->active_position_state(startup_left_limit_active, startup_right_limit_active);
+    const auto startup_state = robot::domain::estimate_position(
+        robot::domain::LimitState{startup_left_limit_active, startup_right_limit_active});
     if (!robot::domain::is_at_target(startup_state, cfg.active_runtime_config().primary_dock)) {
         log->warn(
             "[Main] [自检警告] 当前未检测到主停机端限位触发，"
@@ -443,27 +465,32 @@ int main() {
     }
 
     publish_startup_position_status(
-        supervisor,
         log,
-        supervisor->handle_startup_position(startup_left_limit_active, startup_right_limit_active));
+        startup_state,
+        robot::domain::can_start_configured_mission(
+            robot::domain::LaneConfig{
+                dual_dock_mode ? robot::domain::DockMode::DualDock
+                               : robot::domain::DockMode::SingleDock,
+                cfg.active_runtime_config().primary_dock},
+            startup_state));
 
     // ── 应用层桥接：限位业务事件 / 调度窗口启动 ──────────────────────────
-    supervisor->register_limit_settled_bridge(event_bus, current_limit_levels, current_battery_soc);
+    safety_monitor.set_limit_settled_callback(
+        [controller](robot::domain::Endpoint endpoint) {
+            controller->post_limit_settled(endpoint);
+        });
+    safety_monitor.set_limit_unstable_callback(
+        [controller](robot::domain::Endpoint endpoint) {
+            controller->post_limit_unstable(endpoint);
+        });
 
     // ── 调度服务：定时触发清扫任务（读取 active runtime 的 scheduler.windows） ─────
-    supervisor->register_scheduler_window(scheduler, current_limit_levels, current_battery_soc);
-
-    robot::app::FaultHandler fault_handler(
-        motion, fault, event_bus, [supervisor](const robot::service::FaultEvent& evt) {
-            supervisor->handle_fault_event(evt);
-        });
-    fault_handler.start_listening();
+    scheduler.set_on_window_hit([controller] { controller->post_schedule_window_hit(); });
 
     robot::app::WatchdogMgr watchdog(cfg.get<std::string>("system.hw_watchdog", "/dev/watchdog"));
-    watchdog.set_timeout_callback([&fault](const std::string& thread_name) {
-        fault->report(robot::service::FaultService::FaultEvent::Level::P0,
-                      0xDEAD,
-                      "watchdog timeout: " + thread_name);
+    watchdog.set_timeout_callback([controller, motion](const std::string& thread_name) {
+        motion->emergency_stop();
+        controller->post_watchdog_timeout(thread_name);
     });
     watchdog.start();
 
@@ -569,22 +596,33 @@ int main() {
         // 调度器 tick：切换到从 SCHED_OTHER 主循环调用，精度 100ms（调度窪口最小误微差 1min）
         scheduler.tick();
 
-        const std::string current_state = supervisor->current_state();
+        const std::string current_state = controller->snapshot().state;
         if (current_state == "SelfChecking") {
-            const auto result = supervisor->handle_self_check_passed();
-            if (!result.accepted) {
-                log->warn("[Main] 启动前自检失败: {}", result.reason);
-            }
+            controller->complete_self_check(true);
         }
         const bool active_motion_state =
             current_state == "ExecutingMission" || current_state == "Recovering";
         const int desired_report_period =
             active_motion_state ? active_report_period : idle_report_period;
         if (cloud_exec.period_ms() != desired_report_period) {
-            cloud_exec.set_period_ms(desired_report_period);
+                cloud_exec.set_period_ms(desired_report_period);
         }
-        supervisor->tick_safety();
-        supervisor->tick_recovery();
+        if (current_state == "ExecutingMission" && nav->get_pose().spin_free_detected) {
+            controller->post_fault(robot::app::FaultFact{
+                robot::app::FaultSource::FaultDetector,
+                robot::domain::FaultCode::kWheelSpinFree,
+                "wheel_spin_free"});
+            nav->clear_spin_detection();
+        }
+        if (current_state == "Recovering") {
+            const auto recovery_result = recovery->step();
+            if (recovery_result == robot::service::RecoveryMotion::Result::Done) {
+                controller->post_recovery_finished(true);
+            } else if (recovery_result == robot::service::RecoveryMotion::Result::Failed) {
+                controller->post_recovery_finished(false);
+            }
+        }
+        controller->post_tick();
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 
@@ -596,6 +634,7 @@ int main() {
     cloud_exec.stop();
     safety_monitor.stop();
     watchdog.stop();
+    controller->stop();
     motion->emergency_stop();
     brush_motor->close();
     walk_group->close();

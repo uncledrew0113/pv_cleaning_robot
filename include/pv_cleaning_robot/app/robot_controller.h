@@ -75,8 +75,10 @@ public:
     void post_watchdog_timeout(std::string thread_name);
     void post_recovery_finished(bool ok);
     void post_schedule_window_hit();
+    void post_fault(FaultFact fact);
     void post_tick();
 
+    void complete_self_check(bool ok);
     void complete_self_check_for_test(bool ok);
     void handle_limit_settled_for_test(domain::Endpoint endpoint);
     void handle_fault_for_test(const FaultFact& fact);
@@ -98,6 +100,7 @@ private:
                                                       domain::PositionState position_state) const;
     CommandResult stop_locked();
     bool start_current_segment_locked();
+    void complete_self_check_locked(bool ok);
     void handle_limit_settled_locked(domain::Endpoint endpoint);
     void handle_limit_unstable_locked(domain::Endpoint endpoint);
     void handle_watchdog_timeout_locked(const std::string& thread_name);

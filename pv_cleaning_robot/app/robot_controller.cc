@@ -107,6 +107,13 @@ void RobotController::post_schedule_window_hit() {
     });
 }
 
+void RobotController::post_fault(FaultFact fact) {
+    post([this, fact = std::move(fact)] {
+        std::lock_guard<std::mutex> lk(mtx_);
+        handle_fault_locked(fact);
+    });
+}
+
 void RobotController::post_tick() {
     post([] {});
 }
@@ -356,8 +363,26 @@ RobotControllerSnapshot RobotController::snapshot() const {
     return snap;
 }
 
+void RobotController::complete_self_check(bool ok) {
+    if (ok) {
+        post([this] {
+            std::lock_guard<std::mutex> lk(mtx_);
+            complete_self_check_locked(true);
+        });
+        return;
+    }
+    post([this] {
+        std::lock_guard<std::mutex> lk(mtx_);
+        complete_self_check_locked(false);
+    });
+}
+
 void RobotController::complete_self_check_for_test(bool ok) {
     std::lock_guard<std::mutex> lk(mtx_);
+    complete_self_check_locked(ok);
+}
+
+void RobotController::complete_self_check_locked(bool ok) {
     if (state_ != RobotState::SelfChecking) {
         return;
     }
