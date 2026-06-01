@@ -191,7 +191,7 @@ TEST_CASE("HeadingCorrector: primary dock B toward B yaw<0 slows top and speeds 
     REQUIRE(out.speed_command.rb_rpm == Approx(101.0f));
 }
 
-TEST_CASE("HeadingCorrector: primary dock A mirrors primary dock B yaw direction",
+TEST_CASE("HeadingCorrector: correction direction depends on target, not primary dock",
           "[service][heading_pid]") {
     LocalUdsServer server(unique_socket_path());
     HeadingCorrector ctrl(test_params(server.path));
@@ -202,19 +202,19 @@ TEST_CASE("HeadingCorrector: primary dock A mirrors primary dock B yaw direction
 
     auto out = ctrl.compute(make_input(Endpoint::B, Endpoint::A));
     REQUIRE(out.has_speed_command);
-    REQUIRE(out.correction_rpm == Approx(1.0f));
-    REQUIRE(out.speed_command.lt_rpm == Approx(-99.0f));
-    REQUIRE(out.speed_command.rt_rpm == Approx(-99.0f));
-    REQUIRE(out.speed_command.lb_rpm == Approx(101.0f));
-    REQUIRE(out.speed_command.rb_rpm == Approx(101.0f));
+    REQUIRE(out.correction_rpm == Approx(-1.0f));
+    REQUIRE(out.speed_command.lt_rpm == Approx(-101.0f));
+    REQUIRE(out.speed_command.rt_rpm == Approx(-101.0f));
+    REQUIRE(out.speed_command.lb_rpm == Approx(99.0f));
+    REQUIRE(out.speed_command.rb_rpm == Approx(99.0f));
 
     out = ctrl.compute(make_input(Endpoint::A, Endpoint::A));
     REQUIRE(out.has_speed_command);
-    REQUIRE(out.correction_rpm == Approx(1.0f));
-    REQUIRE(out.speed_command.lt_rpm == Approx(101.0f));
-    REQUIRE(out.speed_command.rt_rpm == Approx(101.0f));
-    REQUIRE(out.speed_command.lb_rpm == Approx(-99.0f));
-    REQUIRE(out.speed_command.rb_rpm == Approx(-99.0f));
+    REQUIRE(out.correction_rpm == Approx(-1.0f));
+    REQUIRE(out.speed_command.lt_rpm == Approx(99.0f));
+    REQUIRE(out.speed_command.rt_rpm == Approx(99.0f));
+    REQUIRE(out.speed_command.lb_rpm == Approx(-101.0f));
+    REQUIRE(out.speed_command.rb_rpm == Approx(-101.0f));
 }
 
 TEST_CASE("HeadingCorrector: stale or invalid samples fall back to base command",

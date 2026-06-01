@@ -20,22 +20,20 @@ constexpr float kWheelRpmLimit = 210.0f;
 constexpr std::chrono::milliseconds kIoSleepDisabled(50);
 constexpr std::chrono::milliseconds kIoPollInterval(20);
 
-float normalize_yaw_to_control_error(robot::domain::Endpoint primary_dock,
-                                     robot::domain::TravelDirection /*travel_direction*/,
+float normalize_yaw_to_control_error(robot::domain::Endpoint /*primary_dock*/,
+                                     robot::domain::TravelDirection travel_direction,
                                      float raw_yaw_deg) {
-    // 原始 yaw 的正负先表示视觉识别给出的纠偏方向真相。
-    //
-    // 当前视觉纠偏标定以主停机端为镜像基准：
-    // - primary_dock=B 时，视觉 yaw 正向需要转换为负控制误差；
-    // - primary_dock=A 时，整机镜像，符号整体反向。
-    // 具体行走方向已经体现在 base_command 的四轮符号里。
-    switch (primary_dock) {
-    case robot::domain::Endpoint::B:
+    // UDS yaw 的纠偏含义只与当前运动方向有关，不与停机端配置有关：
+    // - 去 A：yaw>0 时上轨道轮绝对值减小、下轨道轮绝对值增大；
+    // - 去 B：yaw>0 时上轨道轮绝对值增大、下轨道轮绝对值减小。
+    // 当前四轮 base_command 已按目标方向设置正负号，因此两种方向都需要
+    // 将 yaw>0 转换成负 correction。
+    switch (travel_direction) {
+    case robot::domain::TravelDirection::AToB:
+    case robot::domain::TravelDirection::BToA:
         return -raw_yaw_deg;
-    case robot::domain::Endpoint::A:
-        return raw_yaw_deg;
     }
-    return raw_yaw_deg;
+    return -raw_yaw_deg;
 }
 
 }  // namespace
