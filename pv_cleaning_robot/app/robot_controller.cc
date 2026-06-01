@@ -403,6 +403,13 @@ void RobotController::handle_limit_settled_for_test(domain::Endpoint endpoint) {
 void RobotController::handle_limit_settled_locked(domain::Endpoint endpoint) {
     namespace FaultCode = robot::domain::FaultCode;
 
+    if (state_ == RobotState::Idle ||
+        state_ == RobotState::SelfChecking ||
+        state_ == RobotState::FaultStopped ||
+        state_ == RobotState::Charging) {
+        return;
+    }
+
     if (state_ != RobotState::ExecutingMission || !mission_) {
         active_fault_ = FaultCode::kUnexpectedLimitSide;
         mission_.reset();

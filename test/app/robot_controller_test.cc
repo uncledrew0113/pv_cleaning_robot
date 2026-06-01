@@ -158,6 +158,34 @@ TEST_CASE("RobotController unexpected endpoint enters FaultStopped",
     REQUIRE(controller.snapshot().fault.has_value());
 }
 
+TEST_CASE("RobotController ignores settled endpoint while idle", "[app][robot_controller]") {
+    RobotController controller;
+
+    controller.handle_limit_settled_for_test(robot::domain::Endpoint::A);
+
+    REQUIRE(controller.snapshot().state == "Idle");
+    REQUIRE_FALSE(controller.snapshot().fault.has_value());
+}
+
+TEST_CASE("RobotController settled endpoint during recovery enters FaultStopped",
+          "[app][robot_controller]") {
+    RobotController controller;
+    REQUIRE(controller
+                .submit_command(RobotCommand{
+                    RobotCommandKind::StartConfiguredMission, CommandSource::Rpc, "cmd-1"})
+                .accepted);
+    controller.complete_self_check_for_test(true);
+    controller.handle_fault_for_test(robot::app::FaultFact{
+        robot::app::FaultSource::FaultDetector,
+        robot::domain::FaultCode::kTransientAttitudeError,
+        "tilt"});
+
+    controller.handle_limit_settled_for_test(robot::domain::Endpoint::A);
+
+    REQUIRE(controller.snapshot().state == "FaultStopped");
+    REQUIRE(controller.snapshot().fault == robot::domain::FaultCode::kUnexpectedLimitSide);
+}
+
 TEST_CASE("RobotController P0 fault enters FaultStopped and reset returns Idle",
           "[app][robot_controller]") {
     RobotController controller;
