@@ -12,6 +12,27 @@ using robot::domain::CommandSource;
 using robot::domain::RobotCommand;
 using robot::domain::RobotCommandKind;
 
+struct RecordingRobotActions {
+    int start_segment_count{0};
+    int stop_count{0};
+    int emergency_stop_count{0};
+    int start_recovery_count{0};
+    int clear_fault_count{0};
+
+    robot::app::RobotController::ActionPorts ports() {
+        robot::app::RobotController::ActionPorts result;
+        result.start_segment = [this](const robot::domain::MissionSegment&) {
+            ++start_segment_count;
+            return true;
+        };
+        result.stop_motion = [this] { ++stop_count; };
+        result.emergency_stop = [this] { ++emergency_stop_count; };
+        result.start_recovery = [this] { ++start_recovery_count; };
+        result.clear_fault = [this] { ++clear_fault_count; };
+        return result;
+    }
+};
+
 TEST_CASE("RobotController starts configured mission through SelfChecking",
           "[app][robot_controller]") {
     RobotController controller;
@@ -163,4 +184,36 @@ TEST_CASE("RobotController recoverable fault enters Recovering from ExecutingMis
         "tilt"});
 
     REQUIRE(controller.snapshot().state == "Recovering");
+}
+
+TEST_CASE("RobotController starts motion after successful self check",
+          "[app][robot_controller]") {
+    RecordingRobotActions actions;
+    RobotController controller(actions.ports());
+
+    REQUIRE(controller
+                .submit_command(RobotCommand{
+                    RobotCommandKind::StartConfiguredMission, CommandSource::Rpc, "cmd-1"})
+                .accepted);
+    controller.complete_self_check_for_test(true);
+
+    REQUIRE(actions.start_segment_count == 1);
+}
+
+TEST_CASE("RobotController converts motion start failure into FaultStopped",
+          "[app][robot_controller]") {
+    RecordingRobotActions actions;
+    auto ports = actions.ports();
+    ports.start_segment = [](const robot::domain::MissionSegment&) { return false; };
+    RobotController controller(ports);
+
+    REQUIRE(controller
+                .submit_command(RobotCommand{
+                    RobotCommandKind::StartConfiguredMission, CommandSource::Rpc, "cmd-1"})
+                .accepted);
+    controller.complete_self_check_for_test(true);
+
+    REQUIRE(controller.snapshot().state == "FaultStopped");
+    REQUIRE(controller.snapshot().fault == robot::domain::FaultCode::kSegmentStartFailed);
+    REQUIRE(actions.emergency_stop_count == 1);
 }

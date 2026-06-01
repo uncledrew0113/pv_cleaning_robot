@@ -1,8 +1,11 @@
 #include "pv_cleaning_robot/app/robot_controller.h"
 
 #include <chrono>
+#include <utility>
 
 namespace robot::app {
+
+RobotController::RobotController(ActionPorts ports) : actions_(std::move(ports)) {}
 
 RobotController::~RobotController() {
     stop();
@@ -143,6 +146,9 @@ CommandResult RobotController::submit_command_locked(const domain::RobotCommand&
         }
         active_fault_.reset();
         mission_.reset();
+        if (actions_.clear_fault) {
+            actions_.clear_fault();
+        }
         state_ = RobotState::Idle;
         return {true, "accepted"};
     }
@@ -187,9 +193,38 @@ CommandResult RobotController::stop_locked() {
     if (!mission_active()) {
         return {false, "not_running"};
     }
+    if (actions_.stop_motion) {
+        actions_.stop_motion();
+    }
     mission_.reset();
     state_ = RobotState::Idle;
     return {true, "accepted"};
+}
+
+bool RobotController::start_current_segment_locked() {
+    namespace FaultCode = robot::domain::FaultCode;
+    if (!mission_) {
+        active_fault_ = FaultCode::kTaskContextInconsistent;
+        state_ = RobotState::FaultStopped;
+        return false;
+    }
+    const auto* segment = mission_->current_segment();
+    if (segment == nullptr) {
+        active_fault_ = FaultCode::kTaskContextInconsistent;
+        mission_.reset();
+        state_ = RobotState::FaultStopped;
+        return false;
+    }
+    if (actions_.start_segment && !actions_.start_segment(*segment)) {
+        active_fault_ = FaultCode::kSegmentStartFailed;
+        mission_.reset();
+        state_ = RobotState::FaultStopped;
+        if (actions_.emergency_stop) {
+            actions_.emergency_stop();
+        }
+        return false;
+    }
+    return true;
 }
 
 RobotControllerSnapshot RobotController::snapshot() const {
@@ -214,6 +249,7 @@ void RobotController::complete_self_check_for_test(bool ok) {
         return;
     }
     state_ = RobotState::ExecutingMission;
+    start_current_segment_locked();
 }
 
 void RobotController::handle_limit_settled_for_test(domain::Endpoint endpoint) {
@@ -251,6 +287,7 @@ void RobotController::handle_limit_settled_locked(domain::Endpoint endpoint) {
     }
     mission_->current_segment_index = 0;
     state_ = RobotState::ExecutingMission;
+    start_current_segment_locked();
 }
 
 void RobotController::handle_fault_for_test(const FaultFact& fact) {
@@ -271,6 +308,12 @@ void RobotController::handle_fault_locked(const FaultFact& fact) {
         return;
     case FaultAction::StartRecovery:
         if (state_ == RobotState::ExecutingMission && mission_) {
+            if (actions_.stop_motion) {
+                actions_.stop_motion();
+            }
+            if (actions_.start_recovery) {
+                actions_.start_recovery();
+            }
             state_ = RobotState::Recovering;
         }
         return;
@@ -278,6 +321,9 @@ void RobotController::handle_fault_locked(const FaultFact& fact) {
         active_fault_ = fact.code;
         mission_.reset();
         state_ = RobotState::FaultStopped;
+        if (actions_.emergency_stop) {
+            actions_.emergency_stop();
+        }
         return;
     }
 }

@@ -37,6 +37,16 @@ struct RobotControllerSnapshot {
 
 class RobotController {
 public:
+    struct ActionPorts {
+        std::function<bool(const domain::MissionSegment&)> start_segment;
+        std::function<void()> stop_motion;
+        std::function<void()> emergency_stop;
+        std::function<void()> start_recovery;
+        std::function<void()> clear_fault;
+    };
+
+    RobotController() = default;
+    explicit RobotController(ActionPorts ports);
     ~RobotController();
 
     void start();
@@ -59,6 +69,7 @@ private:
     CommandResult submit_command_locked(const domain::RobotCommand& command);
     CommandResult start_command_locked(const domain::RobotCommand& command);
     CommandResult stop_locked();
+    bool start_current_segment_locked();
     void handle_limit_settled_locked(domain::Endpoint endpoint);
     void handle_fault_locked(const FaultFact& fact);
 
@@ -67,6 +78,7 @@ private:
     std::optional<domain::MissionContext> mission_;
     std::optional<uint32_t> active_fault_;
     FaultPolicy fault_policy_;
+    ActionPorts actions_{};
 
     mutable std::mutex queue_mtx_;
     std::condition_variable queue_cv_;
