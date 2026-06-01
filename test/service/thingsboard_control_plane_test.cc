@@ -168,20 +168,18 @@ struct Fixture {
 
 }  // namespace
 
-TEST_CASE("ThingsBoardControlPlane shared attributes update pending config and emit event",
+TEST_CASE("ThingsBoardControlPlane shared attributes update pending config without status event",
           "[service][tb_control_plane]") {
     Fixture f;
     f.control_plane->subscribe_shared_attributes();
 
+    const auto telemetry_count_before = f.mqtt->published.size();
     f.mqtt->emit_attributes(R"({"repeat_count":2})");
 
     const auto pending = f.cfg.pending_runtime_config();
     REQUIRE(pending.has_value());
     CHECK(pending->repeat_count == 2u);
-
-    const auto j = f.last_published_json("telemetry");
-    CHECK(std::string(j["event"].GetString()) == "shared_attr_update");
-    CHECK(std::string(j["code"].GetString()) == "ok");
+    CHECK(f.mqtt->published.size() == telemetry_count_before);
 }
 
 TEST_CASE("ThingsBoardControlPlane publishes startup attributes", "[service][tb_control_plane]") {

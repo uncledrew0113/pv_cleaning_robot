@@ -138,20 +138,6 @@ size_t ThingsBoardJsonCodec::build_startup_attributes(const StartupAttributesVie
     return stream.overflow() ? 0u : stream.size();
 }
 
-size_t ThingsBoardJsonCodec::build_status_event(const StatusEventView& view,
-                                                char* out,
-                                                size_t cap) noexcept {
-    RapidJsonFixedBufferStream stream(out, cap);
-    rapidjson::Writer<RapidJsonFixedBufferStream> writer(stream);
-    writer.StartObject();
-    writer.Key("event");
-    writer.String(view.event_name ? view.event_name : "");
-    writer.Key("code");
-    writer.String(view.code ? view.code : "ok");
-    writer.EndObject();
-    return stream.overflow() ? 0u : stream.size();
-}
-
 size_t ThingsBoardJsonCodec::build_business_telemetry(const domain::RobotRuntimeSnapshot& view,
                                                       char* out,
                                                       size_t cap) noexcept {
@@ -192,8 +178,6 @@ void ThingsBoardControlPlane::subscribe_shared_attributes() {
     // 每次 cloud 收到共享属性变化后，将调用 apply_shared_attributes 进行校验和持久化。
     cloud_->subscribe_shared_attributes([this](const rapidjson::Document& attrs) {
         const auto result = config_.apply_runtime_patch(attrs, scheduler_);
-        const auto code = result.accepted ? "ok" : result.reason.c_str();
-        publish_status_event("shared_attr_update", code);
         if (!result.accepted) {
             spdlog::warn("[ThingsBoardControlPlane] 共享属性更新被拒绝: {}", result.reason);
         }
@@ -226,21 +210,6 @@ void ThingsBoardControlPlane::register_rpc_handlers() {
     register_command_rpc("fault_reset", domain::RobotCommandKind::FaultReset);
 }
 
-void ThingsBoardControlPlane::publish_backup_fallback_event() const {
-    // 发布 backup 回退事件，说明主配置加载失败，系统已使用备份启动。
-    std::lock_guard<std::mutex> lk(publish_mtx_);
-    const size_t len = ThingsBoardJsonCodec::build_status_event(
-        {"config_backup_fallback", "loaded_from_backup"},
-        event_payload_buf_.data(),
-        event_payload_buf_.size());
-    if (!publish_event_payload(
-            len,
-            "[ThingsBoardControlPlane] failed to build config_backup_fallback event payload")) {
-        return;
-    }
-    spdlog::warn("[ThingsBoardControlPlane] 主配置加载失败，已从 backup 配置回退启动");
-}
-
 void ThingsBoardControlPlane::publish_startup_attributes() const {
     // 发布设备启动属性，用于 ThingsBoard 设备连接后读取静态信息。
     std::lock_guard<std::mutex> lk(publish_mtx_);
@@ -259,15 +228,6 @@ void ThingsBoardControlPlane::publish_startup_attributes() const {
         event_payload_buf_.size());
     publish_attributes_payload(
         len, "[ThingsBoardControlPlane] failed to build startup attributes payload");
-}
-
-void ThingsBoardControlPlane::publish_status_event(const char* event_name,
-                                                   const char* code) const {
-    // 发布通用状态事件，通常用于 shared attribute 更新结果等。
-    std::lock_guard<std::mutex> lk(publish_mtx_);
-    const size_t len = ThingsBoardJsonCodec::build_status_event(
-        {event_name, code}, event_payload_buf_.data(), event_payload_buf_.size());
-    publish_event_payload(len, "[ThingsBoardControlPlane] failed to build status event payload");
 }
 
 void ThingsBoardControlPlane::publish_business_telemetry() const {
@@ -324,16 +284,6 @@ void ThingsBoardControlPlane::register_command_rpc(const char* method,
         spdlog::info("[ThingsBoardControlPlane] RPC {} accepted", method);
         return accept_rpc_command(method, request_id);
     });
-}
-
-bool ThingsBoardControlPlane::publish_event_payload(size_t len, const char* error_message) const {
-    if (len == 0u) {
-        spdlog::error("{}", error_message);
-        return false;
-    }
-    event_payload_cache_.assign(event_payload_buf_.data(), len);
-    cloud_->publish_telemetry(event_payload_cache_);
-    return true;
 }
 
 bool ThingsBoardControlPlane::publish_business_payload(size_t len,

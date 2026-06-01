@@ -83,7 +83,6 @@ static void signal_handler(int /*sig*/) {
 namespace {
 
 void publish_startup_position_status(
-    const std::shared_ptr<robot::service::ThingsBoardControlPlane>& tb_control,
     const std::shared_ptr<robot::app::RobotSupervisor>& supervisor,
     const std::shared_ptr<spdlog::logger>& log,
     const robot::app::RobotSupervisor::StartupPositionAssessment& startup_position) {
@@ -91,7 +90,6 @@ void publish_startup_position_status(
     if (reason == "ok") {
         return;
     }
-    tb_control->publish_status_event("startup_position_invalid", startup_position.status_reason);
     if (reason == "dual_endpoint_active") {
         log->warn("[Main] 启动位置异常：A/B 两端同时触发，禁止启动清扫");
         return;
@@ -438,14 +436,13 @@ int main() {
     if (net_mgr->is_connected()) {
         tb_control->request_shared_attributes_snapshot();
         if (cfg.last_load_used_backup()) {
-            tb_control->publish_backup_fallback_event();
+            log->warn("[Main] 主配置加载失败，已从 backup 配置回退启动");
         }
         tb_control->publish_startup_attributes();
         log->info("[Main] 设备静态属性已发布至云端");
     }
 
     publish_startup_position_status(
-        tb_control,
         supervisor,
         log,
         supervisor->handle_startup_position(startup_left_limit_active, startup_right_limit_active));

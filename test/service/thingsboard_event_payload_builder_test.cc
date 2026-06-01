@@ -32,18 +32,3 @@ TEST_CASE("ThingsBoardJsonCodec emits startup attributes payload", "[service][tb
     CHECK(std::string(payload["device_id"].GetString()) == "pv_robot_test_001");
     CHECK(payload.MemberCount() == 4);
 }
-
-TEST_CASE("ThingsBoardJsonCodec emits shared-attribute style status event",
-          "[service][tb_json_codec]") {
-    char out[512];
-    robot::service::ThingsBoardJsonCodec::StatusEventView view{
-        "shared_attr_update", "ok"};
-
-    const size_t len =
-        robot::service::ThingsBoardJsonCodec::build_status_event(view, out, sizeof(out));
-
-    REQUIRE(len > 0);
-    const auto payload = parse_json(out, len);
-    CHECK(std::string(payload["event"].GetString()) == "shared_attr_update");
-    CHECK(std::string(payload["code"].GetString()) == "ok");
-}

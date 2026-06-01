@@ -42,15 +42,9 @@ public:
         const char* device_id{""};
     };
 
-    struct StatusEventView {
-        const char* event_name{""};
-        const char* code{""};
-    };
-
     static size_t build_startup_attributes(const StartupAttributesView& view,
                                            char* out,
                                            size_t cap) noexcept;
-    static size_t build_status_event(const StatusEventView& view, char* out, size_t cap) noexcept;
     static size_t build_business_telemetry(const domain::RobotRuntimeSnapshot& view,
                                            char* out,
                                            size_t cap) noexcept;
@@ -64,7 +58,6 @@ public:
 ///   - 注册 RPC handlers
 /// - egress:
 ///   - 发布 startup attributes
-///   - 发布 status event
 ///   - 发布 business telemetry
 ///
 /// 它不自己维护业务真相：
@@ -87,9 +80,7 @@ public:
     /// 注册当前 release 支持的机器人 RPC: clean_to_return / clean_to_parking /
     /// start_configured / stop / fault_reset。
     void register_rpc_handlers();
-    void publish_backup_fallback_event() const;
     void publish_startup_attributes() const;
-    void publish_status_event(const char* event_name, const char* code) const;
     void publish_business_telemetry() const;
 
 private:
@@ -98,7 +89,6 @@ private:
 
     static std::string rpc_reply(const std::string& code);
     bool publish_attributes_payload(size_t len, const char* error_message) const;
-    bool publish_event_payload(size_t len, const char* error_message) const;
     bool publish_business_payload(size_t len, const char* error_message) const;
     void register_command_rpc(const char* method, domain::RobotCommandKind kind);
     std::string reject_rpc_command(const char* command_name,
