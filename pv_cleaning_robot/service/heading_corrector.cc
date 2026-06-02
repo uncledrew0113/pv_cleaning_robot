@@ -16,7 +16,7 @@ namespace robot::service {
 
 namespace {
 
-constexpr float kWheelRpmLimit = 210.0f;
+constexpr float kWheelRpmLimit = 50.0f;
 constexpr std::chrono::milliseconds kIoSleepDisabled(50);
 constexpr std::chrono::milliseconds kIoPollInterval(20);
 
@@ -181,7 +181,7 @@ float HeadingCorrector::low_pass(float previous, float sample, float alpha) {
 HeadingCorrector::SpeedCommand HeadingCorrector::apply_correction(const SpeedCommand& base,
                                                                   float correction_rpm) {
     SpeedCommand corrected = base;
-    auto adjust_lower = [](float base_rpm, float correction) {
+    auto adjust_wheel = [](float base_rpm, float correction) {
         if (base_rpm > 0.0f) {
             return clamp(base_rpm + correction, 0.0f, kWheelRpmLimit);
         }
@@ -191,9 +191,11 @@ HeadingCorrector::SpeedCommand HeadingCorrector::apply_correction(const SpeedCom
         return 0.0f;
     };
 
-    // 与 lower_uds_zero 硬件验证一致：上轨道轮保持基础速度，只通过下轨道轮加减速纠偏。
-    corrected.lb_rpm = adjust_lower(base.lb_rpm, correction_rpm);
-    corrected.rb_rpm = adjust_lower(base.rb_rpm, correction_rpm);
+    // 上下轨道共同参与纠偏：由于两条轨道基础转向相反，同一 correction 会形成轨道差速。
+    corrected.lt_rpm = adjust_wheel(base.lt_rpm, correction_rpm);
+    corrected.rt_rpm = adjust_wheel(base.rt_rpm, correction_rpm);
+    corrected.lb_rpm = adjust_wheel(base.lb_rpm, correction_rpm);
+    corrected.rb_rpm = adjust_wheel(base.rb_rpm, correction_rpm);
     return corrected;
 }
 

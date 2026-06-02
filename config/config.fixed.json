@@ -38,6 +38,8 @@
   "gpio": {
     "left_limit": { "chip": "gpiochip5", "line": 0 },
     "right_limit": { "chip": "gpiochip5", "line": 1 },
+    "left_attitude_limit": { "chip": "gpiochip5", "line": 2 },
+    "right_attitude_limit": { "chip": "gpiochip5", "line": 3 },
     "use_irq": false
   },
   "network": {

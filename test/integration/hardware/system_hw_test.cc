@@ -11,6 +11,7 @@
  *   [hw_system][lower_pitch_peak] - 下轨道轮低速采样 IMU 姿态峰值
  *   [hw_system][lower_pitch_score]- 下轨道轮低速采样姿态评分
  *   [hw_system][lower_uds_zero]   - 上轮 0 速，仅调下轮使 UDS yaw 进入死区
+ *   [hw_system][lower_attitude_center] - 通过左右下接近边界估算姿态中点
  *   [hw_system][watchdog_timeout] - 看门狗超时回调
  *   [hw_system][watchdog_heartbeat] - 看门狗正常心跳不误报
  *   [hw_system][p0_fault_chain]   - P0 故障链路：急停 + FaultStopped + 云端复位
@@ -730,6 +731,257 @@ float compute_lower_uds_zero_cmd(float raw_yaw_deg,
     return raw_yaw_deg > 0.0f ? -rpm : rpm;
 }
 
+struct LowerAttitudeCenterPlan {
+    robot::device::AttitudeLimitSide release_side{robot::device::AttitudeLimitSide::LEFT_LOWER};
+    robot::device::AttitudeLimitSide opposite_side{robot::device::AttitudeLimitSide::RIGHT_LOWER};
+    float initial_lower_rpm{0.0f};
+    float return_lower_rpm{0.0f};
+};
+
+enum class LowerAttitudeState {
+    NONE,
+    LEFT,
+    RIGHT,
+    BOTH,
+};
+
+const char* attitude_side_name(robot::device::AttitudeLimitSide side) {
+    return side == robot::device::AttitudeLimitSide::LEFT_LOWER ? "LEFT_LOWER" : "RIGHT_LOWER";
+}
+
+LowerAttitudeCenterPlan make_lower_attitude_center_plan(
+    robot::device::AttitudeLimitSide active_side,
+    float lower_rpm) {
+    const float rpm = std::abs(lower_rpm);
+    if (active_side == robot::device::AttitudeLimitSide::LEFT_LOWER) {
+        return {robot::device::AttitudeLimitSide::LEFT_LOWER,
+                robot::device::AttitudeLimitSide::RIGHT_LOWER,
+                rpm,
+                -rpm};
+    }
+    return {robot::device::AttitudeLimitSide::RIGHT_LOWER,
+            robot::device::AttitudeLimitSide::LEFT_LOWER,
+            -rpm,
+            rpm};
+}
+
+LowerAttitudeState classify_lower_attitude_state(
+    const robot::device::AttitudeLimitSwitch::Status& left,
+    const robot::device::AttitudeLimitSwitch::Status& right) {
+    if (left.active_low_asserted && right.active_low_asserted) {
+        return LowerAttitudeState::BOTH;
+    }
+    if (left.active_low_asserted) {
+        return LowerAttitudeState::LEFT;
+    }
+    if (right.active_low_asserted) {
+        return LowerAttitudeState::RIGHT;
+    }
+    return LowerAttitudeState::NONE;
+}
+
+std::optional<robot::device::AttitudeLimitSide> active_side_from_state(LowerAttitudeState state) {
+    if (state == LowerAttitudeState::LEFT) {
+        return robot::device::AttitudeLimitSide::LEFT_LOWER;
+    }
+    if (state == LowerAttitudeState::RIGHT) {
+        return robot::device::AttitudeLimitSide::RIGHT_LOWER;
+    }
+    return std::nullopt;
+}
+
+robot::device::AttitudeLimitSwitch::Status read_attitude_status(
+    robot::device::AttitudeLimitSide side,
+    robot::device::AttitudeLimitSwitch& left_sw,
+    robot::device::AttitudeLimitSwitch& right_sw) {
+    return side == robot::device::AttitudeLimitSide::LEFT_LOWER ? left_sw.read_status()
+                                                                : right_sw.read_status();
+}
+
+void log_attitude_status(const char* tag,
+                         const robot::device::AttitudeLimitSwitch::Status& left,
+                         const robot::device::AttitudeLimitSwitch::Status& right) {
+    spdlog::info("{} left(level={} active={} triggered={}) right(level={} active={} triggered={})",
+                 tag,
+                 left.level_high ? "high" : "low",
+                 left.active_low_asserted,
+                 left.triggered,
+                 right.level_high ? "high" : "low",
+                 right.active_low_asserted,
+                 right.triggered);
+}
+
+void command_lower_wheels(robot::device::WalkMotorGroup& group, float lower_rpm) {
+    REQUIRE(group.set_speeds(0.0f, 0.0f, lower_rpm, lower_rpm) == robot::device::DeviceError::OK);
+    group.update();
+}
+
+void run_lower_attitude_center_test() {
+    hw::DeviceFixture f;
+    REQUIRE(f.walk_group->open() == robot::device::DeviceError::OK);
+    WalkImuStopGuard guard(*f.walk_group);
+
+    auto left_gpio =
+        std::make_shared<robot::driver::LibGpiodPin>(kp.gpio_chip, kp.left_attitude_limit_line);
+    auto right_gpio =
+        std::make_shared<robot::driver::LibGpiodPin>(kp.gpio_chip, kp.right_attitude_limit_line);
+    robot::device::AttitudeLimitSwitch left_sw(left_gpio,
+                                               robot::device::AttitudeLimitSide::LEFT_LOWER);
+    robot::device::AttitudeLimitSwitch right_sw(right_gpio,
+                                                robot::device::AttitudeLimitSide::RIGHT_LOWER);
+
+    REQUIRE(left_sw.open(0, 2, 0, false));
+    REQUIRE(right_sw.open(0, 2, 0, false));
+    REQUIRE(f.walk_group->set_feedback_mode_all(10u) == robot::device::DeviceError::OK);
+    REQUIRE(f.walk_group->enable_all() == robot::device::DeviceError::OK);
+    REQUIRE(f.walk_group->set_mode_all(robot::protocol::WalkMotorMode::SPEED) ==
+            robot::device::DeviceError::OK);
+
+    constexpr float lower_rpm = 5.0f;
+    constexpr int kStableSamplesRequired = 2;
+    constexpr auto kSearchTimeout = 30000ms;
+    constexpr auto kReleaseTimeout = 10000ms;
+    constexpr auto kOppositeTimeout = 30000ms;
+
+    spdlog::warn(
+        "[hw_system][lower_attitude_center] 任意单侧触发即可回中；无触发时先向 A 搜索左下边界；"
+        "双侧同时触发视为异常。测试将 LT/RT=0，仅驱动 LB/RB 低速回中");
+
+    auto initial_side = std::optional<robot::device::AttitudeLimitSide>{};
+    auto deadline = std::chrono::steady_clock::now() + kSearchTimeout;
+    bool search_started = false;
+    while (!hw::HwExitGuard::instance().exit_requested() &&
+           std::chrono::steady_clock::now() < deadline && !initial_side.has_value()) {
+        const auto left = left_sw.read_status();
+        const auto right = right_sw.read_status();
+        const auto state = classify_lower_attitude_state(left, right);
+        REQUIRE(state != LowerAttitudeState::BOTH);
+        initial_side = active_side_from_state(state);
+
+        if (!initial_side.has_value()) {
+            if (!search_started) {
+                search_started = true;
+                log_attitude_status(
+                    "[hw_system][lower_attitude_center][search_start]", left, right);
+                spdlog::info(
+                    "[hw_system][lower_attitude_center][search_start] lower_rpm={:.2f} dir=A "
+                    "timeout={}ms",
+                    lower_rpm,
+                    std::chrono::duration_cast<std::chrono::milliseconds>(kSearchTimeout).count());
+            }
+            command_lower_wheels(*f.walk_group, -lower_rpm);
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(kp.loop_period_ms));
+    }
+
+    command_lower_wheels(*f.walk_group, 0.0f);
+    REQUIRE_FALSE(hw::HwExitGuard::instance().exit_requested());
+    REQUIRE(initial_side.has_value());
+    log_attitude_status("[hw_system][lower_attitude_center][initial_found]",
+                        left_sw.read_status(),
+                        right_sw.read_status());
+
+    const auto plan = make_lower_attitude_center_plan(*initial_side, lower_rpm);
+    spdlog::info(
+        "[hw_system][lower_attitude_center] initial_side={} initial_lower_rpm={:.2f} "
+        "return_lower_rpm={:.2f}",
+        attitude_side_name(*initial_side),
+        plan.initial_lower_rpm,
+        plan.return_lower_rpm);
+
+    int stable_release_samples = 0;
+    auto release_at = std::chrono::steady_clock::time_point{};
+    deadline = std::chrono::steady_clock::now() + kReleaseTimeout;
+    spdlog::info(
+        "[hw_system][lower_attitude_center][release_start] side={} lower_rpm={:.2f} timeout={}ms",
+        attitude_side_name(plan.release_side),
+        plan.initial_lower_rpm,
+        std::chrono::duration_cast<std::chrono::milliseconds>(kReleaseTimeout).count());
+    while (!hw::HwExitGuard::instance().exit_requested() &&
+           std::chrono::steady_clock::now() < deadline &&
+           stable_release_samples < kStableSamplesRequired) {
+        command_lower_wheels(*f.walk_group, plan.initial_lower_rpm);
+        const auto status = read_attitude_status(plan.release_side, left_sw, right_sw);
+        if (!status.active_low_asserted) {
+            ++stable_release_samples;
+            if (release_at == std::chrono::steady_clock::time_point{}) {
+                release_at = std::chrono::steady_clock::now();
+            }
+        } else {
+            stable_release_samples = 0;
+            release_at = {};
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(kp.loop_period_ms));
+    }
+
+    REQUIRE_FALSE(hw::HwExitGuard::instance().exit_requested());
+    REQUIRE(release_at != std::chrono::steady_clock::time_point{});
+    {
+        const auto diag = f.walk_group->get_group_diagnostics();
+        spdlog::info(
+            "[hw_system][lower_attitude_center][released] side={} stable={}/{} "
+            "cmd=[{:.1f},{:.1f},{:.1f},{:.1f}] rpm=[{:.1f},{:.1f},{:.1f},{:.1f}]",
+            attitude_side_name(plan.release_side),
+            stable_release_samples,
+            kStableSamplesRequired,
+            diag.wheel[0].target_value,
+            diag.wheel[1].target_value,
+            diag.wheel[2].target_value,
+            diag.wheel[3].target_value,
+            diag.wheel[0].speed_rpm,
+            diag.wheel[1].speed_rpm,
+            diag.wheel[2].speed_rpm,
+            diag.wheel[3].speed_rpm);
+    }
+
+    auto opposite_at = std::chrono::steady_clock::time_point{};
+    deadline = std::chrono::steady_clock::now() + kOppositeTimeout;
+    spdlog::info(
+        "[hw_system][lower_attitude_center][opposite_start] side={} lower_rpm={:.2f} "
+        "timeout={}ms",
+        attitude_side_name(plan.opposite_side),
+        plan.initial_lower_rpm,
+        std::chrono::duration_cast<std::chrono::milliseconds>(kOppositeTimeout).count());
+    while (!hw::HwExitGuard::instance().exit_requested() &&
+           std::chrono::steady_clock::now() < deadline &&
+           opposite_at == std::chrono::steady_clock::time_point{}) {
+        command_lower_wheels(*f.walk_group, plan.initial_lower_rpm);
+        const auto status = read_attitude_status(plan.opposite_side, left_sw, right_sw);
+        if (status.active_low_asserted) {
+            opposite_at = std::chrono::steady_clock::now();
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(kp.loop_period_ms));
+    }
+
+    REQUIRE_FALSE(hw::HwExitGuard::instance().exit_requested());
+    REQUIRE(opposite_at != std::chrono::steady_clock::time_point{});
+    log_attitude_status("[hw_system][lower_attitude_center][opposite_triggered]",
+                        left_sw.read_status(),
+                        right_sw.read_status());
+
+    const auto span = opposite_at - release_at;
+    const auto return_duration = std::chrono::duration_cast<std::chrono::milliseconds>(span / 2);
+    spdlog::info(
+        "[hw_system][lower_attitude_center][return_start] release_to_opposite={}ms "
+        "return_half={}ms return_lower_rpm={:.2f}",
+        std::chrono::duration_cast<std::chrono::milliseconds>(span).count(),
+        return_duration.count(),
+        plan.return_lower_rpm);
+
+    deadline = std::chrono::steady_clock::now() + return_duration;
+    while (!hw::HwExitGuard::instance().exit_requested() &&
+           std::chrono::steady_clock::now() < deadline) {
+        command_lower_wheels(*f.walk_group, plan.return_lower_rpm);
+        std::this_thread::sleep_for(std::chrono::milliseconds(kp.loop_period_ms));
+    }
+
+    command_lower_wheels(*f.walk_group, 0.0f);
+    log_attitude_status(
+        "[hw_system][lower_attitude_center][done]", left_sw.read_status(), right_sw.read_status());
+    REQUIRE_FALSE(hw::HwExitGuard::instance().exit_requested());
+}
+
 void run_lower_uds_zero_test() {
     hw::DeviceFixture f;
     REQUIRE(f.walk_group->open() == robot::device::DeviceError::OK);
@@ -1328,8 +1580,46 @@ TEST_CASE("lower_uds_zero 调速随误差缩小并保持方向", "[hw_system][lo
     CHECK(compute_lower_uds_zero_cmd(10.0f, kDeadband, kMinRpm, kMaxRpm, kKp) == Approx(-5.0f));
 }
 
+TEST_CASE("lower_attitude_center 根据触发侧选择下轮方向",
+          "[hw_system][lower_attitude_center][logic]") {
+    const float rpm = 2.0f;
+    const robot::device::AttitudeLimitSwitch::Status none_left{
+        robot::device::AttitudeLimitSide::LEFT_LOWER, true, false, false};
+    const robot::device::AttitudeLimitSwitch::Status none_right{
+        robot::device::AttitudeLimitSide::RIGHT_LOWER, true, false, false};
+    const robot::device::AttitudeLimitSwitch::Status active_left{
+        robot::device::AttitudeLimitSide::LEFT_LOWER, false, true, false};
+    const robot::device::AttitudeLimitSwitch::Status active_right{
+        robot::device::AttitudeLimitSide::RIGHT_LOWER, false, true, false};
+
+    CHECK(classify_lower_attitude_state(none_left, none_right) == LowerAttitudeState::NONE);
+    CHECK(classify_lower_attitude_state(active_left, none_right) == LowerAttitudeState::LEFT);
+    CHECK(classify_lower_attitude_state(none_left, active_right) == LowerAttitudeState::RIGHT);
+    CHECK(classify_lower_attitude_state(active_left, active_right) == LowerAttitudeState::BOTH);
+    CHECK_FALSE(active_side_from_state(LowerAttitudeState::NONE).has_value());
+    CHECK_FALSE(active_side_from_state(LowerAttitudeState::BOTH).has_value());
+
+    const auto left_plan =
+        make_lower_attitude_center_plan(robot::device::AttitudeLimitSide::LEFT_LOWER, rpm);
+    CHECK(left_plan.initial_lower_rpm == Approx(2.0f));
+    CHECK(left_plan.return_lower_rpm == Approx(-2.0f));
+    CHECK(left_plan.release_side == robot::device::AttitudeLimitSide::LEFT_LOWER);
+    CHECK(left_plan.opposite_side == robot::device::AttitudeLimitSide::RIGHT_LOWER);
+
+    const auto right_plan =
+        make_lower_attitude_center_plan(robot::device::AttitudeLimitSide::RIGHT_LOWER, rpm);
+    CHECK(right_plan.initial_lower_rpm == Approx(-2.0f));
+    CHECK(right_plan.return_lower_rpm == Approx(2.0f));
+    CHECK(right_plan.release_side == robot::device::AttitudeLimitSide::RIGHT_LOWER);
+    CHECK(right_plan.opposite_side == robot::device::AttitudeLimitSide::LEFT_LOWER);
+}
+
 TEST_CASE("上轮 0 速仅调下轮使 UDS yaw 进入死区", "[hw_system][lower_uds_zero]") {
     run_lower_uds_zero_test();
+}
+
+TEST_CASE("上轮 0 速通过姿态接近边界回中", "[hw_system][lower_attitude_center]") {
+    run_lower_attitude_center_test();
 }
 
 TEST_CASE("WatchdogMgr 超时后触发回调", "[hw_system][watchdog_timeout]") {

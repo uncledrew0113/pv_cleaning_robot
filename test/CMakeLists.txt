@@ -24,6 +24,7 @@ set(COMMON_SRCS
   ${PROJ}/device/walk_motor_group.cc
   ${PROJ}/device/brush_motor.cc
   ${PROJ}/device/limit_switch.cc
+  ${PROJ}/device/attitude_limit_switch.cc
   ${PROJ}/device/distance_sensor.cc
 
   # 驱动层
@@ -82,6 +83,7 @@ add_executable(unit_tests
   device/walk_motor_group_test.cc
   device/brush_motor_test.cc
   device/limit_switch_test.cc
+  device/attitude_limit_switch_test.cc
   device/gps_device_test.cc
   device/distance_sensor_device_test.cc
 
@@ -145,6 +147,7 @@ add_executable(hw_tests
   integration/hardware/imu_hw_test.cc
   integration/hardware/gpsd_hw_test.cc
   integration/hardware/limit_switch_hw_test.cc
+  integration/hardware/attitude_limit_switch_hw_test.cc
   integration/hardware/walk_motor_group_hw_test.cc
   integration/hardware/distance_sensor_hw_test.cc
   integration/hardware/system_hw_test.cc

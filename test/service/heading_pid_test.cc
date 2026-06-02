@@ -125,7 +125,7 @@ TEST_CASE("HeadingCorrector: disabled controller outputs zero", "[service][headi
     REQUIRE_FALSE(out.has_speed_command);
 }
 
-TEST_CASE("HeadingCorrector: primary dock B toward A yaw>0 speeds bottom only",
+TEST_CASE("HeadingCorrector: primary dock B toward A yaw>0 splits correction across tracks",
           "[service][heading_pid]") {
     LocalUdsServer server(unique_socket_path());
     HeadingCorrector ctrl(test_params(server.path));
@@ -137,13 +137,13 @@ TEST_CASE("HeadingCorrector: primary dock B toward A yaw>0 speeds bottom only",
     const auto out = ctrl.compute(make_input(Endpoint::A));
     REQUIRE(out.has_speed_command);
     REQUIRE(out.correction_rpm == Approx(-1.0f));
-    REQUIRE(out.speed_command.lt_rpm == Approx(100.0f));
-    REQUIRE(out.speed_command.rt_rpm == Approx(100.0f));
+    REQUIRE(out.speed_command.lt_rpm == Approx(99.0f));
+    REQUIRE(out.speed_command.rt_rpm == Approx(99.0f));
     REQUIRE(out.speed_command.lb_rpm == Approx(-101.0f));
     REQUIRE(out.speed_command.rb_rpm == Approx(-101.0f));
 }
 
-TEST_CASE("HeadingCorrector: primary dock B toward A yaw<0 slows bottom only",
+TEST_CASE("HeadingCorrector: primary dock B toward A yaw<0 splits correction across tracks",
           "[service][heading_pid]") {
     LocalUdsServer server(unique_socket_path());
     HeadingCorrector ctrl(test_params(server.path));
@@ -155,13 +155,13 @@ TEST_CASE("HeadingCorrector: primary dock B toward A yaw<0 slows bottom only",
     const auto out = ctrl.compute(make_input(Endpoint::A));
     REQUIRE(out.has_speed_command);
     REQUIRE(out.correction_rpm == Approx(1.0f));
-    REQUIRE(out.speed_command.lt_rpm == Approx(100.0f));
-    REQUIRE(out.speed_command.rt_rpm == Approx(100.0f));
+    REQUIRE(out.speed_command.lt_rpm == Approx(101.0f));
+    REQUIRE(out.speed_command.rt_rpm == Approx(101.0f));
     REQUIRE(out.speed_command.lb_rpm == Approx(-99.0f));
     REQUIRE(out.speed_command.rb_rpm == Approx(-99.0f));
 }
 
-TEST_CASE("HeadingCorrector: primary dock B toward B yaw>0 slows bottom only",
+TEST_CASE("HeadingCorrector: primary dock B toward B yaw>0 splits correction across tracks",
           "[service][heading_pid]") {
     LocalUdsServer server(unique_socket_path());
     HeadingCorrector ctrl(test_params(server.path));
@@ -173,13 +173,13 @@ TEST_CASE("HeadingCorrector: primary dock B toward B yaw>0 slows bottom only",
     const auto out = ctrl.compute(make_input(Endpoint::B));
     REQUIRE(out.has_speed_command);
     REQUIRE(out.correction_rpm == Approx(-1.0f));
-    REQUIRE(out.speed_command.lt_rpm == Approx(-100.0f));
-    REQUIRE(out.speed_command.rt_rpm == Approx(-100.0f));
+    REQUIRE(out.speed_command.lt_rpm == Approx(-101.0f));
+    REQUIRE(out.speed_command.rt_rpm == Approx(-101.0f));
     REQUIRE(out.speed_command.lb_rpm == Approx(99.0f));
     REQUIRE(out.speed_command.rb_rpm == Approx(99.0f));
 }
 
-TEST_CASE("HeadingCorrector: primary dock B toward B yaw<0 speeds bottom only",
+TEST_CASE("HeadingCorrector: primary dock B toward B yaw<0 splits correction across tracks",
           "[service][heading_pid]") {
     LocalUdsServer server(unique_socket_path());
     HeadingCorrector ctrl(test_params(server.path));
@@ -191,8 +191,8 @@ TEST_CASE("HeadingCorrector: primary dock B toward B yaw<0 speeds bottom only",
     const auto out = ctrl.compute(make_input(Endpoint::B));
     REQUIRE(out.has_speed_command);
     REQUIRE(out.correction_rpm == Approx(1.0f));
-    REQUIRE(out.speed_command.lt_rpm == Approx(-100.0f));
-    REQUIRE(out.speed_command.rt_rpm == Approx(-100.0f));
+    REQUIRE(out.speed_command.lt_rpm == Approx(-99.0f));
+    REQUIRE(out.speed_command.rt_rpm == Approx(-99.0f));
     REQUIRE(out.speed_command.lb_rpm == Approx(101.0f));
     REQUIRE(out.speed_command.rb_rpm == Approx(101.0f));
 }
@@ -209,21 +209,21 @@ TEST_CASE("HeadingCorrector: correction direction depends on target, not primary
     auto out = ctrl.compute(make_input(Endpoint::B, Endpoint::A));
     REQUIRE(out.has_speed_command);
     REQUIRE(out.correction_rpm == Approx(-1.0f));
-    REQUIRE(out.speed_command.lt_rpm == Approx(-100.0f));
-    REQUIRE(out.speed_command.rt_rpm == Approx(-100.0f));
+    REQUIRE(out.speed_command.lt_rpm == Approx(-101.0f));
+    REQUIRE(out.speed_command.rt_rpm == Approx(-101.0f));
     REQUIRE(out.speed_command.lb_rpm == Approx(99.0f));
     REQUIRE(out.speed_command.rb_rpm == Approx(99.0f));
 
     out = ctrl.compute(make_input(Endpoint::A, Endpoint::A));
     REQUIRE(out.has_speed_command);
     REQUIRE(out.correction_rpm == Approx(-1.0f));
-    REQUIRE(out.speed_command.lt_rpm == Approx(100.0f));
-    REQUIRE(out.speed_command.rt_rpm == Approx(100.0f));
+    REQUIRE(out.speed_command.lt_rpm == Approx(99.0f));
+    REQUIRE(out.speed_command.rt_rpm == Approx(99.0f));
     REQUIRE(out.speed_command.lb_rpm == Approx(-101.0f));
     REQUIRE(out.speed_command.rb_rpm == Approx(-101.0f));
 }
 
-TEST_CASE("HeadingCorrector: bottom correction never reverses wheel direction",
+TEST_CASE("HeadingCorrector: correction never reverses wheel direction",
           "[service][heading_pid]") {
     LocalUdsServer server(unique_socket_path());
     HeadingCorrector ctrl(test_params(server.path));
@@ -234,8 +234,8 @@ TEST_CASE("HeadingCorrector: bottom correction never reverses wheel direction",
 
     const auto toward_a = ctrl.compute(make_input_with_speed(Endpoint::A, 5.0f));
     REQUIRE(toward_a.has_speed_command);
-    CHECK(toward_a.speed_command.lt_rpm == Approx(5.0f));
-    CHECK(toward_a.speed_command.rt_rpm == Approx(5.0f));
+    CHECK(toward_a.speed_command.lt_rpm == Approx(35.0f));
+    CHECK(toward_a.speed_command.rt_rpm == Approx(35.0f));
     CHECK(toward_a.speed_command.lb_rpm == Approx(0.0f));
     CHECK(toward_a.speed_command.rb_rpm == Approx(0.0f));
 }

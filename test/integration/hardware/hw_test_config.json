@@ -21,7 +21,9 @@
     "dist_channel_count":  2,
     "gpio_chip":           "gpiochip5",
     "left_limit_line":    0,
-    "right_limit_line":     1
+    "right_limit_line":     1,
+    "left_attitude_limit_line": 2,
+    "right_attitude_limit_line": 3
   },
   "timing": {
     "limit_timeout_sec":   60,

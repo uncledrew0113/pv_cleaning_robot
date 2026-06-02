@@ -13,7 +13,8 @@
  *   GPSD     : 127.0.0.1:2947（默认），由目标机 gpsd 服务提供 TCP JSON 数据
  *   BMS      : /dev/ttyS8（默认），嘉佰达通用协议 V4，9600 baud
  *   距离传感器: /dev/ttyS9（默认），RS485 Modbus RTU，9600 baud
- *   GPIO     : gpiochip5 line0=左限位，line1=右限位（默认）
+ *   GPIO     : gpiochip5 line0=左限位，line1=右限位，
+ *              line2=左下姿态极限，line3=右下姿态极限（默认）
  */
 #include <filesystem>
 #include <memory>
@@ -31,6 +32,7 @@
 #include "pv_cleaning_robot/device/brush_motor.h"
 #include "pv_cleaning_robot/device/gps_device.h"
 #include "pv_cleaning_robot/device/imu_device.h"
+#include "pv_cleaning_robot/device/attitude_limit_switch.h"
 #include "pv_cleaning_robot/device/limit_switch.h"
 #include "pv_cleaning_robot/device/walk_motor_group.h"
 
@@ -71,6 +73,8 @@ struct HwParams {
     std::string gpio_chip = "gpiochip5";
     unsigned left_limit_line = 0u;
     unsigned right_limit_line = 1u;
+    unsigned left_attitude_limit_line = 2u;
+    unsigned right_attitude_limit_line = 3u;
     // timing
     int limit_timeout_sec = 60;   ///< 每段（单一限位）等待最大秒数
     int online_timeout_ms = 600;  ///< 等待电机上线最大毫秒数
@@ -165,6 +169,10 @@ inline HwParams load_hw_test_config() {
             static_cast<unsigned>(cfg.get<int>("hardware.left_limit_line", (int)p.left_limit_line));
         p.right_limit_line = static_cast<unsigned>(
             cfg.get<int>("hardware.right_limit_line", (int)p.right_limit_line));
+        p.left_attitude_limit_line = static_cast<unsigned>(cfg.get<int>(
+            "hardware.left_attitude_limit_line", (int)p.left_attitude_limit_line));
+        p.right_attitude_limit_line = static_cast<unsigned>(cfg.get<int>(
+            "hardware.right_attitude_limit_line", (int)p.right_attitude_limit_line));
         p.limit_timeout_sec = cfg.get<int>("timing.limit_timeout_sec", p.limit_timeout_sec);
         p.online_timeout_ms = cfg.get<int>("timing.online_timeout_ms", p.online_timeout_ms);
         p.sweep_duration_ms = cfg.get<int>("timing.sweep_duration_ms", p.sweep_duration_ms);
