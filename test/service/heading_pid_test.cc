@@ -92,15 +92,21 @@ HeadingCorrector::Params test_params(const std::string& uds_path) {
     return p;
 }
 
-HeadingCorrector::Input make_input(Endpoint target, Endpoint primary_dock = Endpoint::B) {
+HeadingCorrector::Input make_input_with_speed(Endpoint target,
+                                              float speed_rpm,
+                                              Endpoint primary_dock = Endpoint::B) {
     HeadingCorrector::Input input;
     input.dt_s = 0.02f;
     input.has_base_command = true;
     input.travel_direction = robot::domain::travel_direction_to(target);
     input.primary_dock = primary_dock;
     const float dir = target == Endpoint::A ? 1.0f : -1.0f;
-    input.base_command = {100.0f * dir, 100.0f * dir, -100.0f * dir, -100.0f * dir};
+    input.base_command = {speed_rpm * dir, speed_rpm * dir, -speed_rpm * dir, -speed_rpm * dir};
     return input;
+}
+
+HeadingCorrector::Input make_input(Endpoint target, Endpoint primary_dock = Endpoint::B) {
+    return make_input_with_speed(target, 100.0f, primary_dock);
 }
 
 std::string unique_socket_path() {
@@ -119,7 +125,7 @@ TEST_CASE("HeadingCorrector: disabled controller outputs zero", "[service][headi
     REQUIRE_FALSE(out.has_speed_command);
 }
 
-TEST_CASE("HeadingCorrector: primary dock B toward A yaw>0 slows top and speeds bottom",
+TEST_CASE("HeadingCorrector: primary dock B toward A yaw>0 speeds bottom only",
           "[service][heading_pid]") {
     LocalUdsServer server(unique_socket_path());
     HeadingCorrector ctrl(test_params(server.path));
@@ -131,13 +137,13 @@ TEST_CASE("HeadingCorrector: primary dock B toward A yaw>0 slows top and speeds 
     const auto out = ctrl.compute(make_input(Endpoint::A));
     REQUIRE(out.has_speed_command);
     REQUIRE(out.correction_rpm == Approx(-1.0f));
-    REQUIRE(out.speed_command.lt_rpm == Approx(99.0f));
-    REQUIRE(out.speed_command.rt_rpm == Approx(99.0f));
+    REQUIRE(out.speed_command.lt_rpm == Approx(100.0f));
+    REQUIRE(out.speed_command.rt_rpm == Approx(100.0f));
     REQUIRE(out.speed_command.lb_rpm == Approx(-101.0f));
     REQUIRE(out.speed_command.rb_rpm == Approx(-101.0f));
 }
 
-TEST_CASE("HeadingCorrector: primary dock B toward A yaw<0 speeds top and slows bottom",
+TEST_CASE("HeadingCorrector: primary dock B toward A yaw<0 slows bottom only",
           "[service][heading_pid]") {
     LocalUdsServer server(unique_socket_path());
     HeadingCorrector ctrl(test_params(server.path));
@@ -149,13 +155,13 @@ TEST_CASE("HeadingCorrector: primary dock B toward A yaw<0 speeds top and slows 
     const auto out = ctrl.compute(make_input(Endpoint::A));
     REQUIRE(out.has_speed_command);
     REQUIRE(out.correction_rpm == Approx(1.0f));
-    REQUIRE(out.speed_command.lt_rpm == Approx(101.0f));
-    REQUIRE(out.speed_command.rt_rpm == Approx(101.0f));
+    REQUIRE(out.speed_command.lt_rpm == Approx(100.0f));
+    REQUIRE(out.speed_command.rt_rpm == Approx(100.0f));
     REQUIRE(out.speed_command.lb_rpm == Approx(-99.0f));
     REQUIRE(out.speed_command.rb_rpm == Approx(-99.0f));
 }
 
-TEST_CASE("HeadingCorrector: primary dock B toward B yaw>0 speeds top and slows bottom",
+TEST_CASE("HeadingCorrector: primary dock B toward B yaw>0 slows bottom only",
           "[service][heading_pid]") {
     LocalUdsServer server(unique_socket_path());
     HeadingCorrector ctrl(test_params(server.path));
@@ -167,13 +173,13 @@ TEST_CASE("HeadingCorrector: primary dock B toward B yaw>0 speeds top and slows 
     const auto out = ctrl.compute(make_input(Endpoint::B));
     REQUIRE(out.has_speed_command);
     REQUIRE(out.correction_rpm == Approx(-1.0f));
-    REQUIRE(out.speed_command.lt_rpm == Approx(-101.0f));
-    REQUIRE(out.speed_command.rt_rpm == Approx(-101.0f));
+    REQUIRE(out.speed_command.lt_rpm == Approx(-100.0f));
+    REQUIRE(out.speed_command.rt_rpm == Approx(-100.0f));
     REQUIRE(out.speed_command.lb_rpm == Approx(99.0f));
     REQUIRE(out.speed_command.rb_rpm == Approx(99.0f));
 }
 
-TEST_CASE("HeadingCorrector: primary dock B toward B yaw<0 slows top and speeds bottom",
+TEST_CASE("HeadingCorrector: primary dock B toward B yaw<0 speeds bottom only",
           "[service][heading_pid]") {
     LocalUdsServer server(unique_socket_path());
     HeadingCorrector ctrl(test_params(server.path));
@@ -185,8 +191,8 @@ TEST_CASE("HeadingCorrector: primary dock B toward B yaw<0 slows top and speeds 
     const auto out = ctrl.compute(make_input(Endpoint::B));
     REQUIRE(out.has_speed_command);
     REQUIRE(out.correction_rpm == Approx(1.0f));
-    REQUIRE(out.speed_command.lt_rpm == Approx(-99.0f));
-    REQUIRE(out.speed_command.rt_rpm == Approx(-99.0f));
+    REQUIRE(out.speed_command.lt_rpm == Approx(-100.0f));
+    REQUIRE(out.speed_command.rt_rpm == Approx(-100.0f));
     REQUIRE(out.speed_command.lb_rpm == Approx(101.0f));
     REQUIRE(out.speed_command.rb_rpm == Approx(101.0f));
 }
@@ -203,18 +209,35 @@ TEST_CASE("HeadingCorrector: correction direction depends on target, not primary
     auto out = ctrl.compute(make_input(Endpoint::B, Endpoint::A));
     REQUIRE(out.has_speed_command);
     REQUIRE(out.correction_rpm == Approx(-1.0f));
-    REQUIRE(out.speed_command.lt_rpm == Approx(-101.0f));
-    REQUIRE(out.speed_command.rt_rpm == Approx(-101.0f));
+    REQUIRE(out.speed_command.lt_rpm == Approx(-100.0f));
+    REQUIRE(out.speed_command.rt_rpm == Approx(-100.0f));
     REQUIRE(out.speed_command.lb_rpm == Approx(99.0f));
     REQUIRE(out.speed_command.rb_rpm == Approx(99.0f));
 
     out = ctrl.compute(make_input(Endpoint::A, Endpoint::A));
     REQUIRE(out.has_speed_command);
     REQUIRE(out.correction_rpm == Approx(-1.0f));
-    REQUIRE(out.speed_command.lt_rpm == Approx(99.0f));
-    REQUIRE(out.speed_command.rt_rpm == Approx(99.0f));
+    REQUIRE(out.speed_command.lt_rpm == Approx(100.0f));
+    REQUIRE(out.speed_command.rt_rpm == Approx(100.0f));
     REQUIRE(out.speed_command.lb_rpm == Approx(-101.0f));
     REQUIRE(out.speed_command.rb_rpm == Approx(-101.0f));
+}
+
+TEST_CASE("HeadingCorrector: bottom correction never reverses wheel direction",
+          "[service][heading_pid]") {
+    LocalUdsServer server(unique_socket_path());
+    HeadingCorrector ctrl(test_params(server.path));
+    ctrl.enable(true);
+
+    server.send_line(R"({"valid":true,"yaw_deg":-10.0,"confidence":0.82})");
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    const auto toward_a = ctrl.compute(make_input_with_speed(Endpoint::A, 5.0f));
+    REQUIRE(toward_a.has_speed_command);
+    CHECK(toward_a.speed_command.lt_rpm == Approx(5.0f));
+    CHECK(toward_a.speed_command.rt_rpm == Approx(5.0f));
+    CHECK(toward_a.speed_command.lb_rpm == Approx(0.0f));
+    CHECK(toward_a.speed_command.rb_rpm == Approx(0.0f));
 }
 
 TEST_CASE("HeadingCorrector: stale or invalid samples fall back to base command",

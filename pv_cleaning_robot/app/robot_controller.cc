@@ -429,13 +429,13 @@ void RobotController::handle_limit_settled_locked(domain::Endpoint endpoint) {
     ++mission_->current_segment_index;
     if (mission_->current_segment_index >= mission_->segments.size()) {
         ++mission_->completed_cycles;
+        mission_->current_segment_index = 0;
     }
     if (mission_->completed_cycles >= mission_->repeat_count) {
         mission_.reset();
         state_ = RobotState::Idle;
         return;
     }
-    mission_->current_segment_index = 0;
     state_ = RobotState::ExecutingMission;
     start_current_segment_locked();
 }

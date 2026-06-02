@@ -1,10 +1,9 @@
-#include "pv_cleaning_robot/middleware/safety_monitor.h"
-
 #include <pthread.h>
 #include <sched.h>
 #include <spdlog/spdlog.h>
 
 #include "pv_cleaning_robot/device/limit_switch.h"
+#include "pv_cleaning_robot/middleware/safety_monitor.h"
 
 namespace {
 robot::domain::Endpoint to_endpoint(robot::device::LimitSide side) {
@@ -14,37 +13,31 @@ robot::domain::Endpoint to_endpoint(robot::device::LimitSide side) {
 
 /// 返回单调时钟毫秒时间戳（用于防抖计时）
 inline uint64_t now_ms() {
-    return static_cast<uint64_t>(
-        std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now().time_since_epoch())
-        .count());
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                     std::chrono::steady_clock::now().time_since_epoch())
+                                     .count());
 }
 
-constexpr uint64_t kLimitSettleStableMs = 300u;
-constexpr uint64_t kReleaseStableMs = 300u;
+constexpr uint64_t kLimitSettleStableMs = 30u;
+constexpr uint64_t kReleaseStableMs = 30u;
 }  // namespace
 
 namespace robot::middleware {
 
-SafetyMonitor::SafetyMonitor(
-    std::function<void()> emergency_stop,
-    std::shared_ptr<device::LimitSwitch> left_switch,
-    std::shared_ptr<device::LimitSwitch> right_switch,
-    EventBus& event_bus)
+SafetyMonitor::SafetyMonitor(std::function<void()> emergency_stop,
+                             std::shared_ptr<device::LimitSwitch> left_switch,
+                             std::shared_ptr<device::LimitSwitch> right_switch,
+                             EventBus& event_bus)
     : emergency_stop_(std::move(emergency_stop))
     , left_switch_(std::move(left_switch))
     , right_switch_(std::move(right_switch))
-    , event_bus_(event_bus)
-{
-}
+    , event_bus_(event_bus) {}
 
-SafetyMonitor::~SafetyMonitor()
-{
+SafetyMonitor::~SafetyMonitor() {
     stop();
 }
 
-bool SafetyMonitor::start()
-{
+bool SafetyMonitor::start() {
     // 注册限位触发回调（在各自 GPIO 监控线程内同步调用）
     left_switch_->set_trigger_callback(
         [this](device::LimitSide side) { on_limit_trigger(to_endpoint(side)); });
@@ -63,26 +56,23 @@ bool SafetyMonitor::start()
     return true;
 }
 
-void SafetyMonitor::stop()
-{
+void SafetyMonitor::stop() {
     running_.store(false);
     left_switch_->stop_monitoring();
     right_switch_->stop_monitoring();
-    if (monitor_thread_.joinable()) monitor_thread_.join();
+    if (monitor_thread_.joinable())
+        monitor_thread_.join();
 }
 
-void SafetyMonitor::set_limit_settled_callback(std::function<void(domain::Endpoint)> cb)
-{
+void SafetyMonitor::set_limit_settled_callback(std::function<void(domain::Endpoint)> cb) {
     limit_settled_cb_ = std::move(cb);
 }
 
-void SafetyMonitor::set_limit_unstable_callback(std::function<void(domain::Endpoint)> cb)
-{
+void SafetyMonitor::set_limit_unstable_callback(std::function<void(domain::Endpoint)> cb) {
     limit_unstable_cb_ = std::move(cb);
 }
 
-void SafetyMonitor::on_limit_trigger(domain::Endpoint endpoint)
-{
+void SafetyMonitor::on_limit_trigger(domain::Endpoint endpoint) {
     // ============================================================
     // 安全优先关键路径：此函数在 GPIO 监控线程中被调用（SCHED_FIFO 95）
     // 目标：从触发到急停指令发出 ≤ 50 ms
@@ -97,8 +87,7 @@ void SafetyMonitor::on_limit_trigger(domain::Endpoint endpoint)
         endpoint == domain::Endpoint::A ? left_wait_release_ : right_wait_release_;
     std::atomic<uint64_t>& release_ts =
         endpoint == domain::Endpoint::A ? left_release_ts_ : right_release_ts_;
-    auto& limit_switch =
-        endpoint == domain::Endpoint::A ? left_switch_ : right_switch_;
+    auto& limit_switch = endpoint == domain::Endpoint::A ? left_switch_ : right_switch_;
 
     if (wait_release.load(std::memory_order_acquire) ||
         pending_ts.load(std::memory_order_acquire) != 0) {
@@ -113,8 +102,7 @@ void SafetyMonitor::on_limit_trigger(domain::Endpoint endpoint)
     release_ts.store(0, std::memory_order_release);
 }
 
-void SafetyMonitor::monitor_loop()
-{
+void SafetyMonitor::monitor_loop() {
     // ── 线程自身完成 RT 提权 + CPU 绑定 ──
     // 必须在线程内设置：安全关键路径，不容许启动竞争窗口（尤其是 SCHED_FIFO 94）。
     {
@@ -139,7 +127,8 @@ void SafetyMonitor::monitor_loop()
                              domain::Endpoint endpoint,
                              const std::shared_ptr<device::LimitSwitch>& sw) {
         uint64_t t = ts_atom.load(std::memory_order_acquire);
-        if (t == 0) return;
+        if (t == 0)
+            return;
         if (sw->read_current_level()) {
             ts_atom.store(0, std::memory_order_release);
             event_bus_.publish(LimitUnstableEvent{endpoint});
@@ -193,8 +182,7 @@ void SafetyMonitor::monitor_loop()
         // ── 备用轮询路径：以防 GPIO 边沿回调丢失（双保险）────────────
         // 注意：on_limit_trigger() 内部已调用 clear_trigger()，
         // 因此重复触发被抑制，无需额外去重计数器。
-        if (left_switch_->is_triggered() &&
-            pending_left_ts_.load(std::memory_order_acquire) == 0) {
+        if (left_switch_->is_triggered() && pending_left_ts_.load(std::memory_order_acquire) == 0) {
             on_limit_trigger(domain::Endpoint::A);
         }
         if (right_switch_->is_triggered() &&
@@ -202,9 +190,11 @@ void SafetyMonitor::monitor_loop()
             on_limit_trigger(domain::Endpoint::B);
         }
         // 5 ms 轮询（SCHED_FIFO 94，低于 GPIO 95，避免兜底轮询反向压制边沿线程）
-        struct timespec poll_ts{0, 5 * 1000 * 1000};
+        struct timespec poll_ts {
+            0, 5 * 1000 * 1000
+        };
         nanosleep(&poll_ts, nullptr);
     }
 }
 
-} // namespace robot::middleware
+}  // namespace robot::middleware

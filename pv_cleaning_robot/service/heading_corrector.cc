@@ -24,10 +24,10 @@ float normalize_yaw_to_control_error(robot::domain::Endpoint /*primary_dock*/,
                                      robot::domain::TravelDirection travel_direction,
                                      float raw_yaw_deg) {
     // UDS yaw 的纠偏含义只与当前运动方向有关，不与停机端配置有关：
-    // - 去 A：yaw>0 时上轨道轮绝对值减小、下轨道轮绝对值增大；
-    // - 去 B：yaw>0 时上轨道轮绝对值增大、下轨道轮绝对值减小。
-    // 当前四轮 base_command 已按目标方向设置正负号，因此两种方向都需要
-    // 将 yaw>0 转换成负 correction。
+    // - yaw>0 时下轨道轮向 A 方向加速；
+    // - yaw<0 时下轨道轮向 B 方向加速。
+    // 当前下轮 base_command 已按目标方向设置正负号，因此两种方向都需要
+    // 将 yaw>0 转换成负 correction，只作用到下轨道轮。
     switch (travel_direction) {
     case robot::domain::TravelDirection::AToB:
     case robot::domain::TravelDirection::BToA:
@@ -181,10 +181,19 @@ float HeadingCorrector::low_pass(float previous, float sample, float alpha) {
 HeadingCorrector::SpeedCommand HeadingCorrector::apply_correction(const SpeedCommand& base,
                                                                   float correction_rpm) {
     SpeedCommand corrected = base;
-    corrected.lt_rpm = clamp(base.lt_rpm + correction_rpm, -kWheelRpmLimit, kWheelRpmLimit);
-    corrected.rt_rpm = clamp(base.rt_rpm + correction_rpm, -kWheelRpmLimit, kWheelRpmLimit);
-    corrected.lb_rpm = clamp(base.lb_rpm + correction_rpm, -kWheelRpmLimit, kWheelRpmLimit);
-    corrected.rb_rpm = clamp(base.rb_rpm + correction_rpm, -kWheelRpmLimit, kWheelRpmLimit);
+    auto adjust_lower = [](float base_rpm, float correction) {
+        if (base_rpm > 0.0f) {
+            return clamp(base_rpm + correction, 0.0f, kWheelRpmLimit);
+        }
+        if (base_rpm < 0.0f) {
+            return clamp(base_rpm + correction, -kWheelRpmLimit, 0.0f);
+        }
+        return 0.0f;
+    };
+
+    // 与 lower_uds_zero 硬件验证一致：上轨道轮保持基础速度，只通过下轨道轮加减速纠偏。
+    corrected.lb_rpm = adjust_lower(base.lb_rpm, correction_rpm);
+    corrected.rb_rpm = adjust_lower(base.rb_rpm, correction_rpm);
     return corrected;
 }
 
