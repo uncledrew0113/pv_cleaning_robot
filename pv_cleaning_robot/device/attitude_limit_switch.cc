@@ -67,9 +67,13 @@ AttitudeLimitSwitch::Status AttitudeLimitSwitch::read_status() const {
 
 void AttitudeLimitSwitch::on_edge() {
     triggered_.store(true, std::memory_order_release);
-    std::lock_guard<hal::PiMutex> lock(cb_mtx_);
-    if (callback_) {
-        callback_(side_);
+    TriggerCallback cb;
+    {
+        std::lock_guard<hal::PiMutex> lock(cb_mtx_);
+        cb = callback_;
+    }
+    if (cb) {
+        cb(side_);
     }
 }
 

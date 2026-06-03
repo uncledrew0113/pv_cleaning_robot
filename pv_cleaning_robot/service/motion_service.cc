@@ -40,15 +40,28 @@ MotionService::MotionService(std::shared_ptr<device::WalkMotorGroup> group,
     , last_override_clear_generation_(group_ ? group_->override_clear_generation() : 0u) {}
 
 void MotionService::set_primary_dock_query(std::function<domain::Endpoint()> query) {
+    std::lock_guard<hal::PiMutex> lk(state_mtx_);
     primary_dock_query_ = std::move(query);
 }
 
 void MotionService::set_runtime_config_query(std::function<RuntimeConfig()> query) {
+    std::lock_guard<hal::PiMutex> lk(state_mtx_);
     runtime_config_query_ = std::move(query);
 }
 
+MotionService::StateSnapshot MotionService::snapshot_state() const {
+    std::lock_guard<hal::PiMutex> lk(state_mtx_);
+    return StateSnapshot{cfg_,
+                         primary_dock_query_,
+                         base_speed_cmd_,
+                         walk_command_active_,
+                         travel_direction_,
+                         command_generation_};
+}
+
 domain::Endpoint MotionService::primary_dock() const {
-    return primary_dock_query_ ? primary_dock_query_() : domain::Endpoint::B;
+    const auto query = snapshot_state().primary_dock_query;
+    return query ? query() : domain::Endpoint::B;
 }
 
 int MotionService::target_direction_sign(domain::Endpoint target) const {
@@ -57,10 +70,16 @@ int MotionService::target_direction_sign(domain::Endpoint target) const {
 }
 
 void MotionService::sync_runtime_config() {
-    if (!runtime_config_query_) {
+    std::function<RuntimeConfig()> query;
+    {
+        std::lock_guard<hal::PiMutex> lk(state_mtx_);
+        query = runtime_config_query_;
+    }
+    if (!query) {
         return;
     }
-    const auto runtime_cfg = runtime_config_query_();
+    const auto runtime_cfg = query();
+    std::lock_guard<hal::PiMutex> lk(state_mtx_);
     cfg_.clean_speed_rpm = std::abs(static_cast<float>(runtime_cfg.clean_speed_rpm));
     cfg_.return_speed_rpm = std::abs(static_cast<float>(runtime_cfg.return_speed_rpm));
     cfg_.brush_rpm = std::abs(runtime_cfg.brush_rpm);
@@ -75,8 +94,9 @@ bool MotionService::enable_speed_mode() {
 }
 
 void MotionService::sync_heading_pid_enabled() {
-    heading_corrector_.set_params(cfg_.pid);
-    if (!cfg_.heading_pid_en) {
+    const auto state = snapshot_state();
+    heading_corrector_.set_params(state.cfg.pid);
+    if (!state.cfg.heading_pid_en) {
         heading_corrector_.enable(false);
         return;
     }
@@ -87,9 +107,88 @@ void MotionService::sync_heading_pid_enabled() {
     }
 }
 
-void MotionService::set_base_speed_command(const device::WalkMotorGroup::SpeedCmd& cmd) {
+void MotionService::activate_walk_command(const device::WalkMotorGroup::SpeedCmd& cmd,
+                                          domain::TravelDirection direction) {
+    std::lock_guard<hal::PiMutex> lk(state_mtx_);
+    travel_direction_ = direction;
     base_speed_cmd_ = cmd;
     walk_command_active_ = true;
+    ++command_generation_;
+}
+
+void MotionService::deactivate_walk_command() {
+    std::lock_guard<hal::PiMutex> lk(state_mtx_);
+    walk_command_active_ = false;
+    ++command_generation_;
+}
+
+void MotionService::update_heading_correction(const StateSnapshot& state, bool override_active) {
+    if (!state.walk_command_active || !state.cfg.heading_pid_en || override_active) {
+        return;
+    }
+
+    HeadingCorrector::Input input;
+    input.dt_s = 0.02f;
+    input.has_base_command = true;
+    input.base_command = to_corrector_command(state.base_speed_cmd);
+    input.travel_direction = state.travel_direction;
+    input.primary_dock =
+        state.primary_dock_query ? state.primary_dock_query() : domain::Endpoint::B;
+
+    const auto imu_data = imu_ ? imu_->get_latest() : robot::device::ImuDevice::ImuData{};
+    input.imu_valid = imu_data.valid;
+    input.gyro_z_rad_s = imu_data.valid ? imu_data.gyro[2] : 0.0f;
+
+    const auto diagnostics = group_->get_group_diagnostics();
+    input.wheel_feedback.valid = true;
+    input.wheel_feedback.rpm = {diagnostics.wheel[0].speed_rpm,
+                                diagnostics.wheel[1].speed_rpm,
+                                diagnostics.wheel[2].speed_rpm,
+                                diagnostics.wheel[3].speed_rpm};
+    input.wheel_feedback.current = {diagnostics.wheel[0].torque_a,
+                                    diagnostics.wheel[1].torque_a,
+                                    diagnostics.wheel[2].torque_a,
+                                    diagnostics.wheel[3].torque_a};
+
+    const auto heading_output = heading_corrector_.compute(input);
+    if (heading_output.has_speed_command) {
+        apply_speed_if_command_current(state.command_generation,
+                                       to_group_command(heading_output.speed_command));
+    }
+}
+
+void MotionService::apply_speed_if_command_current(
+    uint32_t generation,
+    const device::WalkMotorGroup::SpeedCmd& cmd) {
+    std::lock_guard<hal::PiMutex> lk(state_mtx_);
+    if (!walk_command_active_ || command_generation_ != generation) {
+        return;
+    }
+    // set_speeds() only updates WalkMotorGroup's normal control slot; CAN TX remains in update().
+    static_cast<void>(group_->set_speeds(cmd));
+}
+
+MotionService::OverrideClearAction MotionService::observe_override_clear(uint32_t clear_generation) {
+    std::lock_guard<hal::PiMutex> lk(state_mtx_);
+    if (clear_generation == last_override_clear_generation_) {
+        return {};
+    }
+    last_override_clear_generation_ = clear_generation;
+    return OverrideClearAction{true,
+                               walk_command_active_,
+                               base_speed_cmd_,
+                               command_generation_};
+}
+
+void MotionService::handle_override_clear() {
+    const auto clear_action = observe_override_clear(group_->override_clear_generation());
+    if (clear_action.changed) {
+        heading_corrector_.reset();
+    }
+    if (clear_action.restore_base_speed) {
+        apply_speed_if_command_current(clear_action.command_generation,
+                                       clear_action.base_speed_cmd);
+    }
 }
 
 // ── 运动控制 ──────────────────────────────────────────────────────────────
@@ -98,7 +197,7 @@ bool MotionService::start_cleaning_to(domain::Endpoint target) {
     sync_runtime_config();
     // 解除可能由 SafetyMonitor::on_limit_trigger() 触发的 emergency_override 锁
     group_->clear_override();
-    walk_command_active_ = false;
+    deactivate_walk_command();
 
     if (!enable_speed_mode()) {
         return false;
@@ -109,22 +208,23 @@ bool MotionService::start_cleaning_to(domain::Endpoint target) {
 
     // 物理安装：LT/RT 与 LB/RB 方向相反；target_direction_sign() 决定沿 A/B 轴正反向。
     const int dir = target_direction_sign(target);
-    const float speed = target == primary_dock() ? cfg_.return_speed_rpm : cfg_.clean_speed_rpm;
+    const auto state = snapshot_state();
+    const auto dock = state.primary_dock_query ? state.primary_dock_query() : domain::Endpoint::B;
+    const float speed = target == dock ? state.cfg.return_speed_rpm : state.cfg.clean_speed_rpm;
     const float spd = std::abs(speed) * static_cast<float>(dir);
     const device::WalkMotorGroup::SpeedCmd cmd{spd, spd, -spd, -spd};
     if (group_->set_speeds(cmd) != device::DeviceError::OK)
         return false;
-    travel_direction_ = domain::travel_direction_to(target);
-    set_base_speed_command(cmd);
+    activate_walk_command(cmd, domain::travel_direction_to(target));
 
-    brush_->set_rpm(std::abs(cfg_.brush_rpm) * dir);
+    brush_->set_rpm(std::abs(state.cfg.brush_rpm) * dir);
     return true;
 }
 
 void MotionService::stop_cleaning() {
-    brush_->stop();
     heading_corrector_.enable(false);
-    walk_command_active_ = false;
+    deactivate_walk_command();
+    brush_->stop();
     group_->set_speed_uniform(0.0f);
     group_->disable_all();
 }
@@ -138,9 +238,9 @@ bool MotionService::start_segment(const domain::MissionSegment& segment) {
 }
 
 void MotionService::emergency_stop() {
-    brush_->stop();
     heading_corrector_.enable(false);
-    walk_command_active_ = false;
+    deactivate_walk_command();
+    brush_->stop();
     group_->emergency_override(0.0f);  // 原地停止 + 抑制心跳
     group_->disable_all();
 }
@@ -149,43 +249,10 @@ void MotionService::emergency_stop() {
 
 void MotionService::update() {
     const bool override_active = group_->is_override_active();
-
-    if (walk_command_active_ && cfg_.heading_pid_en && !override_active) {
-        HeadingCorrector::Input input;
-        input.dt_s = 0.02f;
-        input.has_base_command = true;
-        input.base_command = to_corrector_command(base_speed_cmd_);
-        input.travel_direction = travel_direction_;
-        input.primary_dock = primary_dock();
-
-        const auto status = group_->get_group_status();
-        const auto diagnostics = group_->get_group_diagnostics();
-        input.wheel_feedback.valid = true;
-        input.wheel_feedback.rpm = {status.wheel[0].speed_rpm,
-                                    status.wheel[1].speed_rpm,
-                                    status.wheel[2].speed_rpm,
-                                    status.wheel[3].speed_rpm};
-        input.wheel_feedback.current = {diagnostics.wheel[0].torque_a,
-                                        diagnostics.wheel[1].torque_a,
-                                        diagnostics.wheel[2].torque_a,
-                                        diagnostics.wheel[3].torque_a};
-
-        const auto heading_output = heading_corrector_.compute(input);
-        if (heading_output.has_speed_command) {
-            group_->set_speeds(to_group_command(heading_output.speed_command));
-        }
-    }
-
+    const auto state = snapshot_state();
+    update_heading_correction(state, override_active);
     group_->update();
-
-    const auto clear_generation = group_->override_clear_generation();
-    if (clear_generation != last_override_clear_generation_) {
-        last_override_clear_generation_ = clear_generation;
-        heading_corrector_.reset();
-        if (walk_command_active_) {
-            group_->set_speeds(base_speed_cmd_);
-        }
-    }
+    handle_override_clear();
 
     // 注意：brush_->update() 已移到 bms_exec 线程（SCHED_OTHER, 500ms）
     // 原因：Modbus RTU 读取寄存器需 5~10ms 阻塞 I/O，放在 walk_ctrl(FIFO 80, 20ms)

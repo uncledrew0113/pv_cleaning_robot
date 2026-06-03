@@ -158,9 +158,6 @@ void WalkMotorGroup::close() {
         clear_override_pending_ = false;
         has_normal_ctrl_frame_ = false;
         normal_ctrl_frame_ = {};
-        normal_target_values_ = {};
-        override_frame_ = {};
-        override_target_values_ = {};
     }
 
     if (can_ && can_->is_open()) {
@@ -264,7 +261,6 @@ DeviceError WalkMotorGroup::set_speeds(float lt, float rt, float lb, float rb) {
 
     std::lock_guard<hal::PiMutex> lk(mtx_);
     normal_ctrl_frame_ = protocol::WalkMotorCanCodec::encode_group_speed(id_base_, lt, rt, lb, rb);
-    normal_target_values_ = {lt, rt, lb, rb};
     has_normal_ctrl_frame_ = true;
     diag_[0].target_value = lt;
     diag_[1].target_value = rt;
@@ -289,7 +285,6 @@ DeviceError WalkMotorGroup::set_currents(float lt, float rt, float lb, float rb)
 
     std::lock_guard<hal::PiMutex> lk(mtx_);
     normal_ctrl_frame_ = protocol::WalkMotorCanCodec::encode_group_current(id_base_, lt, rt, lb, rb);
-    normal_target_values_ = {lt, rt, lb, rb};
     has_normal_ctrl_frame_ = true;
     diag_[0].target_value = lt;
     diag_[1].target_value = rt;
@@ -304,10 +299,6 @@ DeviceError WalkMotorGroup::set_open_loops(int16_t lt, int16_t rt, int16_t lb, i
 
     std::lock_guard<hal::PiMutex> lk(mtx_);
     normal_ctrl_frame_ = protocol::WalkMotorCanCodec::encode_group_open_loop(id_base_, lt, rt, lb, rb);
-    normal_target_values_ = {static_cast<float>(lt),
-                             static_cast<float>(rt),
-                             static_cast<float>(lb),
-                             static_cast<float>(rb)};
     has_normal_ctrl_frame_ = true;
     diag_[0].target_value = static_cast<float>(lt);
     diag_[1].target_value = static_cast<float>(rt);
@@ -328,7 +319,6 @@ DeviceError WalkMotorGroup::set_positions(float lt_deg, float rt_deg, float lb_d
     std::lock_guard<hal::PiMutex> lk(mtx_);
     normal_ctrl_frame_ =
         protocol::WalkMotorCanCodec::encode_group_position(id_base_, lt_deg, rt_deg, lb_deg, rb_deg);
-    normal_target_values_ = {lt_deg, rt_deg, lb_deg, rb_deg};
     has_normal_ctrl_frame_ = true;
     diag_[0].target_value = lt_deg;
     diag_[1].target_value = rt_deg;
@@ -393,8 +383,6 @@ DeviceError WalkMotorGroup::emergency_override(float reverse_rpm) {
         std::lock_guard<hal::PiMutex> lk(mtx_);
         control_mode_ = ControlMode::LatchedOverride;
         clear_override_pending_ = false;
-        override_frame_ = frame;
-        override_target_values_ = {lt, rt, lb, rb};
     }
 
     {

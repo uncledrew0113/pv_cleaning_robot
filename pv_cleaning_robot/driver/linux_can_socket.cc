@@ -42,8 +42,9 @@ bool LinuxCanSocket::open() {
     int rcvbuf = 1024 * 1024;
     ::setsockopt(socket_fd_, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
 
-    cancel_fd_ = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
-    if (cancel_fd_ < 0) {
+    const int new_cancel_fd = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    cancel_fd_.store(new_cancel_fd, std::memory_order_release);
+    if (new_cancel_fd < 0) {
         spdlog::error("[LinuxCanSocket] eventfd() failed: {}", strerror(errno));
         ::close(socket_fd_);
         socket_fd_ = -1;
@@ -86,11 +87,12 @@ void LinuxCanSocket::close() {
     connected_.store(false, std::memory_order_release);
 
     // ─── 优化点 1：使用 eventfd 瞬间唤醒阻塞的 poll ───
-    if (cancel_fd_ >= 0) {
+    const int cancel_fd = cancel_fd_.load(std::memory_order_acquire);
+    if (cancel_fd >= 0) {
         uint64_t val = 1;
         // 写入 8 字节数据，触发 POLLIN 事件。
         // 这会立刻打断 recv() 中正在死等的 poll()，实现真正的 0 延迟安全退出。
-        ::write(cancel_fd_, &val, sizeof(val));
+        ::write(cancel_fd, &val, sizeof(val));
     }
 
     // atomic exchange：FD 改为 -1 并一并获取旧志。
@@ -104,9 +106,9 @@ void LinuxCanSocket::close() {
     }
 
     // 释放 eventfd 资源
-    if (cancel_fd_ >= 0) {
-        ::close(cancel_fd_);
-        cancel_fd_ = -1;
+    const int old_cancel_fd = cancel_fd_.exchange(-1, std::memory_order_acq_rel);
+    if (old_cancel_fd >= 0) {
+        ::close(old_cancel_fd);
     }
 }
 
@@ -159,7 +161,8 @@ bool LinuxCanSocket::send(const hal::CanFrame& frame) {
 
 bool LinuxCanSocket::recv(hal::CanFrame& frame, int timeout_ms) {
     int fd = socket_fd_.load(std::memory_order_acquire);
-    if (fd < 0 || cancel_fd_ < 0) {
+    int cancel_fd = cancel_fd_.load(std::memory_order_acquire);
+    if (fd < 0 || cancel_fd < 0) {
         last_error_.store(hal::CanResult::SYS_ERROR, std::memory_order_relaxed);
         return false;
     }
@@ -172,7 +175,7 @@ bool LinuxCanSocket::recv(hal::CanFrame& frame, int timeout_ms) {
     pollfd pfds[2]{};
     pfds[0].fd = fd;
     pfds[0].events = POLLIN;
-    pfds[1].fd = cancel_fd_;
+    pfds[1].fd = cancel_fd;
     pfds[1].events = POLLIN;
 
     // int ret = ::poll(&pfd, 1, timeout_ms);

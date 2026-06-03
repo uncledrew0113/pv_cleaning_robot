@@ -113,7 +113,35 @@ struct HwParams {
         float yaw_alpha{0.35f};
         float output_sign{1.0f};
     } pid;
+
+    struct CorrectionCompareConfig {
+        float slow_base_rpm{15.0f};
+        float yaw_slow_threshold_deg{1.0f};
+        float max_output{10.0f};
+        float min_effective_output{1.0f};
+        float kp{5.0f};
+        float ki{0.0f};
+        float kd{0.0f};
+        float integral_limit{1.0f};
+        struct FusionConfig {
+            float process_noise_angle{0.05f};
+            float process_noise_bias{0.001f};
+            float measurement_noise_uds{0.5f};
+            float initial_angle_variance{1.0f};
+            float initial_bias_variance{1.0f};
+            int max_gyro_only_ms{300};
+        } fusion;
+    } correction_compare;
 };
+
+inline void inherit_correction_compare_pid_defaults(HwParams& p) {
+    p.correction_compare.kp = p.pid.kp;
+    p.correction_compare.ki = p.pid.ki;
+    p.correction_compare.kd = p.pid.kd;
+    p.correction_compare.integral_limit = p.pid.integral_limit;
+    p.correction_compare.max_output = p.pid.max_output;
+    p.correction_compare.min_effective_output = p.pid.min_effective_output;
+}
 
 /// 按优先级查找配置：1. 环境变量 HW_TEST_CONFIG  2. CWD/hw_test_config.json  3. 内嵌默认值
 inline HwParams load_hw_test_config() {
@@ -127,12 +155,14 @@ inline HwParams load_hw_test_config() {
 
     if (path.empty()) {
         spdlog::warn("[hw_config] hw_test_config.json not found — using built-in defaults");
+        inherit_correction_compare_pid_defaults(p);
         return p;
     }
     try {
         robot::service::ConfigService cfg(path);
         if (!cfg.load()) {
             spdlog::warn("[hw_config] Failed to load {} — using built-in defaults", path);
+            inherit_correction_compare_pid_defaults(p);
             return p;
         }
         p.can_iface = cfg.get<std::string>("hardware.can_iface", p.can_iface);
@@ -235,6 +265,45 @@ inline HwParams load_hw_test_config() {
                                           cfg.get<float>("pid.offset_alpha",
                                                          p.pid.yaw_alpha)));
         p.pid.output_sign = cfg.get<float>("pid.output_sign", p.pid.output_sign);
+        inherit_correction_compare_pid_defaults(p);
+        p.correction_compare.slow_base_rpm =
+            cfg.get<float>("correction_compare.slow_base_rpm",
+                           p.correction_compare.slow_base_rpm);
+        p.correction_compare.yaw_slow_threshold_deg =
+            cfg.get<float>("correction_compare.yaw_slow_threshold_deg",
+                           p.correction_compare.yaw_slow_threshold_deg);
+        p.correction_compare.max_output =
+            cfg.get<float>("correction_compare.max_output", p.correction_compare.max_output);
+        p.correction_compare.min_effective_output =
+            cfg.get<float>("correction_compare.min_effective_output",
+                           p.correction_compare.min_effective_output);
+        p.correction_compare.kp = cfg.get<float>("correction_compare.kp",
+                                                 p.correction_compare.kp);
+        p.correction_compare.ki = cfg.get<float>("correction_compare.ki",
+                                                 p.correction_compare.ki);
+        p.correction_compare.kd = cfg.get<float>("correction_compare.kd",
+                                                 p.correction_compare.kd);
+        p.correction_compare.integral_limit =
+            cfg.get<float>("correction_compare.integral_limit",
+                           p.correction_compare.integral_limit);
+        p.correction_compare.fusion.process_noise_angle =
+            cfg.get<float>("correction_compare.fusion.process_noise_angle",
+                           p.correction_compare.fusion.process_noise_angle);
+        p.correction_compare.fusion.process_noise_bias =
+            cfg.get<float>("correction_compare.fusion.process_noise_bias",
+                           p.correction_compare.fusion.process_noise_bias);
+        p.correction_compare.fusion.measurement_noise_uds =
+            cfg.get<float>("correction_compare.fusion.measurement_noise_uds",
+                           p.correction_compare.fusion.measurement_noise_uds);
+        p.correction_compare.fusion.initial_angle_variance =
+            cfg.get<float>("correction_compare.fusion.initial_angle_variance",
+                           p.correction_compare.fusion.initial_angle_variance);
+        p.correction_compare.fusion.initial_bias_variance =
+            cfg.get<float>("correction_compare.fusion.initial_bias_variance",
+                           p.correction_compare.fusion.initial_bias_variance);
+        p.correction_compare.fusion.max_gyro_only_ms =
+            cfg.get<int>("correction_compare.fusion.max_gyro_only_ms",
+                         p.correction_compare.fusion.max_gyro_only_ms);
         spdlog::debug("[hw_config] Loaded config: {}", path);
     } catch (const std::exception& e) {
         spdlog::warn("[hw_config] Exception loading config {}: {} — using built-in defaults",

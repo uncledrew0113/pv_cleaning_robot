@@ -36,13 +36,34 @@ float normalize_yaw_to_control_error(robot::domain::Endpoint /*primary_dock*/,
     return -raw_yaw_deg;
 }
 
+HeadingCorrector::SpeedCommand apply_base_abs_rpm(const HeadingCorrector::SpeedCommand& base,
+                                                  float abs_rpm) {
+    HeadingCorrector::SpeedCommand out{};
+    auto with_abs = [abs_rpm](float current) {
+        if (current > 0.0f) {
+            return abs_rpm;
+        }
+        if (current < 0.0f) {
+            return -abs_rpm;
+        }
+        return 0.0f;
+    };
+    out.lt_rpm = with_abs(base.lt_rpm);
+    out.rt_rpm = with_abs(base.rt_rpm);
+    out.lb_rpm = with_abs(base.lb_rpm);
+    out.rb_rpm = with_abs(base.rb_rpm);
+    return out;
+}
+
 }  // namespace
 
 HeadingCorrector::HeadingCorrector() {
+    yaw_fusion_.set_params(params_.fusion);
     start_io_thread_if_needed();
 }
 
 HeadingCorrector::HeadingCorrector(const Params& p) : params_(p) {
+    yaw_fusion_.set_params(params_.fusion);
     start_io_thread_if_needed();
 }
 
@@ -54,6 +75,7 @@ void HeadingCorrector::set_params(const Params& p) {
     std::lock_guard<std::mutex> lock(mu_);
     const bool uds_path_changed = params_.uds_path != p.uds_path;
     params_ = p;
+    yaw_fusion_.set_params(params_.fusion);
     if (uds_path_changed) {
         close_socket_locked();
         connected_path_.clear();
@@ -98,7 +120,8 @@ HeadingCorrector::Output HeadingCorrector::compute(const Input& input) {
         latest_result_.confidence >= params_.min_confidence && result_age_ms >= 0 &&
         result_age_ms <= params_.result_timeout_ms;
 
-    if (!sample_ready) {
+    const bool use_fusion = params_.angle_source == AngleSource::FUSED_UDS_GYRO;
+    if (!sample_ready && !use_fusion) {
         reset_control_state_locked();
         if (!connected_) {
             mode_ = Mode::DISCONNECTED;
@@ -108,9 +131,28 @@ HeadingCorrector::Output HeadingCorrector::compute(const Input& input) {
         return output;
     }
 
+    float yaw_for_control = latest_result_.yaw_deg;
+    if (use_fusion) {
+        last_fusion_output_ = yaw_fusion_.update({input.dt_s,
+                                                  latest_result_.yaw_deg,
+                                                  sample_ready,
+                                                  latest_result_.confidence,
+                                                  result_age_ms,
+                                                  input.gyro_z_rad_s,
+                                                  input.imu_valid});
+        if (!last_fusion_output_.valid) {
+            reset_control_state_locked();
+            mode_ = connected_ ? Mode::STALE : Mode::DISCONNECTED;
+            return output;
+        }
+        yaw_for_control = last_fusion_output_.fused_yaw_deg;
+    } else {
+        last_fusion_output_ = {};
+    }
+
     // 注意：filtered_yaw_deg / correction 表示“控制误差”的符号，不是原始视觉 yaw 的符号。
     float error = normalize_yaw_to_control_error(
-        input.primary_dock, input.travel_direction, latest_result_.yaw_deg);
+        input.primary_dock, input.travel_direction, yaw_for_control);
     error *= params_.output_sign;
 
     if (!filter_initialized_) {
@@ -146,7 +188,13 @@ HeadingCorrector::Output HeadingCorrector::compute(const Input& input) {
 
     output.feedback_correction_rpm = correction;
     output.correction_rpm = correction;
-    output.speed_command = apply_correction(input.base_command, correction);
+    SpeedCommand base_for_correction = input.base_command;
+    if (params_.slow_on_error && std::abs(error) >= params_.yaw_slow_threshold_deg) {
+        base_for_correction =
+            apply_base_abs_rpm(input.base_command, std::max(0.0f, params_.slow_base_rpm));
+    }
+    output.speed_command =
+        apply_correction(base_for_correction, correction, params_.wheel_strategy);
     last_correction_ = correction;
     mode_ = Mode::TRACK;
     return output;
@@ -163,7 +211,12 @@ HeadingCorrector::DebugState HeadingCorrector::debug_state() const {
             filtered_yaw_deg_,
             integral_term_,
             last_correction_,
-            latest_result_age_ms_locked(now)};
+            latest_result_age_ms_locked(now),
+            last_fusion_output_.fused_yaw_deg,
+            last_fusion_output_.valid,
+            last_fusion_output_.gyro_z_dps,
+            last_fusion_output_.innovation_deg,
+            last_fusion_output_.kalman_gain_angle};
 }
 
 float HeadingCorrector::clamp(float v, float lo, float hi) {
@@ -179,7 +232,8 @@ float HeadingCorrector::low_pass(float previous, float sample, float alpha) {
 }
 
 HeadingCorrector::SpeedCommand HeadingCorrector::apply_correction(const SpeedCommand& base,
-                                                                  float correction_rpm) {
+                                                                  float correction_rpm,
+                                                                  WheelStrategy strategy) {
     SpeedCommand corrected = base;
     auto adjust_wheel = [](float base_rpm, float correction) {
         if (base_rpm > 0.0f) {
@@ -190,12 +244,39 @@ HeadingCorrector::SpeedCommand HeadingCorrector::apply_correction(const SpeedCom
         }
         return 0.0f;
     };
+    auto decel_only = [](float base_rpm, float candidate) {
+        if (base_rpm > 0.0f) {
+            return clamp(candidate, 0.0f, base_rpm);
+        }
+        if (base_rpm < 0.0f) {
+            return clamp(candidate, base_rpm, 0.0f);
+        }
+        return 0.0f;
+    };
 
-    // 上下轨道共同参与纠偏：由于两条轨道基础转向相反，同一 correction 会形成轨道差速。
-    corrected.lt_rpm = adjust_wheel(base.lt_rpm, correction_rpm);
-    corrected.rt_rpm = adjust_wheel(base.rt_rpm, correction_rpm);
-    corrected.lb_rpm = adjust_wheel(base.lb_rpm, correction_rpm);
-    corrected.rb_rpm = adjust_wheel(base.rb_rpm, correction_rpm);
+    switch (strategy) {
+        case WheelStrategy::ALL_WHEELS:
+            // 上下轨道共同参与纠偏：由于两条轨道基础转向相反，同一 correction 会形成轨道差速。
+            corrected.lt_rpm = adjust_wheel(base.lt_rpm, correction_rpm);
+            corrected.rt_rpm = adjust_wheel(base.rt_rpm, correction_rpm);
+            corrected.lb_rpm = adjust_wheel(base.lb_rpm, correction_rpm);
+            corrected.rb_rpm = adjust_wheel(base.rb_rpm, correction_rpm);
+            break;
+        case WheelStrategy::LOWER_ONLY:
+            corrected.lt_rpm = base.lt_rpm;
+            corrected.rt_rpm = base.rt_rpm;
+            corrected.lb_rpm = adjust_wheel(base.lb_rpm, correction_rpm);
+            corrected.rb_rpm = adjust_wheel(base.rb_rpm, correction_rpm);
+            break;
+        case WheelStrategy::TOP_DECEL_ONLY:
+            corrected.lt_rpm =
+                decel_only(base.lt_rpm, adjust_wheel(base.lt_rpm, correction_rpm));
+            corrected.rt_rpm =
+                decel_only(base.rt_rpm, adjust_wheel(base.rt_rpm, correction_rpm));
+            corrected.lb_rpm = adjust_wheel(base.lb_rpm, correction_rpm);
+            corrected.rb_rpm = adjust_wheel(base.rb_rpm, correction_rpm);
+            break;
+    }
     return corrected;
 }
 
@@ -373,6 +454,8 @@ void HeadingCorrector::reset_control_state_locked() {
     integral_term_ = 0.0f;
     last_error_ = 0.0f;
     last_correction_ = 0.0f;
+    yaw_fusion_.reset();
+    last_fusion_output_ = {};
 }
 
 int64_t HeadingCorrector::latest_result_age_ms_locked(

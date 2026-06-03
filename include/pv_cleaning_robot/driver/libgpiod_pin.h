@@ -73,7 +73,7 @@ class LibGpiodPin final : public hal::IGpioPin {
     // 读写锁：保证 close() 与 read/write 并发时的绝对安全 (防 TOCTOU)
     mutable std::shared_mutex io_mutex_;
     // 用于瞬间打断 poll() 的事件通知 FD
-    int cancel_fd_{-1};
+    std::atomic<int> cancel_fd_{-1};
 
     // RT 优先级继承互斥量：防止主线程（低优先级）持锁时，
     // GPIO 监控线程（高 RT 优先级）被阻塞而引发优先级反转。

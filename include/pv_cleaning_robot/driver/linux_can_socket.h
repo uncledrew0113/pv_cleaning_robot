@@ -54,7 +54,7 @@ class LinuxCanSocket final : public hal::ICanBus {
 
    private:
     std::string interface_;
-    int cancel_fd_{-1};
+    std::atomic<int> cancel_fd_{-1};
     // ── 线程安全合约 ──────────────────────────────────────────────────────────
     // socket_fd_ 使用 atomic<int> 避免并发读写的 C++ UB。
     // 但 close() 与 send()/recv() 之间的 TOCTOU（FD 窜号）由调用方保证：

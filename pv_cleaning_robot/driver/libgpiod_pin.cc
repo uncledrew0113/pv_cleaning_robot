@@ -103,18 +103,19 @@ void LibGpiodPin::stop_monitoring_locked() {
         return;
 
     // 写入 EventFD，瞬间唤醒正在死等 (-1) 的 poll()，拒绝 RT 延迟
-    if (cancel_fd_ >= 0) {
+    const int cancel_fd = cancel_fd_.load(std::memory_order_acquire);
+    if (cancel_fd >= 0) {
         uint64_t val = 1;
-        ::write(cancel_fd_, &val, sizeof(val));
+        ::write(cancel_fd, &val, sizeof(val));
     }
 
     if (monitor_thread_.joinable()) {
         monitor_thread_.join();
     }
 
-    if (cancel_fd_ >= 0) {
-        ::close(cancel_fd_);
-        cancel_fd_ = -1;
+    const int old_cancel_fd = cancel_fd_.exchange(-1, std::memory_order_acq_rel);
+    if (old_cancel_fd >= 0) {
+        ::close(old_cancel_fd);
     }
 
     if (chip_ && line_) {
@@ -166,11 +167,6 @@ bool LibGpiodPin::write_value(bool high) {
     return true;
 }
 
-/// @brief 设置边缘触发回调函数。
-/// @warning 【死锁警告】严禁在回调函数内部调用本对象的 read_value()、
-/// write_value()、close() 或 stop_monitoring()，否则将引发永久死锁。
-/// 建议回调函数只做最轻量的原子变量标记，或通过 EventBus 将事件抛给外层处理。
-
 void LibGpiodPin::set_edge_callback(hal::GpioEdge edge, std::function<void()> cb) {
     std::lock_guard<hal::PiMutex> lock(cb_mutex_);
     edge_ = edge;
@@ -198,8 +194,9 @@ void LibGpiodPin::start_monitoring() {
     // 适用于不支持 IRQ 的 GPIO 控制器（如 RK3576 gpiochip5）。
     if (!config_.use_irq) {
         // 线已在 INPUT 模式（open() 已 request_line_as_input），无需重新申请
-        cancel_fd_ = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
-        if (cancel_fd_ < 0) {
+        const int new_cancel_fd = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+        cancel_fd_.store(new_cancel_fd, std::memory_order_release);
+        if (new_cancel_fd < 0) {
             spdlog::error("[LibGpiodPin] Failed to create eventfd for {}/{}: {}",
                           chip_name_,
                           line_num_,
@@ -256,8 +253,9 @@ void LibGpiodPin::start_monitoring() {
     }
 
     // 创建 EventFD 以备退出打断之用
-    cancel_fd_ = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
-    if (cancel_fd_ < 0) {
+    const int new_cancel_fd = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    cancel_fd_.store(new_cancel_fd, std::memory_order_release);
+    if (new_cancel_fd < 0) {
         spdlog::error("[LibGpiodPin] Failed to create eventfd for {}/{}: {}",
                       chip_name_,
                       line_num_,
@@ -282,7 +280,8 @@ void LibGpiodPin::monitor_loop() {
 
     // 取到底层的 GPIO 中断描述符
     int gpio_fd = gpiod_line_event_get_fd(line_);
-    if (gpio_fd < 0 || cancel_fd_ < 0) {
+    const int cancel_fd = cancel_fd_.load(std::memory_order_acquire);
+    if (gpio_fd < 0 || cancel_fd < 0) {
         spdlog::error("[LibGpiodPin] Invalid file descriptors for {}/{}", chip_name_, line_num_);
         return;
     }
@@ -290,7 +289,7 @@ void LibGpiodPin::monitor_loop() {
     pollfd pfds[2]{};
     pfds[0].fd = gpio_fd;
     pfds[0].events = POLLIN;
-    pfds[1].fd = cancel_fd_;
+    pfds[1].fd = cancel_fd;
     pfds[1].events = POLLIN;
 
     while (running_.load()) {
@@ -320,18 +319,27 @@ void LibGpiodPin::monitor_loop() {
                 last_event_time_ = now;
             }
 
-            // 安全调用回调：捕获 EOWNERDEAD 导致的互斥锁异常，避免程序崩溃
+            std::function<void()> cb;
             try {
                 std::lock_guard<hal::PiMutex> lock(cb_mutex_);
-                if (callback_) {
-                    callback_();
-                }
+                cb = callback_;
             } catch (const std::exception& e) {
                 spdlog::error(
                     "[LibGpiodPin] Callback skipped due to mutex state error on {}/{}: {}",
                     chip_name_,
                     line_num_,
                     e.what());
+            }
+            if (cb) {
+                try {
+                    cb();
+                } catch (const std::exception& e) {
+                    spdlog::error(
+                        "[LibGpiodPin] Callback error on {}/{}: {}",
+                        chip_name_,
+                        line_num_,
+                        e.what());
+                }
             }
         }
     }
@@ -380,8 +388,9 @@ void LibGpiodPin::poll_loop() {
     while (running_.load()) {
         // cancel_fd_ 可用时用 poll() 睡眠 1ms，这样 stop_monitoring() 写
         // EventFD 后可立即唤醒，否则退化为 sleep_for(1ms)
-        if (cancel_fd_ >= 0) {
-            pollfd pfd{cancel_fd_, POLLIN, 0};
+        const int cancel_fd = cancel_fd_.load(std::memory_order_acquire);
+        if (cancel_fd >= 0) {
+            pollfd pfd{cancel_fd, POLLIN, 0};
             ::poll(&pfd, 1, 1);
             if (pfd.revents & POLLIN)
                 break;
@@ -398,9 +407,11 @@ void LibGpiodPin::poll_loop() {
 
         if (prev_value >= 0 && val != prev_value) {
             hal::GpioEdge snap_edge;
+            std::function<void()> cb;
             {
                 std::lock_guard<hal::PiMutex> lk(cb_mutex_);
                 snap_edge = edge_;
+                cb = callback_;
             }
             const bool is_rising = (val == 1);
             const bool should_fire =
@@ -416,9 +427,8 @@ void LibGpiodPin::poll_loop() {
                 if (config_.debounce_ms == 0 || ms >= config_.debounce_ms) {
                     last_event_time_ = now;
                     try {
-                        std::lock_guard<hal::PiMutex> lock(cb_mutex_);
-                        if (callback_)
-                            callback_();
+                        if (cb)
+                            cb();
                     } catch (const std::exception& e) {
                         spdlog::error(
                             "[LibGpiodPin] Callback error (poll) on {}/{}: {}",

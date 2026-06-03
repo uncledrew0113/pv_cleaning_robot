@@ -272,25 +272,33 @@ void CloudService::on_rpc_message(const std::string& topic,
     const auto params_it = document.FindMember("params");
     params = params_it != document.MemberEnd() ? stringify_json_value(params_it->value) : "{}";
 
-    std::string response{"false"};
+    RpcHandler handler;
+    bool method_supported = true;
     {
         std::lock_guard<std::mutex> lk(rpc_mtx_);
         // method 白名单：只允许已注册的 handler（防止未知方法名路由）
         auto it = rpc_handlers_.find(method);
         if (it == rpc_handlers_.end()) {
-            spdlog::warn("[CloudService] Rejected unknown RPC method: {}", method);
-            publish_reject("method_not_supported");
-            return;
+            method_supported = false;
+        } else {
+            handler = it->second;
         }
-        spdlog::info("[CloudService] invoking RPC handler: method='{}' params={}", method, params);
-        try {
-            response = it->second(request_id, params);
-            spdlog::info("[CloudService] RPC handler returned: method='{}' response={}",
-                         method,
-                         response);
-        } catch (...) {
-            spdlog::warn("[CloudService] RPC handler threw exception: method='{}'", method);
-        }
+    }
+    if (!method_supported) {
+        spdlog::warn("[CloudService] Rejected unknown RPC method: {}", method);
+        publish_reject("method_not_supported");
+        return;
+    }
+
+    std::string response{"false"};
+    spdlog::info("[CloudService] invoking RPC handler: method='{}' params={}", method, params);
+    try {
+        response = handler(request_id, params);
+        spdlog::info("[CloudService] RPC handler returned: method='{}' response={}",
+                     method,
+                     response);
+    } catch (...) {
+        spdlog::warn("[CloudService] RPC handler threw exception: method='{}'", method);
     }
 
     // 回复

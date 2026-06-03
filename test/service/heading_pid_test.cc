@@ -262,3 +262,152 @@ TEST_CASE("HeadingCorrector: stale or invalid samples fall back to base command"
     out = ctrl.compute(make_input(Endpoint::A));
     REQUIRE(out.correction_rpm == Approx(0.0f));
 }
+
+TEST_CASE("HeadingCorrector: lower-only strategy keeps upper wheels at base",
+          "[service][heading_pid]") {
+    LocalUdsServer server(unique_socket_path());
+    auto params = test_params(server.path);
+    params.kp = 1.0f;
+    params.max_output = 30.0f;
+    params.min_effective_output = 0.0f;
+    params.wheel_strategy = HeadingCorrector::WheelStrategy::LOWER_ONLY;
+    HeadingCorrector ctrl(params);
+    ctrl.enable(true);
+
+    server.send_line(R"({"valid":true,"yaw_deg":-2.0,"confidence":0.82})");
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    const auto out = ctrl.compute(make_input_with_speed(Endpoint::A, 20.0f));
+
+    REQUIRE(out.correction_rpm == Approx(2.0f));
+    CHECK(out.speed_command.lt_rpm == Approx(20.0f));
+    CHECK(out.speed_command.rt_rpm == Approx(20.0f));
+    CHECK(out.speed_command.lb_rpm == Approx(-18.0f));
+    CHECK(out.speed_command.rb_rpm == Approx(-18.0f));
+}
+
+TEST_CASE("HeadingCorrector: top-decel-only prevents upper wheel acceleration toward A",
+          "[service][heading_pid]") {
+    LocalUdsServer server(unique_socket_path());
+    auto params = test_params(server.path);
+    params.kp = 1.0f;
+    params.max_output = 30.0f;
+    params.min_effective_output = 0.0f;
+    params.wheel_strategy = HeadingCorrector::WheelStrategy::TOP_DECEL_ONLY;
+    HeadingCorrector ctrl(params);
+    ctrl.enable(true);
+
+    server.send_line(R"({"valid":true,"yaw_deg":-2.0,"confidence":0.82})");
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    const auto out = ctrl.compute(make_input_with_speed(Endpoint::A, 20.0f));
+
+    REQUIRE(out.correction_rpm == Approx(2.0f));
+    CHECK(out.speed_command.lt_rpm == Approx(20.0f));
+    CHECK(out.speed_command.rt_rpm == Approx(20.0f));
+    CHECK(out.speed_command.lb_rpm == Approx(-18.0f));
+    CHECK(out.speed_command.rb_rpm == Approx(-18.0f));
+}
+
+TEST_CASE("HeadingCorrector: top-decel-only allows upper wheel deceleration toward A",
+          "[service][heading_pid]") {
+    LocalUdsServer server(unique_socket_path());
+    auto params = test_params(server.path);
+    params.kp = 1.0f;
+    params.max_output = 30.0f;
+    params.min_effective_output = 0.0f;
+    params.wheel_strategy = HeadingCorrector::WheelStrategy::TOP_DECEL_ONLY;
+    HeadingCorrector ctrl(params);
+    ctrl.enable(true);
+
+    server.send_line(R"({"valid":true,"yaw_deg":2.0,"confidence":0.82})");
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    const auto out = ctrl.compute(make_input_with_speed(Endpoint::A, 20.0f));
+
+    REQUIRE(out.correction_rpm == Approx(-2.0f));
+    CHECK(out.speed_command.lt_rpm == Approx(18.0f));
+    CHECK(out.speed_command.rt_rpm == Approx(18.0f));
+    CHECK(out.speed_command.lb_rpm == Approx(-22.0f));
+    CHECK(out.speed_command.rb_rpm == Approx(-22.0f));
+}
+
+TEST_CASE("HeadingCorrector: top-decel-only prevents upper wheel acceleration toward B",
+          "[service][heading_pid]") {
+    LocalUdsServer server(unique_socket_path());
+    auto params = test_params(server.path);
+    params.kp = 1.0f;
+    params.max_output = 30.0f;
+    params.min_effective_output = 0.0f;
+    params.wheel_strategy = HeadingCorrector::WheelStrategy::TOP_DECEL_ONLY;
+    HeadingCorrector ctrl(params);
+    ctrl.enable(true);
+
+    server.send_line(R"({"valid":true,"yaw_deg":2.0,"confidence":0.82})");
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    const auto out = ctrl.compute(make_input_with_speed(Endpoint::B, 20.0f));
+
+    REQUIRE(out.correction_rpm == Approx(-2.0f));
+    CHECK(out.speed_command.lt_rpm == Approx(-20.0f));
+    CHECK(out.speed_command.rt_rpm == Approx(-20.0f));
+    CHECK(out.speed_command.lb_rpm == Approx(18.0f));
+    CHECK(out.speed_command.rb_rpm == Approx(18.0f));
+}
+
+TEST_CASE("HeadingCorrector: slow-on-error lowers base command before correction",
+          "[service][heading_pid]") {
+    LocalUdsServer server(unique_socket_path());
+    auto params = test_params(server.path);
+    params.kp = 1.0f;
+    params.max_output = 30.0f;
+    params.min_effective_output = 0.0f;
+    params.slow_on_error = true;
+    params.slow_base_rpm = 15.0f;
+    params.yaw_slow_threshold_deg = 1.0f;
+    HeadingCorrector ctrl(params);
+    ctrl.enable(true);
+
+    server.send_line(R"({"valid":true,"yaw_deg":2.0,"confidence":0.82})");
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    const auto out = ctrl.compute(make_input_with_speed(Endpoint::A, 20.0f));
+
+    REQUIRE(out.correction_rpm == Approx(-2.0f));
+    CHECK(out.speed_command.lt_rpm == Approx(13.0f));
+    CHECK(out.speed_command.rt_rpm == Approx(13.0f));
+    CHECK(out.speed_command.lb_rpm == Approx(-17.0f));
+    CHECK(out.speed_command.rb_rpm == Approx(-17.0f));
+}
+
+TEST_CASE("HeadingCorrector: fused source uses gyro prediction during short UDS gap",
+          "[service][heading_pid]") {
+    LocalUdsServer server(unique_socket_path());
+    auto params = test_params(server.path);
+    params.kp = 1.0f;
+    params.max_output = 30.0f;
+    params.min_effective_output = 0.0f;
+    params.angle_source = HeadingCorrector::AngleSource::FUSED_UDS_GYRO;
+    params.fusion.max_gyro_only_ms = 300;
+    HeadingCorrector ctrl(params);
+    ctrl.enable(true);
+
+    server.send_line(R"({"valid":true,"yaw_deg":0.0,"confidence":0.82})");
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    auto input = make_input_with_speed(Endpoint::A, 20.0f);
+    input.imu_valid = true;
+    input.gyro_z_rad_s = 0.0f;
+    input.dt_s = 0.02f;
+    auto out = ctrl.compute(input);
+    REQUIRE(out.has_speed_command);
+
+    input.gyro_z_rad_s = -0.1745329f;
+    input.dt_s = 0.1f;
+    out = ctrl.compute(input);
+    const auto state = ctrl.debug_state();
+
+    REQUIRE(state.fused_yaw_valid);
+    CHECK(state.fused_yaw_deg < 0.0f);
+    CHECK(out.correction_rpm > 0.0f);
+}

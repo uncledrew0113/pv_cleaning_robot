@@ -49,6 +49,7 @@ set(COMMON_SRCS
   ${PROJ}/service/nav_service.cc
   ${PROJ}/service/motion_service.cc
   ${PROJ}/service/heading_corrector.cc
+  ${PROJ}/service/uds_gyro_yaw_fusion.cc
   ${PROJ}/service/recovery_motion.cc
   ${PROJ}/service/health_service.cc
   ${PROJ}/service/cloud_service.cc
@@ -116,7 +117,11 @@ add_executable(unit_tests
   service/scheduler_service_test.cc
   service/motion_service_test.cc
   service/heading_pid_test.cc
+  service/uds_gyro_yaw_fusion_test.cc
   service/recovery_motion_test.cc
+
+  # 硬件测试配置解析（纯文件读取，无需真实硬件）
+  integration/hardware/hw_config_test.cc
 
   # App 层
   app/fault_detector_test.cc
@@ -150,7 +155,8 @@ add_executable(hw_tests
   integration/hardware/attitude_limit_switch_hw_test.cc
   integration/hardware/walk_motor_group_hw_test.cc
   integration/hardware/distance_sensor_hw_test.cc
-  integration/hardware/system_hw_test.cc
+  integration/hardware/system_hw_motion_tests.cc
+  integration/hardware/system_hw_attitude_tests.cc
   integration/hardware/hw_exit_guard.cc
 
   ${COMMON_SRCS}

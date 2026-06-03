@@ -62,5 +62,19 @@
       "min_effective_output": 1.0,
       "yaw_alpha": 0.35,
       "output_sign": 1.0
+  },
+  "correction_compare": {
+      "slow_base_rpm": 15.0,
+      "yaw_slow_threshold_deg": 1.0,
+      "max_output": 10.0,
+      "kp": 5.0,
+      "fusion": {
+          "process_noise_angle": 0.05,
+          "process_noise_bias": 0.001,
+          "measurement_noise_uds": 0.5,
+          "initial_angle_variance": 1.0,
+          "initial_bias_variance": 1.0,
+          "max_gyro_only_ms": 300
+      }
   }
 }

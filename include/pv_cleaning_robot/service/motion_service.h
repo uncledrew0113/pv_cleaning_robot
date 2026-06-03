@@ -63,6 +63,8 @@ class MotionService : public middleware::IRunnable, public domain::EmergencyStop
     std::shared_ptr<device::BrushMotor> brush_;
     std::shared_ptr<device::ImuDevice> imu_;
     middleware::EventBus& bus_;
+
+    mutable hal::PiMutex state_mtx_;
     Config cfg_;
     std::function<domain::Endpoint()> primary_dock_query_;
     std::function<RuntimeConfig()> runtime_config_query_;
@@ -71,14 +73,39 @@ class MotionService : public middleware::IRunnable, public domain::EmergencyStop
     bool walk_command_active_{false};
     domain::TravelDirection travel_direction_{domain::TravelDirection::AToB};
     uint32_t last_override_clear_generation_{0};
+    uint32_t command_generation_{0};
 
+    struct StateSnapshot {
+        Config cfg{};
+        std::function<domain::Endpoint()> primary_dock_query{};
+        device::WalkMotorGroup::SpeedCmd base_speed_cmd{};
+        bool walk_command_active{false};
+        domain::TravelDirection travel_direction{domain::TravelDirection::AToB};
+        uint32_t command_generation{0};
+    };
+
+    struct OverrideClearAction {
+        bool changed{false};
+        bool restore_base_speed{false};
+        device::WalkMotorGroup::SpeedCmd base_speed_cmd{};
+        uint32_t command_generation{0};
+    };
+
+    StateSnapshot snapshot_state() const;
     domain::Endpoint primary_dock() const;
     int target_direction_sign(domain::Endpoint target) const;
     void sync_runtime_config();
     bool enable_speed_mode();
     void sync_heading_pid_enabled();
     bool start_cleaning_to(domain::Endpoint target);
-    void set_base_speed_command(const device::WalkMotorGroup::SpeedCmd& cmd);
+    void activate_walk_command(const device::WalkMotorGroup::SpeedCmd& cmd,
+                               domain::TravelDirection direction);
+    void deactivate_walk_command();
+    void update_heading_correction(const StateSnapshot& state, bool override_active);
+    void handle_override_clear();
+    void apply_speed_if_command_current(uint32_t generation,
+                                        const device::WalkMotorGroup::SpeedCmd& cmd);
+    OverrideClearAction observe_override_clear(uint32_t clear_generation);
 };
 
 }  // namespace robot::service

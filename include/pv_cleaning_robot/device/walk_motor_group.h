@@ -163,11 +163,7 @@ class WalkMotorGroup {
     // ── Normal / Override 控制状态 ──────────────────────────────────────
     // 普通控制采用“最新槽位”语义：set_* 更新当前 normal 控制帧，update() 仅重发最后一条。
     hal::CanFrame normal_ctrl_frame_{};
-    std::array<float, 4> normal_target_values_{};
     bool has_normal_ctrl_frame_{false};
-
-    hal::CanFrame override_frame_{};
-    std::array<float, 4> override_target_values_{};
 
     ControlMode control_mode_{ControlMode::Normal};
     uint32_t override_clear_generation_{0};

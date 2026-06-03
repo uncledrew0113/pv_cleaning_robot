@@ -1,32 +1,3 @@
-/**
- * @file system_hw_test.cc
- * @brief 真实硬件系统链路测试。
- *
- * 这些用例补回旧 system_hw_test.cc 的测试意图，但适配当前收敛后的
- * RobotController API：
- *   [hw_system][full_init]        - 组合根初始化后控制器处于 Idle
- *   [hw_system][health_real_data] - IMU/GPS/HealthService 真实数据落盘
- *   [hw_system][safety_idle]      - 空闲限位监控不误触发
- *   [hw_system][motion_then_stop] - 运动 1s 后 emergency_override 急停
- *   [hw_system][lower_pitch_peak] - 下轨道轮低速采样 IMU 姿态峰值
- *   [hw_system][lower_pitch_score]- 下轨道轮低速采样姿态评分
- *   [hw_system][lower_uds_zero]   - 上轮 0 速，仅调下轮使 UDS yaw 进入死区
- *   [hw_system][lower_attitude_center] - 通过左右下接近边界估算姿态中点
- *   [hw_system][watchdog_timeout] - 看门狗超时回调
- *   [hw_system][watchdog_heartbeat] - 看门狗正常心跳不误报
- *   [hw_system][p0_fault_chain]   - P0 故障链路：急停 + FaultStopped + 云端复位
- *   [hw_system][n1_clean_cycle]   - 配置完整任务真实限位闭环
- *   [hw_system][combined]         - N 趟完整任务链 + 全程持续采集健康数据
- *   [hw_system][combined_nvm_real]- N 趟完整任务链 + 全程打印融合里程计日志
- *   [hw_system][combined_brush_real] - N 趟完整任务链 + 真实滚刷
- *   [hw_system][pid_combined]     - 视觉 PID + 真实滚刷完整任务链
- *   [hw_system][imu_gps_health_only] - 仅 IMU/GPS/HealthService 落盘
- *
- * 安全约束：
- *   - 速度来自 hw_test_config.json 的低速测试参数。
- *   - 每个用例析构时都会 stop/急停/disable/close。
- *   - 带真实滚刷的用例需要确认滚刷处于安全工位。
- */
 #include <algorithm>
 #include <atomic>
 #include <catch2/catch.hpp>
@@ -62,6 +33,7 @@
 #include "pv_cleaning_robot/service/health_service.h"
 #include "pv_cleaning_robot/service/motion_service.h"
 #include "pv_cleaning_robot/service/nav_service.h"
+#include "pv_cleaning_robot/service/uds_gyro_yaw_fusion.h"
 
 using namespace std::chrono_literals;
 
@@ -230,6 +202,16 @@ std::string build_pid_sample_json(int64_t ts_ms,
     writer.Double(pid.last_correction);
     writer.Key("pid_age_ms");
     writer.Int64(pid.result_age_ms);
+    writer.Key("pid_fused_yaw");
+    writer.Double(pid.fused_yaw_deg);
+    writer.Key("pid_fused_valid");
+    writer.Bool(pid.fused_yaw_valid);
+    writer.Key("pid_gyro_z_dps");
+    writer.Double(pid.gyro_z_dps);
+    writer.Key("pid_fusion_innovation");
+    writer.Double(pid.fusion_innovation_deg);
+    writer.Key("pid_fusion_k_gain");
+    writer.Double(pid.fusion_kalman_gain_angle);
     writer.EndObject();
     return {buffer.GetString(), buffer.GetSize()};
 }
@@ -298,6 +280,37 @@ robot::service::MotionService::Config make_motion_config(bool pid_enabled) {
     return cfg;
 }
 
+robot::service::MotionService::Config make_correction_compare_motion_config(
+    robot::service::HeadingCorrector::AngleSource angle_source,
+    robot::service::HeadingCorrector::WheelStrategy wheel_strategy,
+    bool slow_on_error) {
+    auto cfg = make_motion_config(true);
+    cfg.pid.kp = kp.correction_compare.kp;
+    cfg.pid.ki = kp.correction_compare.ki;
+    cfg.pid.kd = kp.correction_compare.kd;
+    cfg.pid.integral_limit = kp.correction_compare.integral_limit;
+    cfg.pid.max_output = kp.correction_compare.max_output;
+    cfg.pid.min_effective_output = kp.correction_compare.min_effective_output;
+    cfg.pid.angle_source = angle_source;
+    cfg.pid.wheel_strategy = wheel_strategy;
+    cfg.pid.slow_on_error = slow_on_error;
+    cfg.pid.slow_base_rpm = kp.correction_compare.slow_base_rpm;
+    cfg.pid.yaw_slow_threshold_deg = kp.correction_compare.yaw_slow_threshold_deg;
+    cfg.pid.fusion.process_noise_angle =
+        kp.correction_compare.fusion.process_noise_angle;
+    cfg.pid.fusion.process_noise_bias =
+        kp.correction_compare.fusion.process_noise_bias;
+    cfg.pid.fusion.measurement_noise_uds =
+        kp.correction_compare.fusion.measurement_noise_uds;
+    cfg.pid.fusion.initial_angle_variance =
+        kp.correction_compare.fusion.initial_angle_variance;
+    cfg.pid.fusion.initial_bias_variance =
+        kp.correction_compare.fusion.initial_bias_variance;
+    cfg.pid.fusion.max_gyro_only_ms =
+        kp.correction_compare.fusion.max_gyro_only_ms;
+    return cfg;
+}
+
 class SystemHwFixture : public hw::IGracefulShutdown {
    public:
     tb_test_support::TempSplitConfigPaths paths{
@@ -335,7 +348,8 @@ class SystemHwFixture : public hw::IGracefulShutdown {
 
     bool init(bool use_real_brush = false,
               bool pid_enabled = false,
-              const std::string& health_jsonl_path = {}) {
+              const std::string& health_jsonl_path = {},
+              std::optional<robot::service::MotionService::Config> motion_config_override = {}) {
         real_brush = use_real_brush;
         write_config_files();
 
@@ -397,8 +411,10 @@ class SystemHwFixture : public hw::IGracefulShutdown {
         gps->open();
         nav = std::make_shared<robot::service::NavService>(walk_group, imu, gps);
         fault = std::make_shared<robot::service::FaultService>(bus);
-        motion = std::make_shared<robot::service::MotionService>(
-            walk_group, brush, imu, bus, make_motion_config(pid_enabled));
+        const auto motion_cfg =
+            motion_config_override ? *motion_config_override : make_motion_config(pid_enabled);
+        motion =
+            std::make_shared<robot::service::MotionService>(walk_group, brush, imu, bus, motion_cfg);
         motion->set_runtime_config_query([this]() { return config->active_runtime_config(); });
         motion->set_primary_dock_query(
             [this]() { return config->active_runtime_config().primary_dock; });
@@ -713,6 +729,117 @@ UdsYawSample wait_uds_yaw_sample(robot::service::HeadingCorrector& probe,
         std::this_thread::sleep_for(std::chrono::milliseconds(kp.loop_period_ms));
     }
     return sample;
+}
+
+robot::service::UdsGyroYawFusion::Params make_probe_fusion_params() {
+    robot::service::UdsGyroYawFusion::Params params;
+    params.process_noise_angle = kp.correction_compare.fusion.process_noise_angle;
+    params.process_noise_bias = kp.correction_compare.fusion.process_noise_bias;
+    params.measurement_noise_uds = kp.correction_compare.fusion.measurement_noise_uds;
+    params.initial_angle_variance = kp.correction_compare.fusion.initial_angle_variance;
+    params.initial_bias_variance = kp.correction_compare.fusion.initial_bias_variance;
+    params.max_gyro_only_ms = kp.correction_compare.fusion.max_gyro_only_ms;
+    return params;
+}
+
+void run_uds_gyro_fusion_probe_test() {
+    hw::DeviceFixture f;
+    REQUIRE(f.imu->open());
+
+    robot::service::HeadingCorrector uds_probe(make_heading_probe_params());
+    uds_probe.enable(true);
+
+    robot::service::UdsGyroYawFusion fusion;
+    fusion.set_params(make_probe_fusion_params());
+
+    spdlog::warn(
+        "[hw_system][uds_gyro_fusion_probe] 只读连续采样，不驱动电机；duration={}ms "
+        "period={}ms fusion(q_angle={:.4f} q_bias={:.4f} r_uds={:.4f} gyro_only_ms={})",
+        kp.sweep_duration_ms,
+        kp.loop_period_ms,
+        kp.correction_compare.fusion.process_noise_angle,
+        kp.correction_compare.fusion.process_noise_bias,
+        kp.correction_compare.fusion.measurement_noise_uds,
+        kp.correction_compare.fusion.max_gyro_only_ms);
+
+    int samples = 0;
+    int uds_valid_count = 0;
+    int imu_valid_count = 0;
+    int fused_valid_count = 0;
+    auto last = std::chrono::steady_clock::now();
+    const auto deadline = last + std::chrono::milliseconds(kp.sweep_duration_ms);
+
+    while (!hw::HwExitGuard::instance().exit_requested() &&
+           std::chrono::steady_clock::now() < deadline) {
+        const auto now = std::chrono::steady_clock::now();
+        float dt_s = std::chrono::duration<float>(now - last).count();
+        if (dt_s <= 0.0f) {
+            dt_s = static_cast<float>(kp.loop_period_ms) / 1000.0f;
+        }
+        last = now;
+
+        const auto uds = read_uds_yaw_sample(uds_probe);
+        const auto imu = f.imu->get_latest();
+
+        robot::service::UdsGyroYawFusion::Input input;
+        input.dt_s = dt_s;
+        input.uds_yaw_deg = uds.raw_yaw_deg;
+        input.uds_valid = uds.valid;
+        input.uds_confidence = uds.confidence;
+        input.uds_age_ms = uds.age_ms;
+        input.gyro_z_rad_s = imu.valid ? imu.gyro[2] : 0.0f;
+        input.imu_valid = imu.valid;
+        const auto fused = fusion.update(input);
+
+        ++samples;
+        if (uds.valid) {
+            ++uds_valid_count;
+        }
+        if (imu.valid) {
+            ++imu_valid_count;
+        }
+        if (fused.valid) {
+            ++fused_valid_count;
+        }
+
+        spdlog::info(
+            "[hw_system][uds_gyro_fusion_probe] sample={} dt={:.3f}s "
+            "uds(valid={} raw={:.3f} filtered={:.3f} conf={:.2f} age={}ms) "
+            "imu(valid={} yaw={:.2f} pitch={:.2f} roll={:.2f} gyro_z={:.3f}dps) "
+            "fused(valid={} yaw={:.3f} bias={:.3f} innovation={:.3f} k={:.3f})",
+            samples,
+            dt_s,
+            uds.valid,
+            uds.raw_yaw_deg,
+            uds.filtered_yaw_deg,
+            uds.confidence,
+            uds.age_ms,
+            imu.valid,
+            imu.yaw_deg,
+            imu.pitch_deg,
+            imu.roll_deg,
+            fused.gyro_z_dps,
+            fused.valid,
+            fused.fused_yaw_deg,
+            fused.gyro_bias_dps,
+            fused.innovation_deg,
+            fused.kalman_gain_angle);
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(kp.loop_period_ms));
+    }
+
+    spdlog::warn(
+        "[hw_system][uds_gyro_fusion_probe] summary samples={} uds_valid={} imu_valid={} "
+        "fused_valid={}",
+        samples,
+        uds_valid_count,
+        imu_valid_count,
+        fused_valid_count);
+
+    CHECK(samples > 0);
+    CHECK(imu_valid_count > 0);
+    CHECK(uds_valid_count > 0);
+    CHECK(fused_valid_count > 0);
 }
 
 float compute_lower_uds_zero_cmd(float raw_yaw_deg,
@@ -1127,7 +1254,9 @@ void run_configured_system_chain(SystemHwFixture& f,
                                  uint32_t repeat_count,
                                  bool expect_real_brush,
                                  bool log_fused_odometry,
-                                 bool log_heading_pid_debug) {
+                                 bool log_heading_pid_debug,
+                                 std::optional<robot::service::MotionService::Config>
+                                     motion_config_override = {}) {
     const std::filesystem::path health_path = kp.health_jsonl_path;
     if (health_path.has_parent_path()) {
         std::filesystem::create_directories(health_path.parent_path());
@@ -1140,7 +1269,8 @@ void run_configured_system_chain(SystemHwFixture& f,
     }
 
     f.repeat_count = std::max<uint32_t>(1u, repeat_count);
-    REQUIRE(f.init(expect_real_brush, log_heading_pid_debug, health_path.string()));
+    REQUIRE(f.init(
+        expect_real_brush, log_heading_pid_debug, health_path.string(), motion_config_override));
     REQUIRE(f.start_safety_bridge());
     REQUIRE(f.health != nullptr);
     REQUIRE(f.watchdog != nullptr);
@@ -1396,331 +1526,3 @@ void run_configured_system_chain(SystemHwFixture& f,
 }
 
 }  // namespace
-
-TEST_CASE("系统组合根初始化后处于 Idle", "[hw_system][full_init]") {
-    SystemHwFixture f;
-    REQUIRE(f.init());
-    CHECK(f.controller->snapshot().state == "Idle");
-
-    std::this_thread::sleep_for(500ms);
-    const auto imu = f.imu->get_latest();
-    const auto odom = f.nav->get_fused_odometry();
-    spdlog::info("[hw_system][full_init] imu_valid={} yaw={:.2f} pitch={:.2f} roll={:.2f}",
-                 imu.valid,
-                 imu.yaw_deg,
-                 imu.pitch_deg,
-                 imu.roll_deg);
-    spdlog::info("[hw_system][full_init] odom valid={} top={:.3f} bottom={:.3f} fused={:.3f}",
-                 odom.valid,
-                 odom.top_distance_m,
-                 odom.bottom_distance_m,
-                 odom.fused_distance_m);
-}
-
-TEST_CASE("融合里程计在静止和低速运动时输出有效", "[hw_system][nav_fused_odometry]") {
-    SystemHwFixture f;
-    REQUIRE(f.init());
-
-    std::this_thread::sleep_for(1500ms);
-    f.nav->update();
-    const auto idle = f.nav->get_fused_odometry();
-    spdlog::info(
-        "[hw_system][nav_fused_odometry] idle valid={} top={:.3f} bottom={:.3f} fused={:.3f} "
-        "diff={:.3f}",
-        idle.valid,
-        idle.top_distance_m,
-        idle.bottom_distance_m,
-        idle.fused_distance_m,
-        idle.distance_diff_m);
-
-    CHECK(idle.valid);
-    CHECK(std::isfinite(idle.top_distance_m));
-    CHECK(std::isfinite(idle.bottom_distance_m));
-    CHECK(std::isfinite(idle.fused_distance_m));
-    CHECK(std::isfinite(idle.distance_diff_m));
-
-    const auto target = robot::domain::opposite_endpoint(kp.primary_dock);
-    REQUIRE(f.motion->start_segment(
-        robot::domain::MissionSegment{target, robot::domain::SegmentMode::Cleaning}));
-    const auto moving_deadline = std::chrono::steady_clock::now() + 1500ms;
-    while (std::chrono::steady_clock::now() < moving_deadline) {
-        f.motion->update();
-        f.nav->update();
-        std::this_thread::sleep_for(50ms);
-    }
-    f.motion->emergency_stop();
-    std::this_thread::sleep_for(500ms);
-
-    const auto moving = f.nav->get_fused_odometry();
-    spdlog::info(
-        "[hw_system][nav_fused_odometry] moving valid={} top={:.3f} bottom={:.3f} fused={:.3f} "
-        "diff={:.3f}",
-        moving.valid,
-        moving.top_distance_m,
-        moving.bottom_distance_m,
-        moving.fused_distance_m,
-        moving.distance_diff_m);
-
-    CHECK(moving.valid);
-    CHECK(std::isfinite(moving.top_distance_m));
-    CHECK(std::isfinite(moving.bottom_distance_m));
-    CHECK(std::isfinite(moving.fused_distance_m));
-    CHECK(std::isfinite(moving.distance_diff_m));
-    CHECK(std::abs(moving.fused_distance_m - idle.fused_distance_m) > 0.02);
-}
-
-TEST_CASE("HealthService DIAGNOSTICS 落盘真实传感器数据", "[hw_system][health_real_data]") {
-    const std::filesystem::path path = kp.health_jsonl_path;
-    if (path.has_parent_path()) {
-        std::filesystem::create_directories(path.parent_path());
-    }
-    remove_rotated_health_logs(path);
-
-    SystemHwFixture f;
-    REQUIRE(f.init(false, false, path.string()));
-    REQUIRE(f.health != nullptr);
-    for (int i = 0; i < 10; ++i) {
-        f.bms->update();
-        f.walk_group->update();
-        std::this_thread::sleep_for(100ms);
-    }
-    for (int i = 0; i < 5; ++i) {
-        f.health->update();
-        std::this_thread::sleep_for(50ms);
-    }
-
-    require_diagnostics_health_log(path);
-}
-
-TEST_CASE("SafetyMonitor 空闲状态不误触发限位事件", "[hw_system][safety_idle]") {
-    hw::DeviceFixture f;
-    REQUIRE(f.left_sw->open(0, 2, 0, false));
-    REQUIRE(f.right_sw->open(0, 2, 0, false));
-
-    robot::middleware::EventBus bus;
-    std::atomic<int> settled_count{0};
-    std::atomic<int> unstable_count{0};
-    bus.subscribe<robot::middleware::SafetyMonitor::LimitSettledEvent>(
-        [&](const auto&) { ++settled_count; });
-    bus.subscribe<robot::middleware::SafetyMonitor::LimitUnstableEvent>(
-        [&](const auto&) { ++unstable_count; });
-
-    robot::middleware::SafetyMonitor safety(
-        [&]() { f.walk_group->emergency_override(0.0f); }, f.left_sw, f.right_sw, bus);
-    REQUIRE(safety.start());
-    std::this_thread::sleep_for(2s);
-    safety.stop();
-
-    CHECK(settled_count.load() == 0);
-    CHECK(unstable_count.load() == 0);
-}
-
-TEST_CASE("运动 1s 后 emergency_override 急停", "[hw_system][motion_then_stop]") {
-    SystemHwFixture f;
-    REQUIRE(f.init());
-    REQUIRE(f.walk_group->enable_all() == robot::device::DeviceError::OK);
-    REQUIRE(f.walk_group->set_mode_all(robot::protocol::WalkMotorMode::SPEED) ==
-            robot::device::DeviceError::OK);
-    std::this_thread::sleep_for(300ms);
-    REQUIRE(f.walk_group->set_speed_uniform(kp.test_speed_rpm) == robot::device::DeviceError::OK);
-
-    for (int i = 0; i < 4; ++i) {
-        f.walk_group->update();
-        std::this_thread::sleep_for(250ms);
-    }
-
-    REQUIRE(f.walk_group->emergency_override(0.0f) == robot::device::DeviceError::OK);
-    REQUIRE(f.walk_group->is_override_active());
-    const uint32_t frames_before = f.walk_group->get_group_diagnostics().ctrl_frame_count;
-    f.walk_group->update();
-    std::this_thread::sleep_for(200ms);
-    CHECK(f.walk_group->get_group_diagnostics().ctrl_frame_count == frames_before);
-
-    std::this_thread::sleep_for(500ms);
-    const auto diag = f.walk_group->get_group_diagnostics();
-    CHECK(std::abs(diag.wheel[0].speed_rpm) < 5.0f);
-    CHECK(std::abs(diag.wheel[1].speed_rpm) < 5.0f);
-
-    f.walk_group->clear_override();
-    f.walk_group->update();
-    CHECK_FALSE(f.walk_group->is_override_active());
-}
-
-TEST_CASE("下轨道轮低速采样 IMU pitch 峰值", "[hw_system][lower_pitch_peak]") {
-    const auto sample = sample_lower_wheel_pitch();
-    INFO("samples=" << sample.samples);
-    INFO("pitch_min=" << sample.pitch_min);
-    INFO("pitch_max=" << sample.pitch_max);
-    CHECK(sample.samples > 5);
-    CHECK(sample.pitch_max >= sample.pitch_min);
-}
-
-TEST_CASE("下轨道轮低速采样姿态评分", "[hw_system][lower_pitch_score]") {
-    const auto sample = sample_lower_wheel_pitch();
-    const float pitch_span = sample.pitch_max - sample.pitch_min;
-    const float score = pitch_span - 0.25f * sample.roll_abs_max;
-    INFO("pitch_span=" << pitch_span);
-    INFO("roll_abs_max=" << sample.roll_abs_max);
-    INFO("score=" << score);
-    CHECK(sample.samples > 5);
-    CHECK(std::isfinite(score));
-}
-
-TEST_CASE("lower_uds_zero 调速随误差缩小并保持方向", "[hw_system][lower_uds_zero][logic]") {
-    constexpr float kDeadband = 0.2f;
-    constexpr float kMinRpm = 0.8f;
-    constexpr float kMaxRpm = 5.0f;
-    constexpr float kKp = 1.5f;
-
-    CHECK(compute_lower_uds_zero_cmd(0.1f, kDeadband, kMinRpm, kMaxRpm, kKp) == 0.0f);
-    CHECK(compute_lower_uds_zero_cmd(0.4f, kDeadband, kMinRpm, kMaxRpm, kKp) == Approx(-0.8f));
-    CHECK(compute_lower_uds_zero_cmd(-0.4f, kDeadband, kMinRpm, kMaxRpm, kKp) == Approx(0.8f));
-    CHECK(std::abs(compute_lower_uds_zero_cmd(3.0f, kDeadband, kMinRpm, kMaxRpm, kKp)) >
-          std::abs(compute_lower_uds_zero_cmd(0.4f, kDeadband, kMinRpm, kMaxRpm, kKp)));
-    CHECK(compute_lower_uds_zero_cmd(10.0f, kDeadband, kMinRpm, kMaxRpm, kKp) == Approx(-5.0f));
-}
-
-TEST_CASE("lower_attitude_center 根据触发侧选择下轮方向",
-          "[hw_system][lower_attitude_center][logic]") {
-    const float rpm = 2.0f;
-    const robot::device::AttitudeLimitSwitch::Status none_left{
-        robot::device::AttitudeLimitSide::LEFT_LOWER, true, false, false};
-    const robot::device::AttitudeLimitSwitch::Status none_right{
-        robot::device::AttitudeLimitSide::RIGHT_LOWER, true, false, false};
-    const robot::device::AttitudeLimitSwitch::Status active_left{
-        robot::device::AttitudeLimitSide::LEFT_LOWER, false, true, false};
-    const robot::device::AttitudeLimitSwitch::Status active_right{
-        robot::device::AttitudeLimitSide::RIGHT_LOWER, false, true, false};
-
-    CHECK(classify_lower_attitude_state(none_left, none_right) == LowerAttitudeState::NONE);
-    CHECK(classify_lower_attitude_state(active_left, none_right) == LowerAttitudeState::LEFT);
-    CHECK(classify_lower_attitude_state(none_left, active_right) == LowerAttitudeState::RIGHT);
-    CHECK(classify_lower_attitude_state(active_left, active_right) == LowerAttitudeState::BOTH);
-    CHECK_FALSE(active_side_from_state(LowerAttitudeState::NONE).has_value());
-    CHECK_FALSE(active_side_from_state(LowerAttitudeState::BOTH).has_value());
-
-    const auto left_plan =
-        make_lower_attitude_center_plan(robot::device::AttitudeLimitSide::LEFT_LOWER, rpm);
-    CHECK(left_plan.initial_lower_rpm == Approx(2.0f));
-    CHECK(left_plan.return_lower_rpm == Approx(-2.0f));
-    CHECK(left_plan.release_side == robot::device::AttitudeLimitSide::LEFT_LOWER);
-    CHECK(left_plan.opposite_side == robot::device::AttitudeLimitSide::RIGHT_LOWER);
-
-    const auto right_plan =
-        make_lower_attitude_center_plan(robot::device::AttitudeLimitSide::RIGHT_LOWER, rpm);
-    CHECK(right_plan.initial_lower_rpm == Approx(-2.0f));
-    CHECK(right_plan.return_lower_rpm == Approx(2.0f));
-    CHECK(right_plan.release_side == robot::device::AttitudeLimitSide::RIGHT_LOWER);
-    CHECK(right_plan.opposite_side == robot::device::AttitudeLimitSide::LEFT_LOWER);
-}
-
-TEST_CASE("上轮 0 速仅调下轮使 UDS yaw 进入死区", "[hw_system][lower_uds_zero]") {
-    run_lower_uds_zero_test();
-}
-
-TEST_CASE("上轮 0 速通过姿态接近边界回中", "[hw_system][lower_attitude_center]") {
-    run_lower_attitude_center_test();
-}
-
-TEST_CASE("WatchdogMgr 超时后触发回调", "[hw_system][watchdog_timeout]") {
-    robot::app::WatchdogMgr watchdog;
-    std::atomic<bool> timed_out{false};
-    watchdog.set_timeout_callback([&](const std::string&) { timed_out.store(true); });
-    REQUIRE(watchdog.start());
-    const int ticket = watchdog.register_thread("hw_system_watchdog", 100);
-    REQUIRE(ticket >= 0);
-    std::this_thread::sleep_for(300ms);
-    watchdog.stop();
-    CHECK(timed_out.load());
-}
-
-TEST_CASE("WatchdogMgr 正常心跳不触发超时", "[hw_system][watchdog_heartbeat]") {
-    robot::app::WatchdogMgr watchdog;
-    std::atomic<bool> timed_out{false};
-    watchdog.set_timeout_callback([&](const std::string&) { timed_out.store(true); });
-    REQUIRE(watchdog.start());
-    const int ticket = watchdog.register_thread("hw_system_watchdog", 500);
-    REQUIRE(ticket >= 0);
-
-    for (int i = 0; i < 5; ++i) {
-        watchdog.heartbeat(ticket);
-        std::this_thread::sleep_for(200ms);
-    }
-
-    watchdog.stop();
-    CHECK_FALSE(timed_out.load());
-}
-
-TEST_CASE("P0 故障链路急停并由云端复位回 Idle", "[hw_system][p0_fault_chain]") {
-    SystemHwFixture f;
-    REQUIRE(f.init());
-    f.position_state = robot::domain::PositionState::OnSegment;
-    REQUIRE(f.start_directional_to_opposite().accepted);
-    REQUIRE(f.controller->snapshot().state == "ExecutingMission");
-
-    f.controller->post_fault(robot::app::FaultFact{robot::app::FaultSource::Watchdog,
-                                                   robot::domain::FaultCode::kCanCommunicationLost,
-                                                   "hw_p0"});
-    f.controller->drain_for_test();
-
-    CHECK(f.controller->snapshot().state == "FaultStopped");
-    CHECK(f.controller->snapshot().fault == robot::domain::FaultCode::kCanCommunicationLost);
-    const auto reset = f.controller->submit_command(
-        robot::domain::RobotCommand{robot::domain::RobotCommandKind::FaultReset,
-                                    robot::domain::CommandSource::Rpc,
-                                    "hw-reset"});
-    REQUIRE(reset.accepted);
-    CHECK(f.controller->snapshot().state == "Idle");
-    CHECK_FALSE(f.fault->has_active_fault());
-}
-
-TEST_CASE("配置完整任务通过真实限位闭环完成", "[hw_system][n1_clean_cycle]") {
-    SystemHwFixture f;
-    f.repeat_count = 1;
-    REQUIRE(f.init());
-    REQUIRE(f.start_safety_bridge());
-    REQUIRE(f.start_configured_assuming_primary_dock().accepted);
-    CHECK(f.controller->snapshot().state == "ExecutingMission");
-    CHECK(f.wait_until_state("Idle", std::chrono::seconds(kp.limit_timeout_sec * 2)));
-}
-
-TEST_CASE("N 趟完整任务链 + 全程持续采集健康数据", "[hw_system][combined]") {
-    SystemHwFixture f;
-    run_configured_system_chain(f, "hw_system][combined", kp.combined_passes, false, false, false);
-}
-
-TEST_CASE("完整任务链 + 融合里程计日志", "[hw_system][combined_nvm_real]") {
-    SystemHwFixture f;
-    run_configured_system_chain(
-        f, "hw_system][combined_nvm_real", kp.combined_passes, false, true, false);
-}
-
-TEST_CASE("N 趟完整任务链 + 真实滚刷 + 全程持续采集健康数据", "[hw_system][combined_brush_real]") {
-    SystemHwFixture f;
-    run_configured_system_chain(
-        f, "hw_system][combined_brush_real", kp.combined_passes, true, false, false);
-}
-
-TEST_CASE("视觉 PID 完整任务链 + 真实滚刷", "[hw_system][pid_combined]") {
-    SystemHwFixture f;
-    run_configured_system_chain(
-        f, "hw_system][pid_combined", kp.combined_passes, true, false, true);
-}
-
-TEST_CASE("仅 IMU/GPS/HealthService 持续采集并本地落盘", "[hw_system][imu_gps_health_only]") {
-    const std::filesystem::path path = std::filesystem::path(kp.health_jsonl_path)
-                                           .replace_filename("hw_imu_gps_health_only.jsonl");
-    if (path.has_parent_path()) {
-        std::filesystem::create_directories(path.parent_path());
-    }
-    std::filesystem::remove(path);
-
-    hw::ImuGpsHealthFixture f;
-    REQUIRE(f.init(path.string()));
-    for (int i = 0; i < 20; ++i) {
-        f.health->update();
-        std::this_thread::sleep_for(100ms);
-    }
-
-    require_health_log_written(path);
-}

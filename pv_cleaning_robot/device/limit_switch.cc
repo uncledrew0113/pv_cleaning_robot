@@ -82,9 +82,13 @@ void LimitSwitch::on_edge() {
     triggered_.store(true, std::memory_order_release);
 
     // 通知 SafetyMonitor（回调不得阻塞，用于触发急停序列）
-    std::lock_guard<hal::PiMutex> lock(cb_mtx_);
-    if (callback_) {
-        callback_(side_);
+    TriggerCallback cb;
+    {
+        std::lock_guard<hal::PiMutex> lock(cb_mtx_);
+        cb = callback_;
+    }
+    if (cb) {
+        cb(side_);
     }
 }
 

@@ -12,11 +12,23 @@
 #include <thread>
 
 #include "pv_cleaning_robot/domain/robot_domain.h"
+#include "pv_cleaning_robot/service/uds_gyro_yaw_fusion.h"
 
 namespace robot::service {
 
 class HeadingCorrector {
    public:
+    enum class AngleSource : uint8_t {
+        RAW_UDS = 0,
+        FUSED_UDS_GYRO,
+    };
+
+    enum class WheelStrategy : uint8_t {
+        ALL_WHEELS = 0,
+        LOWER_ONLY,
+        TOP_DECEL_ONLY,
+    };
+
     struct Params {
         std::string uds_path{"/tmp/pv_edge_tracker.sock"};
         int reconnect_interval_ms{500};
@@ -31,6 +43,12 @@ class HeadingCorrector {
         float min_effective_output{1.0f};
         float yaw_alpha{0.35f};
         float output_sign{1.0f};
+        AngleSource angle_source{AngleSource::RAW_UDS};
+        WheelStrategy wheel_strategy{WheelStrategy::ALL_WHEELS};
+        bool slow_on_error{false};
+        float slow_base_rpm{15.0f};
+        float yaw_slow_threshold_deg{1.0f};
+        UdsGyroYawFusion::Params fusion{};
     };
 
     enum class Mode : uint8_t {
@@ -60,6 +78,8 @@ class HeadingCorrector {
         SpeedCommand base_command{};
         domain::TravelDirection travel_direction{domain::TravelDirection::AToB};
         domain::Endpoint primary_dock{domain::Endpoint::B};
+        bool imu_valid{false};
+        float gyro_z_rad_s{0.0f};
     };
 
     struct Output {
@@ -81,6 +101,11 @@ class HeadingCorrector {
         float integral_term{0.0f};
         float last_correction{0.0f};
         int64_t result_age_ms{-1};
+        float fused_yaw_deg{0.0f};
+        bool fused_yaw_valid{false};
+        float gyro_z_dps{0.0f};
+        float fusion_innovation_deg{0.0f};
+        float fusion_kalman_gain_angle{0.0f};
     };
 
     HeadingCorrector();
@@ -110,7 +135,9 @@ class HeadingCorrector {
     static float clamp(float v, float lo, float hi);
     static float clamp_alpha(float alpha);
     static float low_pass(float previous, float sample, float alpha);
-    static SpeedCommand apply_correction(const SpeedCommand& base, float correction_rpm);
+    static SpeedCommand apply_correction(const SpeedCommand& base,
+                                         float correction_rpm,
+                                         WheelStrategy strategy);
 
     void start_io_thread_if_needed();
     void stop_io_thread();
@@ -141,6 +168,8 @@ class HeadingCorrector {
     float integral_term_{0.0f};
     float last_error_{0.0f};
     float last_correction_{0.0f};
+    UdsGyroYawFusion yaw_fusion_{};
+    UdsGyroYawFusion::Output last_fusion_output_{};
 };
 
 }  // namespace robot::service
