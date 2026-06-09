@@ -641,6 +641,24 @@ struct WalkImuStopGuard : hw::IGracefulShutdown {
     robot::device::WalkMotorGroup& group_;
 };
 
+struct CombinedAttitudeRecoveryContext {
+    std::shared_ptr<robot::driver::LibGpiodPin> left_gpio{
+        std::make_shared<robot::driver::LibGpiodPin>(kp.gpio_chip,
+                                                     kp.left_attitude_limit_line)};
+    std::shared_ptr<robot::driver::LibGpiodPin> right_gpio{
+        std::make_shared<robot::driver::LibGpiodPin>(kp.gpio_chip,
+                                                     kp.right_attitude_limit_line)};
+    robot::device::AttitudeLimitSwitch left_sw{left_gpio,
+                                               robot::device::AttitudeLimitSide::LEFT_LOWER};
+    robot::device::AttitudeLimitSwitch right_sw{right_gpio,
+                                                robot::device::AttitudeLimitSide::RIGHT_LOWER};
+    int recovery_count{0};
+
+    bool open() {
+        return left_sw.open(0, 2, 0, false) && right_sw.open(0, 2, 0, false);
+    }
+};
+
 struct PitchSample {
     float pitch_min{0.0f};
     float pitch_max{0.0f};
@@ -943,25 +961,13 @@ void command_lower_wheels(robot::device::WalkMotorGroup& group, float lower_rpm)
     group.update();
 }
 
-void run_lower_attitude_center_test() {
-    hw::DeviceFixture f;
-    REQUIRE(f.walk_group->open() == robot::device::DeviceError::OK);
-    WalkImuStopGuard guard(*f.walk_group);
-
-    auto left_gpio =
-        std::make_shared<robot::driver::LibGpiodPin>(kp.gpio_chip, kp.left_attitude_limit_line);
-    auto right_gpio =
-        std::make_shared<robot::driver::LibGpiodPin>(kp.gpio_chip, kp.right_attitude_limit_line);
-    robot::device::AttitudeLimitSwitch left_sw(left_gpio,
-                                               robot::device::AttitudeLimitSide::LEFT_LOWER);
-    robot::device::AttitudeLimitSwitch right_sw(right_gpio,
-                                                robot::device::AttitudeLimitSide::RIGHT_LOWER);
-
-    REQUIRE(left_sw.open(0, 2, 0, false));
-    REQUIRE(right_sw.open(0, 2, 0, false));
-    REQUIRE(f.walk_group->set_feedback_mode_all(10u) == robot::device::DeviceError::OK);
-    REQUIRE(f.walk_group->enable_all() == robot::device::DeviceError::OK);
-    REQUIRE(f.walk_group->set_mode_all(robot::protocol::WalkMotorMode::SPEED) ==
+void run_lower_attitude_center_recovery(robot::device::WalkMotorGroup& group,
+                                        robot::device::AttitudeLimitSwitch& left_sw,
+                                        robot::device::AttitudeLimitSwitch& right_sw,
+                                        const char* tag) {
+    REQUIRE(group.set_feedback_mode_all(10u) == robot::device::DeviceError::OK);
+    REQUIRE(group.enable_all() == robot::device::DeviceError::OK);
+    REQUIRE(group.set_mode_all(robot::protocol::WalkMotorMode::SPEED) ==
             robot::device::DeviceError::OK);
 
     constexpr float lower_rpm = 5.0f;
@@ -971,8 +977,9 @@ void run_lower_attitude_center_test() {
     constexpr auto kOppositeTimeout = 30000ms;
 
     spdlog::warn(
-        "[hw_system][lower_attitude_center] 任意单侧触发即可回中；无触发时先向 A 搜索左下边界；"
-        "双侧同时触发视为异常。测试将 LT/RT=0，仅驱动 LB/RB 低速回中");
+        "[{}][lower_attitude_center] 任意单侧触发即可回中；无触发时先向 A 搜索左下边界；"
+        "双侧同时触发视为异常。LT/RT=0，仅驱动 LB/RB 低速回中",
+        tag);
 
     auto initial_side = std::optional<robot::device::AttitudeLimitSide>{};
     auto deadline = std::chrono::steady_clock::now() + kSearchTimeout;
@@ -988,30 +995,31 @@ void run_lower_attitude_center_test() {
         if (!initial_side.has_value()) {
             if (!search_started) {
                 search_started = true;
-                log_attitude_status(
-                    "[hw_system][lower_attitude_center][search_start]", left, right);
+                log_attitude_status("[lower_attitude_center][search_start]", left, right);
                 spdlog::info(
-                    "[hw_system][lower_attitude_center][search_start] lower_rpm={:.2f} dir=A "
+                    "[{}][lower_attitude_center][search_start] lower_rpm={:.2f} dir=A "
                     "timeout={}ms",
+                    tag,
                     lower_rpm,
                     std::chrono::duration_cast<std::chrono::milliseconds>(kSearchTimeout).count());
             }
-            command_lower_wheels(*f.walk_group, -lower_rpm);
+            command_lower_wheels(group, -lower_rpm);
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(kp.loop_period_ms));
     }
 
-    command_lower_wheels(*f.walk_group, 0.0f);
+    command_lower_wheels(group, 0.0f);
     REQUIRE_FALSE(hw::HwExitGuard::instance().exit_requested());
     REQUIRE(initial_side.has_value());
-    log_attitude_status("[hw_system][lower_attitude_center][initial_found]",
+    log_attitude_status("[lower_attitude_center][initial_found]",
                         left_sw.read_status(),
                         right_sw.read_status());
 
     const auto plan = make_lower_attitude_center_plan(*initial_side, lower_rpm);
     spdlog::info(
-        "[hw_system][lower_attitude_center] initial_side={} initial_lower_rpm={:.2f} "
+        "[{}][lower_attitude_center] initial_side={} initial_lower_rpm={:.2f} "
         "return_lower_rpm={:.2f}",
+        tag,
         attitude_side_name(*initial_side),
         plan.initial_lower_rpm,
         plan.return_lower_rpm);
@@ -1020,14 +1028,15 @@ void run_lower_attitude_center_test() {
     auto release_at = std::chrono::steady_clock::time_point{};
     deadline = std::chrono::steady_clock::now() + kReleaseTimeout;
     spdlog::info(
-        "[hw_system][lower_attitude_center][release_start] side={} lower_rpm={:.2f} timeout={}ms",
+        "[{}][lower_attitude_center][release_start] side={} lower_rpm={:.2f} timeout={}ms",
+        tag,
         attitude_side_name(plan.release_side),
         plan.initial_lower_rpm,
         std::chrono::duration_cast<std::chrono::milliseconds>(kReleaseTimeout).count());
     while (!hw::HwExitGuard::instance().exit_requested() &&
            std::chrono::steady_clock::now() < deadline &&
            stable_release_samples < kStableSamplesRequired) {
-        command_lower_wheels(*f.walk_group, plan.initial_lower_rpm);
+        command_lower_wheels(group, plan.initial_lower_rpm);
         const auto status = read_attitude_status(plan.release_side, left_sw, right_sw);
         if (!status.active_low_asserted) {
             ++stable_release_samples;
@@ -1044,10 +1053,11 @@ void run_lower_attitude_center_test() {
     REQUIRE_FALSE(hw::HwExitGuard::instance().exit_requested());
     REQUIRE(release_at != std::chrono::steady_clock::time_point{});
     {
-        const auto diag = f.walk_group->get_group_diagnostics();
+        const auto diag = group.get_group_diagnostics();
         spdlog::info(
-            "[hw_system][lower_attitude_center][released] side={} stable={}/{} "
+            "[{}][lower_attitude_center][released] side={} stable={}/{} "
             "cmd=[{:.1f},{:.1f},{:.1f},{:.1f}] rpm=[{:.1f},{:.1f},{:.1f},{:.1f}]",
+            tag,
             attitude_side_name(plan.release_side),
             stable_release_samples,
             kStableSamplesRequired,
@@ -1064,15 +1074,16 @@ void run_lower_attitude_center_test() {
     auto opposite_at = std::chrono::steady_clock::time_point{};
     deadline = std::chrono::steady_clock::now() + kOppositeTimeout;
     spdlog::info(
-        "[hw_system][lower_attitude_center][opposite_start] side={} lower_rpm={:.2f} "
+        "[{}][lower_attitude_center][opposite_start] side={} lower_rpm={:.2f} "
         "timeout={}ms",
+        tag,
         attitude_side_name(plan.opposite_side),
         plan.initial_lower_rpm,
         std::chrono::duration_cast<std::chrono::milliseconds>(kOppositeTimeout).count());
     while (!hw::HwExitGuard::instance().exit_requested() &&
            std::chrono::steady_clock::now() < deadline &&
            opposite_at == std::chrono::steady_clock::time_point{}) {
-        command_lower_wheels(*f.walk_group, plan.initial_lower_rpm);
+        command_lower_wheels(group, plan.initial_lower_rpm);
         const auto status = read_attitude_status(plan.opposite_side, left_sw, right_sw);
         if (status.active_low_asserted) {
             opposite_at = std::chrono::steady_clock::now();
@@ -1083,15 +1094,16 @@ void run_lower_attitude_center_test() {
 
     REQUIRE_FALSE(hw::HwExitGuard::instance().exit_requested());
     REQUIRE(opposite_at != std::chrono::steady_clock::time_point{});
-    log_attitude_status("[hw_system][lower_attitude_center][opposite_triggered]",
+    log_attitude_status("[lower_attitude_center][opposite_triggered]",
                         left_sw.read_status(),
                         right_sw.read_status());
 
     const auto span = opposite_at - release_at;
     const auto return_duration = std::chrono::duration_cast<std::chrono::milliseconds>(span / 2);
     spdlog::info(
-        "[hw_system][lower_attitude_center][return_start] release_to_opposite={}ms "
+        "[{}][lower_attitude_center][return_start] release_to_opposite={}ms "
         "return_half={}ms return_lower_rpm={:.2f}",
+        tag,
         std::chrono::duration_cast<std::chrono::milliseconds>(span).count(),
         return_duration.count(),
         plan.return_lower_rpm);
@@ -1099,14 +1111,34 @@ void run_lower_attitude_center_test() {
     deadline = std::chrono::steady_clock::now() + return_duration;
     while (!hw::HwExitGuard::instance().exit_requested() &&
            std::chrono::steady_clock::now() < deadline) {
-        command_lower_wheels(*f.walk_group, plan.return_lower_rpm);
+        command_lower_wheels(group, plan.return_lower_rpm);
         std::this_thread::sleep_for(std::chrono::milliseconds(kp.loop_period_ms));
     }
 
-    command_lower_wheels(*f.walk_group, 0.0f);
+    command_lower_wheels(group, 0.0f);
     log_attitude_status(
-        "[hw_system][lower_attitude_center][done]", left_sw.read_status(), right_sw.read_status());
+        "[lower_attitude_center][done]", left_sw.read_status(), right_sw.read_status());
     REQUIRE_FALSE(hw::HwExitGuard::instance().exit_requested());
+}
+
+void run_lower_attitude_center_test() {
+    hw::DeviceFixture f;
+    REQUIRE(f.walk_group->open() == robot::device::DeviceError::OK);
+    WalkImuStopGuard guard(*f.walk_group);
+
+    auto left_gpio =
+        std::make_shared<robot::driver::LibGpiodPin>(kp.gpio_chip, kp.left_attitude_limit_line);
+    auto right_gpio =
+        std::make_shared<robot::driver::LibGpiodPin>(kp.gpio_chip, kp.right_attitude_limit_line);
+    robot::device::AttitudeLimitSwitch left_sw(left_gpio,
+                                               robot::device::AttitudeLimitSide::LEFT_LOWER);
+    robot::device::AttitudeLimitSwitch right_sw(right_gpio,
+                                                robot::device::AttitudeLimitSide::RIGHT_LOWER);
+
+    REQUIRE(left_sw.open(0, 2, 0, false));
+    REQUIRE(right_sw.open(0, 2, 0, false));
+    run_lower_attitude_center_recovery(
+        *f.walk_group, left_sw, right_sw, "hw_system][lower_attitude_center");
 }
 
 void run_lower_uds_zero_test() {
@@ -1256,7 +1288,8 @@ void run_configured_system_chain(SystemHwFixture& f,
                                  bool log_fused_odometry,
                                  bool log_heading_pid_debug,
                                  std::optional<robot::service::MotionService::Config>
-                                     motion_config_override = {}) {
+                                     motion_config_override = {},
+                                 CombinedAttitudeRecoveryContext* attitude_recovery = nullptr) {
     const std::filesystem::path health_path = kp.health_jsonl_path;
     if (health_path.has_parent_path()) {
         std::filesystem::create_directories(health_path.parent_path());
@@ -1272,6 +1305,13 @@ void run_configured_system_chain(SystemHwFixture& f,
     REQUIRE(f.init(
         expect_real_brush, log_heading_pid_debug, health_path.string(), motion_config_override));
     REQUIRE(f.start_safety_bridge());
+    if (attitude_recovery != nullptr) {
+        REQUIRE(attitude_recovery->open());
+        spdlog::warn(
+            "[{}] 姿态极限恢复测试已启用：任务运行中任意下姿态接近触发后，将暂停当前段、"
+            "执行 lower_attitude_center 回中，然后恢复当前段",
+            tag);
+    }
     REQUIRE(f.health != nullptr);
     REQUIRE(f.watchdog != nullptr);
 
@@ -1355,6 +1395,46 @@ void run_configured_system_chain(SystemHwFixture& f,
             INFO("unstable_count=" << unstable_count.load());
             INFO("fault=" << fault_to_string(controller_snapshot.fault));
             REQUIRE(now < segment_deadline);
+        }
+
+        if (attitude_recovery != nullptr) {
+            const auto left_attitude = attitude_recovery->left_sw.read_status();
+            const auto right_attitude = attitude_recovery->right_sw.read_status();
+            const auto attitude_state =
+                classify_lower_attitude_state(left_attitude, right_attitude);
+            REQUIRE(attitude_state != LowerAttitudeState::BOTH);
+            if (const auto active_side = active_side_from_state(attitude_state)) {
+                ++attitude_recovery->recovery_count;
+                const auto resume_target = f.active_segment_target;
+                REQUIRE(resume_target.has_value());
+                log_attitude_status("[combined_attitude_recover][trigger]",
+                                    left_attitude,
+                                    right_attitude);
+                spdlog::warn(
+                    "[{}] attitude recovery #{} triggered by {}; pause target={} and center lower "
+                    "wheels",
+                    tag,
+                    attitude_recovery->recovery_count,
+                    attitude_side_name(*active_side),
+                    endpoint_to_config(*resume_target));
+
+                f.motion->stop_cleaning();
+                run_lower_attitude_center_recovery(*f.walk_group,
+                                                   attitude_recovery->left_sw,
+                                                   attitude_recovery->right_sw,
+                                                   tag);
+                REQUIRE(f.motion->start_segment(robot::domain::MissionSegment{
+                    *resume_target, robot::domain::SegmentMode::Cleaning}));
+                segment_started_at = std::chrono::steady_clock::now();
+                segment_deadline = segment_started_at + std::chrono::seconds(kp.limit_timeout_sec);
+                last_log_at = {};
+                spdlog::warn("[{}] attitude recovery #{} done; resume target={}",
+                             tag,
+                             attitude_recovery->recovery_count,
+                             endpoint_to_config(*resume_target));
+                std::this_thread::sleep_for(std::chrono::milliseconds(kp.loop_period_ms));
+                continue;
+            }
         }
 
         f.motion->update();
@@ -1523,6 +1603,15 @@ void run_configured_system_chain(SystemHwFixture& f,
     }
 
     require_diagnostics_health_log(health_path);
+}
+
+void run_configured_system_chain_with_attitude_recovery(SystemHwFixture& f,
+                                                        const char* tag,
+                                                        uint32_t repeat_count) {
+    CombinedAttitudeRecoveryContext attitude_recovery;
+    run_configured_system_chain(
+        f, tag, repeat_count, false, false, false, std::nullopt, &attitude_recovery);
+    CHECK(attitude_recovery.recovery_count > 0);
 }
 
 }  // namespace

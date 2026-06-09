@@ -215,6 +215,12 @@ TEST_CASE("N 趟完整任务链 + 全程持续采集健康数据", "[hw_system][
     run_configured_system_chain(f, "hw_system][combined", kp.combined_passes, false, false, false);
 }
 
+TEST_CASE("完整任务链 + 姿态极限触发后回中恢复", "[hw_system][combined_attitude_recover]") {
+    SystemHwFixture f;
+    run_configured_system_chain_with_attitude_recovery(
+        f, "hw_system][combined_attitude_recover", kp.combined_passes);
+}
+
 TEST_CASE("完整任务链 + 融合里程计日志", "[hw_system][combined_nvm_real]") {
     SystemHwFixture f;
     run_configured_system_chain(
