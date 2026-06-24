@@ -142,20 +142,48 @@ TEST_CASE("RobotController completes configured single-dock mission through two 
     REQUIRE(controller.snapshot().state == "Idle");
 }
 
-TEST_CASE("RobotController unexpected endpoint enters FaultStopped",
+TEST_CASE("RobotController restarts current segment on source endpoint repeat",
           "[app][robot_controller]") {
-    RobotController controller;
+    RecordingRobotActions actions;
+    RobotController controller(actions.ports());
     controller.set_position_state_query([] { return robot::domain::PositionState::AtA; });
     REQUIRE(controller
                 .submit_command(RobotCommand{
-                    RobotCommandKind::CleanTowardPrimaryDock, CommandSource::Rpc, "cmd-1"})
+                    RobotCommandKind::StartConfiguredMission, CommandSource::Rpc, "cmd-1"})
+                .accepted);
+    controller.complete_self_check_for_test(true);
+    REQUIRE(actions.start_segment_count == 1);
+
+    controller.handle_limit_settled_for_test(robot::domain::Endpoint::A);
+
+    REQUIRE(controller.snapshot().state == "ExecutingMission");
+    REQUIRE_FALSE(controller.snapshot().fault.has_value());
+    REQUIRE(actions.start_segment_count == 2);
+
+    controller.handle_limit_settled_for_test(robot::domain::Endpoint::B);
+    REQUIRE(controller.snapshot().state == "ExecutingMission");
+}
+
+TEST_CASE("RobotController faults after repeated source endpoint triggers",
+          "[app][robot_controller]") {
+    RecordingRobotActions actions;
+    RobotController controller(actions.ports());
+    controller.set_position_state_query([] { return robot::domain::PositionState::AtA; });
+    REQUIRE(controller
+                .submit_command(RobotCommand{
+                    RobotCommandKind::StartConfiguredMission, CommandSource::Rpc, "cmd-1"})
                 .accepted);
     controller.complete_self_check_for_test(true);
 
-    controller.handle_limit_settled_for_test(robot::domain::Endpoint::B);
+    for (int i = 0; i < 10; ++i) {
+        controller.handle_limit_settled_for_test(robot::domain::Endpoint::A);
+    }
+    REQUIRE(controller.snapshot().state == "ExecutingMission");
 
+    controller.handle_limit_settled_for_test(robot::domain::Endpoint::A);
     REQUIRE(controller.snapshot().state == "FaultStopped");
-    REQUIRE(controller.snapshot().fault.has_value());
+    REQUIRE(controller.snapshot().fault == robot::domain::FaultCode::kUnexpectedLimitSide);
+    REQUIRE(actions.emergency_stop_count == 1);
 }
 
 TEST_CASE("RobotController ignores settled endpoint while idle", "[app][robot_controller]") {

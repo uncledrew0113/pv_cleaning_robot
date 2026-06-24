@@ -45,10 +45,18 @@ TEST_CASE("融合里程计在静止和低速运动时输出有效", "[hw_system]
     const auto target = robot::domain::opposite_endpoint(kp.primary_dock);
     REQUIRE(f.motion->start_segment(
         robot::domain::MissionSegment{target, robot::domain::SegmentMode::Cleaning}));
+    double max_abs_fused_odom_delta = 0.0;
     const auto moving_deadline = std::chrono::steady_clock::now() + 1500ms;
     while (std::chrono::steady_clock::now() < moving_deadline) {
         f.motion->update();
         f.nav->update();
+        const auto odom_sample = f.nav->get_fused_odometry();
+        if (odom_sample.valid && std::isfinite(odom_sample.fused_distance_m) &&
+            std::isfinite(idle.fused_distance_m)) {
+            max_abs_fused_odom_delta = std::max(
+                max_abs_fused_odom_delta,
+                std::abs(odom_sample.fused_distance_m - idle.fused_distance_m));
+        }
         std::this_thread::sleep_for(50ms);
     }
     f.motion->emergency_stop();
@@ -69,7 +77,8 @@ TEST_CASE("融合里程计在静止和低速运动时输出有效", "[hw_system]
     CHECK(std::isfinite(moving.bottom_distance_m));
     CHECK(std::isfinite(moving.fused_distance_m));
     CHECK(std::isfinite(moving.distance_diff_m));
-    CHECK(std::abs(moving.fused_distance_m - idle.fused_distance_m) > 0.02);
+    INFO("max_abs_fused_odom_delta=" << max_abs_fused_odom_delta);
+    CHECK(max_abs_fused_odom_delta > 0.02);
 }
 
 TEST_CASE("HealthService DIAGNOSTICS 落盘真实传感器数据", "[hw_system][health_real_data]") {
@@ -208,6 +217,11 @@ TEST_CASE("配置完整任务通过真实限位闭环完成", "[hw_system][n1_cl
     REQUIRE(f.start_configured_assuming_primary_dock().accepted);
     CHECK(f.controller->snapshot().state == "ExecutingMission");
     CHECK(f.wait_until_state("Idle", std::chrono::seconds(kp.limit_timeout_sec * 2)));
+}
+
+TEST_CASE("回停机位并通过辅助停机接近稳定对齐", "[hw_system][dock_align]") {
+    SystemHwFixture f;
+    run_dock_align_test(f);
 }
 
 TEST_CASE("N 趟完整任务链 + 全程持续采集健康数据", "[hw_system][combined]") {

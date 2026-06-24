@@ -217,7 +217,8 @@ bool MotionService::start_cleaning_to(domain::Endpoint target) {
         return false;
     activate_walk_command(cmd, domain::travel_direction_to(target));
 
-    brush_->set_rpm(std::abs(state.cfg.brush_rpm) * dir);
+    const int brush_direction_sign = state.cfg.brush_direction_sign < 0 ? -1 : 1;
+    brush_->set_rpm(std::abs(state.cfg.brush_rpm) * dir * brush_direction_sign);
     return true;
 }
 

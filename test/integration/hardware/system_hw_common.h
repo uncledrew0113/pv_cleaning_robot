@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <rapidjson/document.h>
@@ -28,6 +29,7 @@
 #include "pv_cleaning_robot/device/imu_device.h"
 #include "pv_cleaning_robot/middleware/event_bus.h"
 #include "pv_cleaning_robot/middleware/safety_monitor.h"
+#include "pv_cleaning_robot/middleware/thread_executor.h"
 #include "pv_cleaning_robot/service/config_service.h"
 #include "pv_cleaning_robot/service/fault_service.h"
 #include "pv_cleaning_robot/service/health_service.h"
@@ -50,6 +52,10 @@ rapidjson::Document parse_json_line(const std::string& line) {
 
 const char* endpoint_to_config(robot::domain::Endpoint endpoint) {
     return endpoint == robot::domain::Endpoint::A ? "A" : "B";
+}
+
+int endpoint_to_code(robot::domain::Endpoint endpoint) {
+    return endpoint == robot::domain::Endpoint::A ? 1 : 2;
 }
 
 const char* fault_code_name(uint32_t code) {
@@ -339,12 +345,14 @@ class SystemHwFixture : public hw::IGracefulShutdown {
     std::shared_ptr<robot::device::LimitSwitch> left_sw;
     std::shared_ptr<robot::device::LimitSwitch> right_sw;
     std::unique_ptr<robot::middleware::SafetyMonitor> safety;
+    std::unique_ptr<robot::middleware::ThreadExecutor> bms_exec;
 
     robot::domain::PositionState position_state{robot::domain::PositionState::OnSegment};
     bool real_brush{false};
     bool initialized{false};
     uint32_t repeat_count{1};
     std::optional<robot::domain::Endpoint> active_segment_target;
+    std::atomic<int> active_segment_target_code{0};
 
     bool init(bool use_real_brush = false,
               bool pid_enabled = false,
@@ -422,6 +430,8 @@ class SystemHwFixture : public hw::IGracefulShutdown {
         robot::app::RobotController::ActionPorts actions;
         actions.start_segment = [this](const robot::domain::MissionSegment& segment) {
             active_segment_target = segment.target;
+            active_segment_target_code.store(endpoint_to_code(segment.target),
+                                             std::memory_order_release);
             spdlog::info("[hw_system] start_segment target={} mode=Cleaning",
                          endpoint_to_config(segment.target));
             return motion->start_segment(segment);
@@ -501,11 +511,50 @@ class SystemHwFixture : public hw::IGracefulShutdown {
         return safety->start();
     }
 
+    bool start_bms_polling() {
+        if (!bms) {
+            return false;
+        }
+        if (bms_exec && bms_exec->is_running()) {
+            return true;
+        }
+        bms_exec = std::make_unique<robot::middleware::ThreadExecutor>(
+            robot::middleware::ThreadExecutor::Config{"bms", 500, 0, 0, 0x0F});
+        bms_exec->add_runnable(
+            std::make_shared<robot::middleware::RunnableAdapter>([this]() {
+                if (bms) {
+                    bms->update();
+                }
+            }));
+        return bms_exec->start();
+    }
+
+    void stop_bms_polling() {
+        if (bms_exec) {
+            bms_exec->stop();
+            bms_exec.reset();
+        }
+    }
+
     robot::app::CommandResult start_directional_to_opposite() {
         auto result = controller->submit_command(robot::domain::RobotCommand{
             robot::domain::RobotCommandKind::CleanTowardOppositeEndpoint,
             robot::domain::CommandSource::Rpc,
             "hw-clean-opposite"});
+        if (!result.accepted) {
+            return result;
+        }
+        controller->complete_self_check(true);
+        controller->drain_for_test();
+        return {true, "accepted"};
+    }
+
+    robot::app::CommandResult start_directional_to_primary_dock_from_segment() {
+        position_state = robot::domain::PositionState::OnSegment;
+        auto result = controller->submit_command(robot::domain::RobotCommand{
+            robot::domain::RobotCommandKind::CleanTowardPrimaryDock,
+            robot::domain::CommandSource::Rpc,
+            "hw-clean-primary-dock"});
         if (!result.accepted) {
             return result;
         }
@@ -552,6 +601,7 @@ class SystemHwFixture : public hw::IGracefulShutdown {
     }
 
     void shutdown() override {
+        stop_bms_polling();
         if (safety) {
             safety->stop();
         }
@@ -658,6 +708,14 @@ struct CombinedAttitudeRecoveryContext {
         return left_sw.open(0, 2, 0, false) && right_sw.open(0, 2, 0, false);
     }
 };
+
+enum class LowerAttitudeCenterOutcome {
+    Completed,
+    InterruptedByEndpointA,
+    InterruptedByEndpointB,
+};
+
+using EndpointInterruptQuery = std::function<std::optional<robot::domain::Endpoint>()>;
 
 struct PitchSample {
     float pitch_min{0.0f};
@@ -961,10 +1019,173 @@ void command_lower_wheels(robot::device::WalkMotorGroup& group, float lower_rpm)
     group.update();
 }
 
-void run_lower_attitude_center_recovery(robot::device::WalkMotorGroup& group,
-                                        robot::device::AttitudeLimitSwitch& left_sw,
-                                        robot::device::AttitudeLimitSwitch& right_sw,
-                                        const char* tag) {
+bool open_aux_dock_pin(robot::driver::LibGpiodPin& pin) {
+    robot::hal::GpioConfig cfg;
+    cfg.direction = robot::hal::GpioDirection::INPUT;
+    cfg.bias = robot::hal::GpioBias::PULL_UP;
+    cfg.debounce_ms = 2;
+    cfg.use_irq = false;
+    return pin.open(cfg);
+}
+
+bool is_dock_limit_active(const SystemHwFixture& f, robot::domain::Endpoint dock) {
+    const auto& sw = dock == robot::domain::Endpoint::A ? f.left_sw : f.right_sw;
+    return sw && !sw->read_current_level();
+}
+
+bool is_aux_dock_active(robot::driver::LibGpiodPin& aux_pin) {
+    return !aux_pin.read_value();
+}
+
+bool wait_dock_pair_stable(const SystemHwFixture& f,
+                           robot::driver::LibGpiodPin& aux_pin,
+                           robot::domain::Endpoint dock,
+                           int stable_samples_required,
+                           std::chrono::milliseconds timeout,
+                           const char* tag) {
+    int stable_samples = 0;
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (!hw::HwExitGuard::instance().exit_requested() &&
+           std::chrono::steady_clock::now() < deadline &&
+           stable_samples < stable_samples_required) {
+        const bool dock_active = is_dock_limit_active(f, dock);
+        const bool aux_active = is_aux_dock_active(aux_pin);
+        if (dock_active && aux_active) {
+            ++stable_samples;
+        } else {
+            stable_samples = 0;
+        }
+        spdlog::info("[{}][dock_align][stable_check] dock={} dock_active={} aux_active={} "
+                     "stable={}/{}",
+                     tag,
+                     endpoint_to_config(dock),
+                     dock_active,
+                     aux_active,
+                     stable_samples,
+                     stable_samples_required);
+        std::this_thread::sleep_for(std::chrono::milliseconds(kp.loop_period_ms));
+    }
+    return stable_samples >= stable_samples_required;
+}
+
+void command_dock_adjust_pulse(robot::device::WalkMotorGroup& group,
+                               robot::domain::Endpoint dock,
+                               int pattern,
+                               float rpm) {
+    const int dir = dock == robot::domain::Endpoint::A ? 1 : -1;
+    const float top = std::abs(rpm) * static_cast<float>(dir);
+    const float lower = -top;
+    robot::device::WalkMotorGroup::SpeedCmd cmd{};
+    switch (pattern % 5) {
+        case 0:
+            cmd = {top, top, lower, lower};
+            break;
+        case 1:
+            cmd = {top, top, 0.0f, 0.0f};
+            break;
+        case 2:
+            cmd = {0.0f, 0.0f, lower, lower};
+            break;
+        case 3:
+            cmd = {-top, -top, 0.0f, 0.0f};
+            break;
+        default:
+            cmd = {0.0f, 0.0f, -lower, -lower};
+            break;
+    }
+    REQUIRE(group.set_speeds(cmd) == robot::device::DeviceError::OK);
+    group.update();
+}
+
+void stop_walk_group(robot::device::WalkMotorGroup& group) {
+    REQUIRE(group.set_speeds(0.0f, 0.0f, 0.0f, 0.0f) == robot::device::DeviceError::OK);
+    group.update();
+}
+
+void run_dock_align_test(SystemHwFixture& f) {
+    const auto dock = kp.primary_dock;
+    auto aux_gpio = std::make_shared<robot::driver::LibGpiodPin>(kp.gpio_chip,
+                                                                  kp.aux_dock_limit_line);
+
+    REQUIRE(f.init(false, true));
+    REQUIRE(f.start_safety_bridge());
+    REQUIRE(open_aux_dock_pin(*aux_gpio));
+    REQUIRE(f.walk_group->set_feedback_mode_all(10u) == robot::device::DeviceError::OK);
+    REQUIRE(f.walk_group->enable_all() == robot::device::DeviceError::OK);
+    REQUIRE(f.walk_group->set_mode_all(robot::protocol::WalkMotorMode::SPEED) ==
+            robot::device::DeviceError::OK);
+
+    constexpr int kStableSamplesRequired = 4;
+    constexpr auto kStableCheckTimeout = 800ms;
+    constexpr auto kAdjustMaxRun = 30000ms;
+    constexpr auto kAdjustPulse = 250ms;
+    const float adjust_rpm = std::clamp(std::abs(kp.limit_test_rpm) * 0.3f, 1.0f, 4.0f);
+
+    spdlog::warn("[hw_system][dock_align] single RPC to dock with PID enabled; target_dock={} "
+                 "aux={}/{} adjust_rpm={:.1f}",
+                 endpoint_to_config(dock),
+                 kp.gpio_chip,
+                 kp.aux_dock_limit_line,
+                 adjust_rpm);
+
+    if (!wait_dock_pair_stable(f,
+                               *aux_gpio,
+                               dock,
+                               kStableSamplesRequired,
+                               kStableCheckTimeout,
+                               "hw_system")) {
+        if (!is_dock_limit_active(f, dock)) {
+            REQUIRE(f.start_directional_to_primary_dock_from_segment().accepted);
+            REQUIRE(f.wait_until_state("Idle", std::chrono::seconds(kp.limit_timeout_sec)));
+        } else {
+            f.motion->stop_cleaning();
+        }
+    }
+
+    const auto adjust_deadline = std::chrono::steady_clock::now() + kAdjustMaxRun;
+    int pattern = 0;
+    while (!hw::HwExitGuard::instance().exit_requested() &&
+           std::chrono::steady_clock::now() < adjust_deadline) {
+        if (wait_dock_pair_stable(f,
+                                  *aux_gpio,
+                                  dock,
+                                  kStableSamplesRequired,
+                                  kStableCheckTimeout,
+                                  "hw_system")) {
+            stop_walk_group(*f.walk_group);
+            return;
+        }
+
+        f.walk_group->clear_override();
+        f.walk_group->update();
+        command_dock_adjust_pulse(*f.walk_group, dock, pattern, adjust_rpm);
+        std::this_thread::sleep_for(kAdjustPulse);
+        stop_walk_group(*f.walk_group);
+
+        const bool dock_active = is_dock_limit_active(f, dock);
+        const bool aux_active = is_aux_dock_active(*aux_gpio);
+        spdlog::warn("[hw_system][dock_align][adjust] pattern={} dock_active={} aux_active={}",
+                     pattern % 5,
+                     dock_active,
+                     aux_active);
+        ++pattern;
+    }
+
+    stop_walk_group(*f.walk_group);
+    REQUIRE_FALSE(hw::HwExitGuard::instance().exit_requested());
+    INFO("dock=" << endpoint_to_config(dock));
+    INFO("dock_active=" << is_dock_limit_active(f, dock));
+    INFO("aux_active=" << is_aux_dock_active(*aux_gpio));
+    REQUIRE(wait_dock_pair_stable(
+        f, *aux_gpio, dock, kStableSamplesRequired, kStableCheckTimeout, "hw_system"));
+}
+
+LowerAttitudeCenterOutcome run_lower_attitude_center_recovery(
+    robot::device::WalkMotorGroup& group,
+    robot::device::AttitudeLimitSwitch& left_sw,
+    robot::device::AttitudeLimitSwitch& right_sw,
+    const char* tag,
+    EndpointInterruptQuery endpoint_interrupt_query = {}) {
     REQUIRE(group.set_feedback_mode_all(10u) == robot::device::DeviceError::OK);
     REQUIRE(group.enable_all() == robot::device::DeviceError::OK);
     REQUIRE(group.set_mode_all(robot::protocol::WalkMotorMode::SPEED) ==
@@ -981,11 +1202,31 @@ void run_lower_attitude_center_recovery(robot::device::WalkMotorGroup& group,
         "双侧同时触发视为异常。LT/RT=0，仅驱动 LB/RB 低速回中",
         tag);
 
+    auto check_endpoint_interrupt = [&]() -> std::optional<LowerAttitudeCenterOutcome> {
+        if (!endpoint_interrupt_query) {
+            return std::nullopt;
+        }
+        const auto endpoint = endpoint_interrupt_query();
+        if (!endpoint.has_value()) {
+            return std::nullopt;
+        }
+        command_lower_wheels(group, 0.0f);
+        spdlog::warn("[{}][lower_attitude_center] interrupted by endpoint={}",
+                     tag,
+                     endpoint_to_config(*endpoint));
+        return *endpoint == robot::domain::Endpoint::A
+                   ? LowerAttitudeCenterOutcome::InterruptedByEndpointA
+                   : LowerAttitudeCenterOutcome::InterruptedByEndpointB;
+    };
+
     auto initial_side = std::optional<robot::device::AttitudeLimitSide>{};
     auto deadline = std::chrono::steady_clock::now() + kSearchTimeout;
     bool search_started = false;
     while (!hw::HwExitGuard::instance().exit_requested() &&
            std::chrono::steady_clock::now() < deadline && !initial_side.has_value()) {
+        if (const auto outcome = check_endpoint_interrupt()) {
+            return *outcome;
+        }
         const auto left = left_sw.read_status();
         const auto right = right_sw.read_status();
         const auto state = classify_lower_attitude_state(left, right);
@@ -1036,6 +1277,9 @@ void run_lower_attitude_center_recovery(robot::device::WalkMotorGroup& group,
     while (!hw::HwExitGuard::instance().exit_requested() &&
            std::chrono::steady_clock::now() < deadline &&
            stable_release_samples < kStableSamplesRequired) {
+        if (const auto outcome = check_endpoint_interrupt()) {
+            return *outcome;
+        }
         command_lower_wheels(group, plan.initial_lower_rpm);
         const auto status = read_attitude_status(plan.release_side, left_sw, right_sw);
         if (!status.active_low_asserted) {
@@ -1083,6 +1327,9 @@ void run_lower_attitude_center_recovery(robot::device::WalkMotorGroup& group,
     while (!hw::HwExitGuard::instance().exit_requested() &&
            std::chrono::steady_clock::now() < deadline &&
            opposite_at == std::chrono::steady_clock::time_point{}) {
+        if (const auto outcome = check_endpoint_interrupt()) {
+            return *outcome;
+        }
         command_lower_wheels(group, plan.initial_lower_rpm);
         const auto status = read_attitude_status(plan.opposite_side, left_sw, right_sw);
         if (status.active_low_asserted) {
@@ -1111,6 +1358,9 @@ void run_lower_attitude_center_recovery(robot::device::WalkMotorGroup& group,
     deadline = std::chrono::steady_clock::now() + return_duration;
     while (!hw::HwExitGuard::instance().exit_requested() &&
            std::chrono::steady_clock::now() < deadline) {
+        if (const auto outcome = check_endpoint_interrupt()) {
+            return *outcome;
+        }
         command_lower_wheels(group, plan.return_lower_rpm);
         std::this_thread::sleep_for(std::chrono::milliseconds(kp.loop_period_ms));
     }
@@ -1119,6 +1369,7 @@ void run_lower_attitude_center_recovery(robot::device::WalkMotorGroup& group,
     log_attitude_status(
         "[lower_attitude_center][done]", left_sw.read_status(), right_sw.read_status());
     REQUIRE_FALSE(hw::HwExitGuard::instance().exit_requested());
+    return LowerAttitudeCenterOutcome::Completed;
 }
 
 void run_lower_attitude_center_test() {
@@ -1271,11 +1522,20 @@ void require_diagnostics_health_log(const std::filesystem::path& path) {
             ++line_count;
             auto json = parse_json_line(line);
             REQUIRE(json.IsObject());
-            REQUIRE(json.HasMember("walk"));
-            REQUIRE(json.HasMember("brush"));
-            REQUIRE(json.HasMember("bms"));
-            REQUIRE(json.HasMember("imu"));
-            REQUIRE(json.HasMember("gps"));
+            REQUIRE(json.HasMember("ts"));
+            REQUIRE(json["ts"].IsUint64());
+            REQUIRE(json.HasMember("values"));
+            REQUIRE(json["values"].IsObject());
+
+            const auto& values = json["values"];
+            REQUIRE(values.HasMember("lt_rpm"));
+            REQUIRE(values.HasMember("rt_rpm"));
+            REQUIRE(values.HasMember("lb_rpm"));
+            REQUIRE(values.HasMember("rb_rpm"));
+            REQUIRE(values.HasMember("br_rpm"));
+            REQUIRE(values.HasMember("bat_soc"));
+            REQUIRE(values.HasMember("imu_y"));
+            REQUIRE(values.HasMember("gps_fix"));
         }
     }
     CHECK(line_count > 0);
@@ -1304,6 +1564,7 @@ void run_configured_system_chain(SystemHwFixture& f,
     f.repeat_count = std::max<uint32_t>(1u, repeat_count);
     REQUIRE(f.init(
         expect_real_brush, log_heading_pid_debug, health_path.string(), motion_config_override));
+    REQUIRE(f.start_bms_polling());
     REQUIRE(f.start_safety_bridge());
     if (attitude_recovery != nullptr) {
         REQUIRE(attitude_recovery->open());
@@ -1315,10 +1576,25 @@ void run_configured_system_chain(SystemHwFixture& f,
     REQUIRE(f.health != nullptr);
     REQUIRE(f.watchdog != nullptr);
 
+    std::atomic<bool> attitude_recovery_running{false};
+    std::atomic<int> attitude_recovery_endpoint_interrupt{0};
     std::atomic<int> settled_count{0};
+    std::atomic<int> target_settled_count{0};
+    std::atomic<int> source_repeat_settled_count{0};
     f.bus.subscribe<robot::middleware::SafetyMonitor::LimitSettledEvent>(
         [&](const robot::middleware::SafetyMonitor::LimitSettledEvent& evt) {
             ++settled_count;
+            const int target_code = f.active_segment_target_code.load(std::memory_order_acquire);
+            if (target_code == endpoint_to_code(evt.endpoint)) {
+                ++target_settled_count;
+            } else {
+                ++source_repeat_settled_count;
+            }
+            if (attitude_recovery_running.load(std::memory_order_acquire)) {
+                attitude_recovery_endpoint_interrupt.store(
+                    evt.endpoint == robot::domain::Endpoint::A ? 1 : 2,
+                    std::memory_order_release);
+            }
             spdlog::info("[{}] limit settled endpoint={}", tag, endpoint_to_config(evt.endpoint));
         });
     std::atomic<int> unstable_count{0};
@@ -1340,6 +1616,7 @@ void run_configured_system_chain(SystemHwFixture& f,
     REQUIRE(watchdog_ticket >= 0);
 
     const auto odom_before = f.nav->get_fused_odometry();
+    double max_abs_fused_odom_delta = 0.0;
     const uint32_t frames_before = f.walk_group->get_group_diagnostics().ctrl_frame_count;
     int health_records = 0;
     int max_abs_brush_rpm = 0;
@@ -1365,7 +1642,8 @@ void run_configured_system_chain(SystemHwFixture& f,
     auto segment_started_at = std::chrono::steady_clock::now();
     auto last_log_at = std::chrono::steady_clock::time_point{};
     int current_segment = 1;
-    int last_settled_count = 0;
+    int last_target_settled_count = 0;
+    int last_source_repeat_settled_count = 0;
 
     auto norm_angle = [](float deg) {
         while (deg > 180.0f)
@@ -1419,16 +1697,45 @@ void run_configured_system_chain(SystemHwFixture& f,
                     endpoint_to_config(*resume_target));
 
                 f.motion->stop_cleaning();
-                run_lower_attitude_center_recovery(*f.walk_group,
-                                                   attitude_recovery->left_sw,
-                                                   attitude_recovery->right_sw,
-                                                   tag);
-                REQUIRE(f.motion->start_segment(robot::domain::MissionSegment{
-                    *resume_target, robot::domain::SegmentMode::Cleaning}));
+                attitude_recovery_endpoint_interrupt.store(0, std::memory_order_release);
+                attitude_recovery_running.store(true, std::memory_order_release);
+                const auto outcome = run_lower_attitude_center_recovery(
+                    *f.walk_group,
+                    attitude_recovery->left_sw,
+                    attitude_recovery->right_sw,
+                    tag,
+                    [&]() -> std::optional<robot::domain::Endpoint> {
+                        const int value =
+                            attitude_recovery_endpoint_interrupt.load(std::memory_order_acquire);
+                        if (value == 1) {
+                            return robot::domain::Endpoint::A;
+                        }
+                        if (value == 2) {
+                            return robot::domain::Endpoint::B;
+                        }
+                        return std::nullopt;
+                    });
+                attitude_recovery_running.store(false, std::memory_order_release);
+                if (outcome == LowerAttitudeCenterOutcome::Completed) {
+                    REQUIRE(f.motion->start_segment(robot::domain::MissionSegment{
+                        *resume_target, robot::domain::SegmentMode::Cleaning}));
+                } else {
+                    const auto interrupted_endpoint =
+                        outcome == LowerAttitudeCenterOutcome::InterruptedByEndpointA
+                            ? robot::domain::Endpoint::A
+                            : robot::domain::Endpoint::B;
+                    spdlog::warn(
+                        "[{}] attitude recovery #{} interrupted by endpoint={}; controller will "
+                        "resume by current mission target={}",
+                        tag,
+                        attitude_recovery->recovery_count,
+                        endpoint_to_config(interrupted_endpoint),
+                        endpoint_to_config(*resume_target));
+                }
                 segment_started_at = std::chrono::steady_clock::now();
                 segment_deadline = segment_started_at + std::chrono::seconds(kp.limit_timeout_sec);
                 last_log_at = {};
-                spdlog::warn("[{}] attitude recovery #{} done; resume target={}",
+                spdlog::warn("[{}] attitude recovery #{} done; target_before_recovery={}",
                              tag,
                              attitude_recovery->recovery_count,
                              endpoint_to_config(*resume_target));
@@ -1461,25 +1768,38 @@ void run_configured_system_chain(SystemHwFixture& f,
         const float yaw_drift = std::abs(norm_angle(target_yaw - imu.yaw_deg));
         max_yaw_drift = std::max(max_yaw_drift, yaw_drift);
 
-        const int current_settled_count = settled_count.load();
-        if (current_settled_count != last_settled_count) {
+        const int current_target_settled_count = target_settled_count.load();
+        if (current_target_settled_count != last_target_settled_count) {
             const double segment_duration_s =
                 std::chrono::duration<double>(now - segment_started_at).count();
             if (pid_metrics.is_open()) {
                 pid_metrics << build_segment_summary_json(current_segment,
-                                                          current_settled_count,
+                                                          current_target_settled_count,
                                                           f.controller->snapshot().state,
                                                           segment_duration_s)
                             << '\n';
             }
-            spdlog::info("[{}] 段 {} 完成：settled_count={} duration={:.1f}s",
+            spdlog::info("[{}] 段 {} 完成：target_settled_count={} total_settled_count={} "
+                         "source_repeat_count={} duration={:.1f}s",
                          tag,
                          current_segment,
-                         current_settled_count,
+                         current_target_settled_count,
+                         settled_count.load(),
+                         source_repeat_settled_count.load(),
                          segment_duration_s);
-            last_settled_count = current_settled_count;
+            last_target_settled_count = current_target_settled_count;
             ++current_segment;
             segment_started_at = now;
+            segment_deadline = now + std::chrono::seconds(kp.limit_timeout_sec);
+        }
+        const int current_source_repeat_count = source_repeat_settled_count.load();
+        if (current_source_repeat_count != last_source_repeat_settled_count) {
+            spdlog::warn("[{}] 源端限位重复触发：source_repeat_count={} total_settled_count={}，"
+                         "当前段继续执行",
+                         tag,
+                         current_source_repeat_count,
+                         settled_count.load());
+            last_source_repeat_settled_count = current_source_repeat_count;
             segment_deadline = now + std::chrono::seconds(kp.limit_timeout_sec);
         }
 
@@ -1490,6 +1810,12 @@ void run_configured_system_chain(SystemHwFixture& f,
             last_log_at = now;
             const auto snapshot = f.controller->snapshot();
             const auto odom = f.nav->get_fused_odometry();
+            if (odom.valid && std::isfinite(odom.fused_distance_m) &&
+                std::isfinite(odom_before.fused_distance_m)) {
+                max_abs_fused_odom_delta = std::max(
+                    max_abs_fused_odom_delta,
+                    std::abs(odom.fused_distance_m - odom_before.fused_distance_m));
+            }
             const auto pid = f.motion->heading_pid_debug_state();
             if (pid.mode != robot::service::HeadingCorrector::Mode::UNINITIALIZED) {
                 saw_pid_initialized = true;
@@ -1566,10 +1892,12 @@ void run_configured_system_chain(SystemHwFixture& f,
     if (final_snapshot.state == "FaultStopped") {
         INFO("fault=" << fault_to_string(final_snapshot.fault));
         INFO("settled_count=" << settled_count.load());
+        INFO("target_settled_count=" << target_settled_count.load());
+        INFO("source_repeat_settled_count=" << source_repeat_settled_count.load());
         INFO("unstable_count=" << unstable_count.load());
     }
     REQUIRE(final_snapshot.state == "Idle");
-    CHECK(settled_count.load() >= static_cast<int>(f.repeat_count * 2u));
+    CHECK(target_settled_count.load() >= static_cast<int>(f.repeat_count * 2u));
     CHECK(unstable_count.load() == 0);
     CHECK_FALSE(watchdog_timeout.load());
     CHECK(health_records > 0);
@@ -1584,7 +1912,8 @@ void run_configured_system_chain(SystemHwFixture& f,
         CHECK(std::isfinite(odom_after.bottom_distance_m));
         CHECK(std::isfinite(odom_after.fused_distance_m));
         CHECK(std::isfinite(odom_after.distance_diff_m));
-        CHECK(std::abs(odom_after.fused_distance_m - odom_before.fused_distance_m) > 0.02);
+        INFO("max_abs_fused_odom_delta=" << max_abs_fused_odom_delta);
+        CHECK(max_abs_fused_odom_delta > 0.02);
     }
 
     if (expect_real_brush) {

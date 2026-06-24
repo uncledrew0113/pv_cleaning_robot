@@ -26,6 +26,7 @@ class MotionService : public middleware::IRunnable, public domain::EmergencyStop
         float clean_speed_rpm{30.0f};   ///< 清扫行进速度（绝对值 RPM）
         float return_speed_rpm{30.0f};  ///< 返回速度（绝对值 RPM）
         int brush_rpm{1200};            ///< 滚刷转速绝对值
+        int brush_direction_sign{1};     ///< 测试/调试用滚刷方向乘子：1=默认，-1=反向
         bool heading_pid_en{true};      ///< 是否使能视觉纠偏
         HeadingCorrector::Params pid{};  ///< 视觉纠偏参数
     };

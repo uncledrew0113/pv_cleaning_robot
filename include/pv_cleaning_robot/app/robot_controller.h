@@ -100,8 +100,10 @@ private:
                                                       domain::PositionState position_state) const;
     CommandResult stop_locked();
     bool start_current_segment_locked();
+    void reset_source_limit_repeat_locked() noexcept;
     void complete_self_check_locked(bool ok);
     void handle_limit_settled_locked(domain::Endpoint endpoint);
+    void handle_source_limit_repeat_locked(domain::Endpoint endpoint);
     void handle_limit_unstable_locked(domain::Endpoint endpoint);
     void handle_watchdog_timeout_locked(const std::string& thread_name);
     void handle_recovery_finished_locked(bool ok);
@@ -116,6 +118,7 @@ private:
     ConfigPorts config_{};
     std::function<domain::PositionState()> position_state_query_;
     std::function<float()> battery_soc_query_;
+    int source_limit_repeat_count_{0};
 
     mutable std::mutex queue_mtx_;
     std::condition_variable queue_cv_;

@@ -86,6 +86,26 @@ TEST_CASE("MotionService starts cleaning toward opposite endpoint A", "[service]
     REQUIRE(f.serial->take_tx_text().find("v 0 -20.000 0\n") != std::string::npos);
 }
 
+TEST_CASE("MotionService can reverse brush direction without changing walk direction",
+          "[service][motion]") {
+    MotionFixture f;
+    auto cfg = make_motion_config();
+    cfg.brush_direction_sign = -1;
+    MotionService motion{f.group, f.brush, nullptr, f.bus, cfg};
+    f.serial->clear_tx();
+    f.can->sent_frames.clear();
+
+    REQUIRE(motion.start_segment(segment(robot::domain::Endpoint::A,
+                                         robot::domain::SegmentMode::Cleaning)));
+    motion.update();
+
+    REQUIRE(contains_frame(
+        f.can->sent_frames,
+        robot::protocol::WalkMotorCanCodec::encode_group_speed(
+            1u, 210.0f, 210.0f, -210.0f, -210.0f)));
+    REQUIRE(f.serial->take_tx_text().find("v 0 20.000 0\n") != std::string::npos);
+}
+
 TEST_CASE("MotionService applies primary dock A direction model", "[service][motion]") {
     MotionFixture f;
     f.motion.set_primary_dock_query([] { return robot::domain::Endpoint::A; });

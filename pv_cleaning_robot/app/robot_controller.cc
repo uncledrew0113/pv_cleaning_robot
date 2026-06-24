@@ -5,6 +5,10 @@
 
 namespace robot::app {
 
+namespace {
+constexpr int kMaxSourceLimitRepeats = 10;
+}  // namespace
+
 RobotController::RobotController(ActionPorts ports) : actions_(std::move(ports)) {}
 
 RobotController::~RobotController() {
@@ -210,6 +214,7 @@ CommandResult RobotController::submit_command_locked(const domain::RobotCommand&
         }
         active_fault_.reset();
         mission_.reset();
+        reset_source_limit_repeat_locked();
         if (actions_.clear_fault) {
             actions_.clear_fault();
         }
@@ -249,6 +254,7 @@ CommandResult RobotController::start_command_locked(const domain::RobotCommand& 
     }
 
     mission_ = build_start_mission_locked(command, lane, position_state);
+    reset_source_limit_repeat_locked();
     state_ = RobotState::SelfChecking;
     return {true, "accepted"};
 }
@@ -312,6 +318,7 @@ CommandResult RobotController::stop_locked() {
         actions_.stop_motion();
     }
     mission_.reset();
+    reset_source_limit_repeat_locked();
     state_ = RobotState::Idle;
     return {true, "accepted"};
 }
@@ -320,6 +327,7 @@ bool RobotController::start_current_segment_locked() {
     namespace FaultCode = robot::domain::FaultCode;
     if (!mission_) {
         active_fault_ = FaultCode::kTaskContextInconsistent;
+        reset_source_limit_repeat_locked();
         state_ = RobotState::FaultStopped;
         return false;
     }
@@ -327,12 +335,14 @@ bool RobotController::start_current_segment_locked() {
     if (segment == nullptr) {
         active_fault_ = FaultCode::kTaskContextInconsistent;
         mission_.reset();
+        reset_source_limit_repeat_locked();
         state_ = RobotState::FaultStopped;
         return false;
     }
     if (actions_.start_segment && !actions_.start_segment(*segment)) {
         active_fault_ = FaultCode::kSegmentStartFailed;
         mission_.reset();
+        reset_source_limit_repeat_locked();
         state_ = RobotState::FaultStopped;
         if (actions_.emergency_stop) {
             actions_.emergency_stop();
@@ -340,6 +350,10 @@ bool RobotController::start_current_segment_locked() {
         return false;
     }
     return true;
+}
+
+void RobotController::reset_source_limit_repeat_locked() noexcept {
+    source_limit_repeat_count_ = 0;
 }
 
 RobotControllerSnapshot RobotController::snapshot() const {
@@ -388,6 +402,7 @@ void RobotController::complete_self_check_locked(bool ok) {
     }
     if (!ok) {
         mission_.reset();
+        reset_source_limit_repeat_locked();
         state_ = RobotState::Idle;
         return;
     }
@@ -418,14 +433,20 @@ void RobotController::handle_limit_settled_locked(domain::Endpoint endpoint) {
     }
 
     const auto* segment = mission_->current_segment();
-    if (segment == nullptr || segment->target != endpoint) {
+    if (segment == nullptr) {
         active_fault_ = FaultCode::kUnexpectedLimitSide;
         mission_.reset();
+        reset_source_limit_repeat_locked();
         state_ = RobotState::FaultStopped;
+        return;
+    }
+    if (segment->target != endpoint) {
+        handle_source_limit_repeat_locked(endpoint);
         return;
     }
 
     state_ = RobotState::SettlingEndpoint;
+    reset_source_limit_repeat_locked();
     ++mission_->current_segment_index;
     if (mission_->current_segment_index >= mission_->segments.size()) {
         ++mission_->completed_cycles;
@@ -433,9 +454,29 @@ void RobotController::handle_limit_settled_locked(domain::Endpoint endpoint) {
     }
     if (mission_->completed_cycles >= mission_->repeat_count) {
         mission_.reset();
+        reset_source_limit_repeat_locked();
         state_ = RobotState::Idle;
         return;
     }
+    state_ = RobotState::ExecutingMission;
+    start_current_segment_locked();
+}
+
+void RobotController::handle_source_limit_repeat_locked(domain::Endpoint) {
+    namespace FaultCode = robot::domain::FaultCode;
+
+    ++source_limit_repeat_count_;
+    if (source_limit_repeat_count_ > kMaxSourceLimitRepeats) {
+        active_fault_ = FaultCode::kUnexpectedLimitSide;
+        mission_.reset();
+        reset_source_limit_repeat_locked();
+        state_ = RobotState::FaultStopped;
+        if (actions_.emergency_stop) {
+            actions_.emergency_stop();
+        }
+        return;
+    }
+
     state_ = RobotState::ExecutingMission;
     start_current_segment_locked();
 }
@@ -479,6 +520,7 @@ void RobotController::handle_fault_locked(const FaultFact& fact) {
     case FaultAction::RejectStart:
         if (state_ == RobotState::SelfChecking) {
             mission_.reset();
+            reset_source_limit_repeat_locked();
             state_ = RobotState::Idle;
         }
         return;
@@ -496,6 +538,7 @@ void RobotController::handle_fault_locked(const FaultFact& fact) {
     case FaultAction::EmergencyStopAndLatch:
         active_fault_ = fact.code;
         mission_.reset();
+        reset_source_limit_repeat_locked();
         state_ = RobotState::FaultStopped;
         if (actions_.emergency_stop) {
             actions_.emergency_stop();

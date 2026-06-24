@@ -87,6 +87,7 @@ struct CorrectionCompareCase {
     robot::service::HeadingCorrector::AngleSource angle_source;
     robot::service::HeadingCorrector::WheelStrategy wheel_strategy;
     bool slow_on_error;
+    int brush_direction_sign{1};
 };
 
 void run_correction_compare_case(const CorrectionCompareCase& c) {
@@ -107,8 +108,9 @@ void run_correction_compare_case(const CorrectionCompareCase& c) {
         kp.correction_compare.fusion.max_gyro_only_ms);
 
     SystemHwFixture f;
-    const auto motion_cfg =
+    auto motion_cfg =
         make_correction_compare_motion_config(c.angle_source, c.wheel_strategy, c.slow_on_error);
+    motion_cfg.brush_direction_sign = c.brush_direction_sign;
     run_configured_system_chain(
         f, c.tag, kp.combined_passes, true, true, true, motion_cfg);
 }
@@ -141,6 +143,16 @@ TEST_CASE("融合角不降速，上下轮共同纠偏", "[hw_system][corr_fused_
                                  robot::service::HeadingCorrector::AngleSource::FUSED_UDS_GYRO,
                                  robot::service::HeadingCorrector::WheelStrategy::ALL_WHEELS,
                                  false});
+}
+
+TEST_CASE("融合角不降速，上下轮共同纠偏，滚刷反向",
+          "[hw_system][corr_fused_fast_all_brush_reverse]") {
+    run_correction_compare_case(
+        {"hw_system][corr_fused_fast_all_brush_reverse",
+         robot::service::HeadingCorrector::AngleSource::FUSED_UDS_GYRO,
+         robot::service::HeadingCorrector::WheelStrategy::ALL_WHEELS,
+         false,
+         -1});
 }
 
 TEST_CASE("融合角不降速，只纠偏下轮", "[hw_system][corr_fused_fast_lower_only]") {
