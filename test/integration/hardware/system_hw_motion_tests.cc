@@ -7,78 +7,17 @@ TEST_CASE("系统组合根初始化后处于 Idle", "[hw_system][full_init]") {
 
     std::this_thread::sleep_for(500ms);
     const auto imu = f.imu->get_latest();
-    const auto odom = f.nav->get_fused_odometry();
+    f.gps_stuck->update();
+    const auto gps_stuck = f.gps_stuck->get_status();
     spdlog::info("[hw_system][full_init] imu_valid={} yaw={:.2f} pitch={:.2f} roll={:.2f}",
                  imu.valid,
                  imu.yaw_deg,
                  imu.pitch_deg,
                  imu.roll_deg);
-    spdlog::info("[hw_system][full_init] odom valid={} top={:.3f} bottom={:.3f} fused={:.3f}",
-                 odom.valid,
-                 odom.top_distance_m,
-                 odom.bottom_distance_m,
-                 odom.fused_distance_m);
-}
-
-TEST_CASE("融合里程计在静止和低速运动时输出有效", "[hw_system][nav_fused_odometry]") {
-    SystemHwFixture f;
-    REQUIRE(f.init());
-
-    std::this_thread::sleep_for(1500ms);
-    f.nav->update();
-    const auto idle = f.nav->get_fused_odometry();
-    spdlog::info(
-        "[hw_system][nav_fused_odometry] idle valid={} top={:.3f} bottom={:.3f} fused={:.3f} "
-        "diff={:.3f}",
-        idle.valid,
-        idle.top_distance_m,
-        idle.bottom_distance_m,
-        idle.fused_distance_m,
-        idle.distance_diff_m);
-
-    CHECK(idle.valid);
-    CHECK(std::isfinite(idle.top_distance_m));
-    CHECK(std::isfinite(idle.bottom_distance_m));
-    CHECK(std::isfinite(idle.fused_distance_m));
-    CHECK(std::isfinite(idle.distance_diff_m));
-
-    const auto target = robot::domain::opposite_endpoint(kp.primary_dock);
-    REQUIRE(f.motion->start_segment(
-        robot::domain::MissionSegment{target, robot::domain::SegmentMode::Cleaning}));
-    double max_abs_fused_odom_delta = 0.0;
-    const auto moving_deadline = std::chrono::steady_clock::now() + 1500ms;
-    while (std::chrono::steady_clock::now() < moving_deadline) {
-        f.motion->update();
-        f.nav->update();
-        const auto odom_sample = f.nav->get_fused_odometry();
-        if (odom_sample.valid && std::isfinite(odom_sample.fused_distance_m) &&
-            std::isfinite(idle.fused_distance_m)) {
-            max_abs_fused_odom_delta = std::max(
-                max_abs_fused_odom_delta,
-                std::abs(odom_sample.fused_distance_m - idle.fused_distance_m));
-        }
-        std::this_thread::sleep_for(50ms);
-    }
-    f.motion->emergency_stop();
-    std::this_thread::sleep_for(500ms);
-
-    const auto moving = f.nav->get_fused_odometry();
-    spdlog::info(
-        "[hw_system][nav_fused_odometry] moving valid={} top={:.3f} bottom={:.3f} fused={:.3f} "
-        "diff={:.3f}",
-        moving.valid,
-        moving.top_distance_m,
-        moving.bottom_distance_m,
-        moving.fused_distance_m,
-        moving.distance_diff_m);
-
-    CHECK(moving.valid);
-    CHECK(std::isfinite(moving.top_distance_m));
-    CHECK(std::isfinite(moving.bottom_distance_m));
-    CHECK(std::isfinite(moving.fused_distance_m));
-    CHECK(std::isfinite(moving.distance_diff_m));
-    INFO("max_abs_fused_odom_delta=" << max_abs_fused_odom_delta);
-    CHECK(max_abs_fused_odom_delta > 0.02);
+    spdlog::info("[hw_system][full_init] gps_stuck_state={} stuck={} reason={}",
+                 static_cast<int>(gps_stuck.state),
+                 gps_stuck.robot_stuck_detected,
+                 gps_stuck.reason);
 }
 
 TEST_CASE("HealthService DIAGNOSTICS 落盘真实传感器数据", "[hw_system][health_real_data]") {
@@ -235,10 +174,10 @@ TEST_CASE("完整任务链 + 姿态极限触发后回中恢复", "[hw_system][co
         f, "hw_system][combined_attitude_recover", kp.combined_passes);
 }
 
-TEST_CASE("完整任务链 + 融合里程计日志", "[hw_system][combined_nvm_real]") {
+TEST_CASE("完整任务链 + NVM 真实参数", "[hw_system][combined_nvm_real]") {
     SystemHwFixture f;
     run_configured_system_chain(
-        f, "hw_system][combined_nvm_real", kp.combined_passes, false, true, false);
+        f, "hw_system][combined_nvm_real", kp.combined_passes, false, false, false);
 }
 
 TEST_CASE("N 趟完整任务链 + 真实滚刷 + 全程持续采集健康数据", "[hw_system][combined_brush_real]") {

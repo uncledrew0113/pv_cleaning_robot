@@ -21,7 +21,7 @@ FaultDecision FaultPolicy::decide(const FaultFact& fact) const noexcept {
         return {FaultAction::RejectStart, false};
     case FaultCode::kTransientAttitudeError:
         return {FaultAction::StartRecovery, false};
-    case FaultCode::kWheelSpinFree:
+    case FaultCode::kRobotStuck:
     case FaultCode::kCanCommunicationLost:
     case FaultCode::kSegmentStartFailed:
     case FaultCode::kRecoveryFailed:

@@ -17,16 +17,16 @@ TEST_CASE("FaultDetector emits conflicting limit fault", "[app][fault_detector]"
     REQUIRE(facts[0].code == robot::domain::FaultCode::kConflictingLimitSides);
 }
 
-TEST_CASE("FaultDetector emits spin-free fault only while executing", "[app][fault_detector]") {
+TEST_CASE("FaultDetector emits robot-stuck fault only while executing", "[app][fault_detector]") {
     FaultDetector detector;
     FaultDetector::Input input;
     input.executing_mission = true;
-    input.spin_free_detected = true;
+    input.robot_stuck_detected = true;
 
     auto facts = detector.detect(input);
 
     REQUIRE(facts.size() == 1);
-    REQUIRE(facts[0].code == robot::domain::FaultCode::kWheelSpinFree);
+    REQUIRE(facts[0].code == robot::domain::FaultCode::kRobotStuck);
 
     input.executing_mission = false;
     facts = detector.detect(input);

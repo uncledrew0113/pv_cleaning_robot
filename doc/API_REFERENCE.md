@@ -60,14 +60,14 @@
 - 构造 `WalkMotorGroup`、`BrushMotor`、`BMS`、`ImuDevice`、`GpsDevice`
 - 构造 `CloudService`、`ThingsBoardConfigManager`、`ThingsBoardControlPlane`
 - 构造 `RobotController`、`FaultPolicy`、`FaultDetector`、`WatchdogMgr`
-- 启动 `walk_ctrl`、`nav`、`bms`、`cloud` 线程
+- 启动 `walk_ctrl`、`gps_stuck`、`bms`、`cloud` 线程
 - 动态切换 telemetry 周期
 
 当前线程分工：
 
 - `walk_ctrl`：`MotionService`
-- `nav`：`NavService`
-  负责输出兼容 `Pose` 与新增 `FusedOdometry` 两套导航快照；内部采用“上下轮组积分 + GPS 轨道投影低频校正 + IMU 陀螺/加速度短时约束”的轻量融合实现，悬空检测逻辑也保留在该线程内。
+- `gps_stuck`：`GpsStuckService`
+  基于普通 GPS 的质量门限、速度证据、水平位移证据和静止超时检测机器人卡住，不再输出 `Pose` 或 `FusedOdometry`。
 - `bms`：`BMS::update()` + `BrushMotor::update()`
 - `cloud`：`HealthService` + `ThingsBoardControlPlane::publish_business_telemetry()` + `CloudService::update()`
 

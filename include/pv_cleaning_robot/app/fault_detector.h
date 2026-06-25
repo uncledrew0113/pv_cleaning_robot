@@ -12,7 +12,7 @@ public:
         bool executing_mission{false};
         bool left_limit_active{false};
         bool right_limit_active{false};
-        bool spin_free_detected{false};
+        bool robot_stuck_detected{false};
         bool imu_fresh{true};
         bool attitude_out_of_range{false};
         bool bms_critical_alarm{false};

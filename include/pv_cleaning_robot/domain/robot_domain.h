@@ -354,7 +354,7 @@ namespace FaultCode {
 //
 // 这里定义的是跨层共享的稳定故障码，不在 domain 中放故障处理逻辑；
 // 具体动作由 app::FaultPolicy 和 RobotController 统一执行。
-static constexpr uint32_t kWheelSpinFree = 0x0002u;
+static constexpr uint32_t kRobotStuck = 0x0002u;
 static constexpr uint32_t kCanCommunicationLost = 0x1001u;
 static constexpr uint32_t kSegmentStartFailed = 0x1101u;
 static constexpr uint32_t kRecoveryFailed = 0x1102u;

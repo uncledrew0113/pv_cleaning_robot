@@ -34,7 +34,7 @@
 #include "pv_cleaning_robot/service/fault_service.h"
 #include "pv_cleaning_robot/service/health_service.h"
 #include "pv_cleaning_robot/service/motion_service.h"
-#include "pv_cleaning_robot/service/nav_service.h"
+#include "pv_cleaning_robot/service/gps_stuck_service.h"
 #include "pv_cleaning_robot/service/uds_gyro_yaw_fusion.h"
 
 using namespace std::chrono_literals;
@@ -335,7 +335,7 @@ class SystemHwFixture : public hw::IGracefulShutdown {
     std::shared_ptr<robot::device::GpsDevice> gps;
     std::shared_ptr<robot::service::HealthService> health;
     std::unique_ptr<robot::app::WatchdogMgr> watchdog;
-    std::shared_ptr<robot::service::NavService> nav;
+    std::shared_ptr<robot::service::GpsStuckService> gps_stuck;
     std::unique_ptr<robot::service::ConfigService> config;
     std::shared_ptr<robot::service::FaultService> fault;
     std::shared_ptr<robot::service::MotionService> motion;
@@ -417,7 +417,7 @@ class SystemHwFixture : public hw::IGracefulShutdown {
         gpsd_cfg.watch = kp.gpsd_watch;
         gps = robot::device::GpsDevice::create_gpsd(gpsd_cfg);
         gps->open();
-        nav = std::make_shared<robot::service::NavService>(walk_group, imu, gps);
+        gps_stuck = std::make_shared<robot::service::GpsStuckService>(gps);
         fault = std::make_shared<robot::service::FaultService>(bus);
         const auto motion_cfg =
             motion_config_override ? *motion_config_override : make_motion_config(pid_enabled);
@@ -589,8 +589,8 @@ class SystemHwFixture : public hw::IGracefulShutdown {
             if (motion) {
                 motion->update();
             }
-            if (nav) {
-                nav->update();
+            if (gps_stuck) {
+                gps_stuck->update();
             }
             if (health) {
                 health->update();
@@ -1545,7 +1545,7 @@ void run_configured_system_chain(SystemHwFixture& f,
                                  const char* tag,
                                  uint32_t repeat_count,
                                  bool expect_real_brush,
-                                 bool log_fused_odometry,
+                                 bool /*log_fused_odometry*/,
                                  bool log_heading_pid_debug,
                                  std::optional<robot::service::MotionService::Config>
                                      motion_config_override = {},
@@ -1615,8 +1615,6 @@ void run_configured_system_chain(SystemHwFixture& f,
     const int watchdog_ticket = f.watchdog->register_thread(tag, kp.limit_timeout_sec * 2 * 1000);
     REQUIRE(watchdog_ticket >= 0);
 
-    const auto odom_before = f.nav->get_fused_odometry();
-    double max_abs_fused_odom_delta = 0.0;
     const uint32_t frames_before = f.walk_group->get_group_diagnostics().ctrl_frame_count;
     int health_records = 0;
     int max_abs_brush_rpm = 0;
@@ -1745,7 +1743,7 @@ void run_configured_system_chain(SystemHwFixture& f,
         }
 
         f.motion->update();
-        f.nav->update();
+        f.gps_stuck->update();
         // BMS 串口离线时一次 update 可能阻塞数百毫秒，组合运动链路测试中不轮询 BMS，
         // HealthService 直接读取最近缓存，避免打断行走电机 50Hz 心跳。
         if (f.brush) {
@@ -1804,18 +1802,10 @@ void run_configured_system_chain(SystemHwFixture& f,
         }
 
         const bool first_log = last_log_at == std::chrono::steady_clock::time_point{};
-        const bool should_log =
-            log_fused_odometry || log_heading_pid_debug || first_log || now - last_log_at >= 500ms;
+        const bool should_log = log_heading_pid_debug || first_log || now - last_log_at >= 500ms;
         if (should_log) {
             last_log_at = now;
             const auto snapshot = f.controller->snapshot();
-            const auto odom = f.nav->get_fused_odometry();
-            if (odom.valid && std::isfinite(odom.fused_distance_m) &&
-                std::isfinite(odom_before.fused_distance_m)) {
-                max_abs_fused_odom_delta = std::max(
-                    max_abs_fused_odom_delta,
-                    std::abs(odom.fused_distance_m - odom_before.fused_distance_m));
-            }
             const auto pid = f.motion->heading_pid_debug_state();
             if (pid.mode != robot::service::HeadingCorrector::Mode::UNINITIALIZED) {
                 saw_pid_initialized = true;
@@ -1840,8 +1830,7 @@ void run_configured_system_chain(SystemHwFixture& f,
             spdlog::info(
                 "[{}] state={} target={} fault={} limits={} unstable={} "
                 "LT={:.1f}/{:.1f} RT={:.1f}/{:.1f} LB={:.1f}/{:.1f} RB={:.1f}/{:.1f} "
-                "brush={} fault={} yaw={:.2f} drift={:.2f} odom(valid={} top={:.3f} "
-                "bottom={:.3f} fused={:.3f} diff={:.3f}) pid(mode={} connected={} valid={} "
+                "brush={} fault={} yaw={:.2f} drift={:.2f} pid(mode={} connected={} valid={} "
                 "latest_yaw={:.3f} filtered_yaw={:.3f} conf={:.2f} age_ms={} corr={:.3f})",
                 tag,
                 snapshot.state,
@@ -1861,11 +1850,6 @@ void run_configured_system_chain(SystemHwFixture& f,
                 brush_diag.fault,
                 imu.yaw_deg,
                 yaw_drift,
-                odom.valid,
-                odom.top_distance_m,
-                odom.bottom_distance_m,
-                odom.fused_distance_m,
-                odom.distance_diff_m,
                 static_cast<int>(pid.mode),
                 pid.connected,
                 pid.latest_valid,
@@ -1904,17 +1888,6 @@ void run_configured_system_chain(SystemHwFixture& f,
 
     const uint32_t frames_after = f.walk_group->get_group_diagnostics().ctrl_frame_count;
     CHECK(frames_after > frames_before + 10u * f.repeat_count);
-
-    if (log_fused_odometry) {
-        const auto odom_after = f.nav->get_fused_odometry();
-        CHECK(odom_after.valid);
-        CHECK(std::isfinite(odom_after.top_distance_m));
-        CHECK(std::isfinite(odom_after.bottom_distance_m));
-        CHECK(std::isfinite(odom_after.fused_distance_m));
-        CHECK(std::isfinite(odom_after.distance_diff_m));
-        INFO("max_abs_fused_odom_delta=" << max_abs_fused_odom_delta);
-        CHECK(max_abs_fused_odom_delta > 0.02);
-    }
 
     if (expect_real_brush) {
         CHECK(max_abs_brush_rpm >= 50);

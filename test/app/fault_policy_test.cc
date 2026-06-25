@@ -27,6 +27,15 @@ TEST_CASE("FaultPolicy maps transient attitude to recovery", "[app][fault_policy
     REQUIRE_FALSE(decision.latch);
 }
 
+TEST_CASE("FaultPolicy maps robot stuck to emergency latch", "[app][fault_policy]") {
+    FaultPolicy policy;
+    const auto decision = policy.decide(
+        FaultFact{FaultSource::FaultDetector, FaultCode::kRobotStuck, "robot_stuck"});
+
+    REQUIRE(decision.action == FaultAction::EmergencyStopAndLatch);
+    REQUIRE(decision.latch);
+}
+
 TEST_CASE("FaultPolicy maps low battery start gate to reject start", "[app][fault_policy]") {
     FaultPolicy policy;
     const auto decision = policy.decide(

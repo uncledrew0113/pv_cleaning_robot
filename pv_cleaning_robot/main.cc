@@ -49,7 +49,7 @@
 #include "pv_cleaning_robot/service/fault_service.h"
 #include "pv_cleaning_robot/service/health_service.h"
 #include "pv_cleaning_robot/service/motion_service.h"
-#include "pv_cleaning_robot/service/nav_service.h"
+#include "pv_cleaning_robot/service/gps_stuck_service.h"
 #include "pv_cleaning_robot/service/recovery_motion.h"
 #include "pv_cleaning_robot/service/scheduler_service.h"
 #include "pv_cleaning_robot/service/thingsboard_control_plane.h"
@@ -220,7 +220,7 @@ int main() {
         log->error("[Main] walk_group CAN 初始化失败，退出");
         return 1;
     }
-    // 主动配置电机反馈方式：10ms 主动上报（100Hz），与 nav_exec 10ms 采样对齐。
+    // 主动配置电机反馈方式：10ms 主动上报（100Hz），与运动控制采样对齐。
     // 不依赖上次写入 EEPROM 的值，确保每次上电行为确定性。
     if (walk_group->set_feedback_mode_all(10u) != robot::device::DeviceError::OK)
         log->warn("[Main] 电机反馈模式配置失败，将使用硬件保存值");
@@ -351,7 +351,7 @@ int main() {
 
     auto motion = std::make_shared<robot::service::MotionService>(
         walk_group, brush_motor, imu, event_bus, motion_cfg);
-    auto nav = std::make_shared<robot::service::NavService>(walk_group, imu, gps);
+    auto gps_stuck = std::make_shared<robot::service::GpsStuckService>(gps);
     auto recovery = std::make_shared<robot::service::RecoveryMotion>();
     robot::service::SchedulerService scheduler;
     auto cloud = std::make_shared<robot::service::CloudService>(net_mgr, data_cache);
@@ -531,7 +531,7 @@ int main() {
     // 线程绑定策略（与 safety_monitor/gpio 线程配合，不竞争同一核心）：
     //   CPU 4: gpio_left/right(95) + safety_monitor(94)  → GPIO 边沿优先，轮询兜底
     //   CPU 5: group_recv(82) + walk_ctrl(80)            → 先接收后控制，降低读旧数据概率
-    //   CPU 6: nav(65) + imu_read(68)                    → 导航路径，专用核
+    //   CPU 6: gps_stuck(65) + imu_read(68)              → GPS 监测路径，专用核
     //   CPU 7: watchdog(50) + main(SCHED_OTHER)          → 管理任务
     //   CPU 0-3: bms + cloud + gps（LITTLE 核，低功耗后台）
     //
@@ -544,13 +544,12 @@ int main() {
     walk_exec.add_runnable(std::make_shared<robot::middleware::RunnableAdapter>(
         [&watchdog, walk_wd]() { watchdog.heartbeat(walk_wd); }));
 
-    // 导航线程：SCHED_FIFO 65, 10ms，绑定 CPU 6
-    // 里程计+IMU 融合有 10ms 截止时间约束，需要 RT 保证（旧版为 SCHED_OTHER）
-    robot::middleware::ThreadExecutor nav_exec({"nav", 10, SCHED_FIFO, 65, 1 << 6});
-    nav_exec.add_runnable(nav);
-    int nav_wd = watchdog.register_thread("nav", 100);
-    nav_exec.add_runnable(std::make_shared<robot::middleware::RunnableAdapter>(
-        [&watchdog, nav_wd]() { watchdog.heartbeat(nav_wd); }));
+    // GPS 卡住检测线程：SCHED_FIFO 65, 10ms，绑定 CPU 6
+    robot::middleware::ThreadExecutor gps_stuck_exec({"gps_stuck", 10, SCHED_FIFO, 65, 1 << 6});
+    gps_stuck_exec.add_runnable(gps_stuck);
+    int gps_stuck_wd = watchdog.register_thread("gps_stuck", 100);
+    gps_stuck_exec.add_runnable(std::make_shared<robot::middleware::RunnableAdapter>(
+        [&watchdog, gps_stuck_wd]() { watchdog.heartbeat(gps_stuck_wd); }));
 
     // BMS 采集线程：500ms，绑定 LITTLE 核 CPU 0-3（低功耗后台）
     robot::middleware::ThreadExecutor bms_exec({"bms", 500, SCHED_OTHER, 0, 0x0F});
@@ -585,7 +584,7 @@ int main() {
         [&watchdog, cloud_wd]() { watchdog.heartbeat(cloud_wd); }));
 
     walk_exec.start();
-    nav_exec.start();
+    gps_stuck_exec.start();
     bms_exec.start();
     cloud_exec.start();
 
@@ -607,12 +606,13 @@ int main() {
         if (cloud_exec.period_ms() != desired_report_period) {
                 cloud_exec.set_period_ms(desired_report_period);
         }
-        if (current_state == "ExecutingMission" && nav->get_pose().spin_free_detected) {
+        if (current_state == "ExecutingMission" &&
+            gps_stuck->get_status().robot_stuck_detected) {
             controller->post_fault(robot::app::FaultFact{
                 robot::app::FaultSource::FaultDetector,
-                robot::domain::FaultCode::kWheelSpinFree,
-                "wheel_spin_free"});
-            nav->clear_spin_detection();
+                robot::domain::FaultCode::kRobotStuck,
+                "robot_stuck"});
+            gps_stuck->clear_stuck_detection();
         }
         if (current_state == "Recovering") {
             const auto recovery_result = recovery->step();
@@ -629,7 +629,7 @@ int main() {
     // ── 18. 优雅关闭 ──────────────────────────────────────────────────
     log->info("[Main] 收到退出信号，正在关闭...");
     walk_exec.stop();
-    nav_exec.stop();
+    gps_stuck_exec.stop();
     bms_exec.stop();
     cloud_exec.stop();
     safety_monitor.stop();

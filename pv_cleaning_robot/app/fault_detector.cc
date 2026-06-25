@@ -13,9 +13,9 @@ std::vector<FaultFact> FaultDetector::detect(const Input& input) const {
                          FaultCode::kConflictingLimitSides,
                          "conflicting_limit_sides"});
     }
-    if (input.executing_mission && input.spin_free_detected) {
+    if (input.executing_mission && input.robot_stuck_detected) {
         facts.push_back(
-            {FaultSource::FaultDetector, FaultCode::kWheelSpinFree, "wheel_spin_free"});
+            {FaultSource::FaultDetector, FaultCode::kRobotStuck, "robot_stuck"});
     }
     if (input.executing_mission && input.imu_fresh && input.attitude_out_of_range) {
         facts.push_back({FaultSource::FaultDetector,

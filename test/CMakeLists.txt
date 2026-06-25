@@ -46,7 +46,7 @@ set(COMMON_SRCS
   ${PROJ}/service/command_tracker.cc
   ${PROJ}/service/fault_service.cc
   ${PROJ}/service/scheduler_service.cc
-  ${PROJ}/service/nav_service.cc
+  ${PROJ}/service/gps_stuck_service.cc
   ${PROJ}/service/motion_service.cc
   ${PROJ}/service/heading_corrector.cc
   ${PROJ}/service/uds_gyro_yaw_fusion.cc
@@ -115,6 +115,7 @@ add_executable(unit_tests
   service/thingsboard_control_plane_test.cc
   service/config_service_runtime_patch_test.cc
   service/scheduler_service_test.cc
+  service/gps_stuck_service_test.cc
   service/motion_service_test.cc
   service/heading_pid_test.cc
   service/uds_gyro_yaw_fusion_test.cc
