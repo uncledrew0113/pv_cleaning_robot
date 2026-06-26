@@ -2,7 +2,7 @@
  * @Author: UncleDrew
  * @Date: 2026-06-25 14:46:02
  * @LastEditors: UncleDrew
- * @LastEditTime: 2026-06-25 17:02:29
+ * @LastEditTime: 2026-06-26 09:31:31
  * @FilePath: /pv_cleaning_robot/include/pv_cleaning_robot/service/gps_stuck_service.h
  * @Description:
  *
@@ -24,10 +24,10 @@ namespace robot::service {
 
 struct GpsStuckConfig {
     uint8_t min_fix_quality{2};
-    uint8_t min_satellites_used{8};
+    uint8_t min_satellites_used{6};
     float max_hdop{1.2f};
     float max_pdop{2.5f};
-    float moving_speed_mps{0.08f};
+    float moving_speed_mps{0.03f};
     int moving_speed_confirm_samples{2};
     std::chrono::milliseconds stuck_timeout{std::chrono::milliseconds(8000)};
     std::chrono::milliseconds sample_stale_timeout{std::chrono::milliseconds(3000)};
