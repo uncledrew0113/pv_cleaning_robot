@@ -23,16 +23,30 @@ NetworkManager::NetworkManager(std::shared_ptr<INetworkTransport> mqtt,
 
 bool NetworkManager::connect()
 {
+    return connect(nullptr);
+}
+
+bool NetworkManager::connect(const std::atomic<bool>* running)
+{
     if (mode_ == Mode::DUAL_PARALLEL) {
         // 两路都尝试，只要还有一路存活就允许上层继续走缓存/重连逻辑。
-        const bool mqtt_ok = mqtt_ && mqtt_->connect();
-        const bool lora_ok = lorawan_ && lorawan_->connect();
+        const bool mqtt_ok = mqtt_ && mqtt_->connect(running);
+        const bool lora_ok = (!running || running->load(std::memory_order_acquire)) &&
+                             lorawan_ && lorawan_->connect(running);
         return mqtt_ok || lora_ok;
     }
     if (uses_mqtt()) {
-        return mqtt_ && mqtt_->connect();
+        return mqtt_ && mqtt_->connect(running);
     }
-    return lorawan_ && lorawan_->connect();
+    return lorawan_ && lorawan_->connect(running);
+}
+
+void NetworkManager::request_stop()
+{
+    if (mqtt_)
+        mqtt_->request_stop();
+    if (lorawan_)
+        lorawan_->request_stop();
 }
 
 void NetworkManager::disconnect()

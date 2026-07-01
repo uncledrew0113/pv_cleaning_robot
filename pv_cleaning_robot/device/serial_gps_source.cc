@@ -4,6 +4,8 @@
 
 #include <chrono>
 #include <cstring>
+#include <exception>
+#include <spdlog/spdlog.h>
 
 namespace robot::device {
 
@@ -51,9 +53,14 @@ bool SerialGpsSource::open()
     return true;
 }
 
-void SerialGpsSource::close()
+void SerialGpsSource::request_stop()
 {
     running_.store(false);
+}
+
+void SerialGpsSource::close()
+{
+    request_stop();
     if (read_thread_.joinable()) read_thread_.join();
     if (cfg_.serial) cfg_.serial->close();
 }
@@ -98,7 +105,17 @@ void SerialGpsSource::read_loop()
             if (c == '\n') {
                 if (!line_buf_.empty()) {
                     if (on_message_) on_message_();
-                    if (parser_.parse_sentence(line_buf_)) {
+                    bool parsed = false;
+                    try {
+                        parsed = parser_.parse_sentence(line_buf_);
+                    } catch (const std::exception& ex) {
+                        // 现场 GPS 输入可能混入损坏句子；解析异常只代表该句无效，
+                        // 不能让后台读线程退出，否则 ErrorManager 会看到 GPS 数据流长期不更新。
+                        spdlog::warn("[SerialGpsSource] NMEA parse exception: {}", ex.what());
+                    } catch (...) {
+                        spdlog::warn("[SerialGpsSource] NMEA parse unknown exception");
+                    }
+                    if (parsed) {
                         if (on_data_) on_data_(parser_.get_data());
                     } else if (on_parse_error_) {
                         on_parse_error_();

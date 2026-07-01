@@ -70,6 +70,44 @@ TEST_CASE("BrushMotor update parses odrive feedback and diagnostics", "[device][
     REQUIRE(d.running);
 }
 
+TEST_CASE("BrushMotor request_stop makes update skip serial transactions",
+          "[device][brush_motor]") {
+    BrushMotorFixture f;
+    REQUIRE(f.motor.open());
+    f.serial->clear_tx();
+
+    f.motor.request_stop();
+    f.motor.update();
+
+    CHECK(f.serial->tx_captured.empty());
+
+    REQUIRE(f.motor.open());
+    f.serial->clear_tx();
+    f.serial->queue_rx_text("1.5 5.0\n");
+    f.serial->queue_rx_text("24.5\n");
+    f.serial->queue_rx_text("3.25\n");
+    f.serial->queue_rx_text("46.0\n");
+    f.serial->queue_rx_text("0\n");
+    f.serial->queue_rx_text("0\n");
+    f.serial->queue_rx_text("0\n");
+
+    f.motor.update();
+
+    CHECK_FALSE(f.serial->tx_captured.empty());
+}
+
+TEST_CASE("BrushMotor request_stop does not block explicit stop command",
+          "[device][brush_motor]") {
+    BrushMotorFixture f;
+    REQUIRE(f.motor.open());
+    f.serial->clear_tx();
+
+    f.motor.request_stop();
+
+    REQUIRE(f.motor.stop() == DeviceError::OK);
+    CHECK(f.serial->take_tx_text().find("v 0 0.000 0\n") != std::string::npos);
+}
+
 TEST_CASE("BrushMotor restart sends odrive reboot command", "[device][brush_motor]") {
     BrushMotorFixture f;
     REQUIRE(f.motor.open());

@@ -1,6 +1,7 @@
 #pragma once
 #include "pv_cleaning_robot/hal/i_gpio_pin.h"
 #include <functional>
+#include <vector>
 
 /// @brief IGpioPin 手工 mock，用于单元测试，不依赖真实硬件
 struct MockGpioPin : robot::hal::IGpioPin {
@@ -17,6 +18,7 @@ struct MockGpioPin : robot::hal::IGpioPin {
     std::function<void()>   registered_cb;
     bool write_value_called{false};
     bool last_written_value{false};
+    std::vector<bool> write_history;
 
     bool open(const robot::hal::GpioConfig& config) override {
         last_open_config = config;
@@ -31,6 +33,7 @@ struct MockGpioPin : robot::hal::IGpioPin {
     bool write_value(bool high) override {
         write_value_called = true;
         last_written_value = high;
+        write_history.push_back(high);
         return write_result;
     }
 

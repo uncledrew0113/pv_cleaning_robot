@@ -7,12 +7,10 @@ set(PROJ ${PROJECT_SOURCE_DIR}/pv_cleaning_robot)
 set(COMMON_SRCS
   # 协议层
   ${PROJ}/protocol/bms_protocol.cc
-  ${PROJ}/protocol/bms2_protocol.cc
   ${PROJ}/protocol/imu_protocol.cc
   ${PROJ}/protocol/walk_motor_can_codec.cc
   ${PROJ}/protocol/nmea_parser.cc
   ${PROJ}/protocol/gpsd_json_parser.cc
-  ${PROJ}/protocol/distance_sensor_protocol.cc
   ${PROJ}/protocol/odrive_ascii_protocol.cc
 
   # 设备层
@@ -23,9 +21,9 @@ set(COMMON_SRCS
   ${PROJ}/device/gpsd_gps_source.cc
   ${PROJ}/device/walk_motor_group.cc
   ${PROJ}/device/brush_motor.cc
+  ${PROJ}/device/lock_motor.cc
   ${PROJ}/device/limit_switch.cc
   ${PROJ}/device/attitude_limit_switch.cc
-  ${PROJ}/device/distance_sensor.cc
 
   # 驱动层
   ${PROJ}/driver/libmodbus_master.cc
@@ -37,6 +35,7 @@ set(COMMON_SRCS
   ${PROJ}/middleware/data_cache.cc
   ${PROJ}/middleware/safety_monitor.cc
   ${PROJ}/middleware/network_manager.cc
+  ${PROJ}/middleware/lorawan_transport.cc
   ${PROJ}/middleware/mqtt_transport.cc
   ${PROJ}/middleware/logger.cc
   ${PROJ}/middleware/thread_executor.cc
@@ -44,20 +43,21 @@ set(COMMON_SRCS
   # 服务层
   ${PROJ}/service/config_service.cc
   ${PROJ}/service/command_tracker.cc
-  ${PROJ}/service/fault_service.cc
+  ${PROJ}/service/diagnostics_collector.cc
+  ${PROJ}/service/attitude_limit_service.cc
   ${PROJ}/service/scheduler_service.cc
   ${PROJ}/service/gps_stuck_service.cc
   ${PROJ}/service/motion_service.cc
   ${PROJ}/service/heading_corrector.cc
   ${PROJ}/service/uds_gyro_yaw_fusion.cc
-  ${PROJ}/service/recovery_motion.cc
   ${PROJ}/service/health_service.cc
   ${PROJ}/service/cloud_service.cc
   ${PROJ}/service/thingsboard_control_plane.cc
 
   # App 层
-  ${PROJ}/app/fault_detector.cc
-  ${PROJ}/app/fault_policy.cc
+  ${PROJ}/app/error_manager.cc
+  ${PROJ}/app/recovery_executor.cc
+  ${PROJ}/app/robot_application.cc
   ${PROJ}/app/robot_controller.cc
   ${PROJ}/app/watchdog_mgr.cc
 )
@@ -70,12 +70,10 @@ add_executable(unit_tests
 
   # 协议层
   protocol/bms_protocol_test.cc
-  protocol/bms2_protocol_test.cc
   protocol/imu_protocol_test.cc
   protocol/walk_motor_codec_test.cc
   protocol/nmea_parser_test.cc
   protocol/gpsd_json_parser_test.cc
-  protocol/distance_sensor_protocol_test.cc
   protocol/odrive_ascii_protocol_test.cc
 
   # 设备层
@@ -83,10 +81,10 @@ add_executable(unit_tests
   device/imu_device_test.cc
   device/walk_motor_group_test.cc
   device/brush_motor_test.cc
+  device/lock_motor_test.cc
   device/limit_switch_test.cc
   device/attitude_limit_switch_test.cc
   device/gps_device_test.cc
-  device/distance_sensor_device_test.cc
 
   # 驱动层（纯软件路径，无需真实硬件即可运行）
   driver/lockfree_queue_test.cc
@@ -109,7 +107,8 @@ add_executable(unit_tests
   service/business_payload_builder_test.cc
   service/command_tracker_test.cc
   service/config_service_test.cc
-  service/fault_service_test.cc
+  service/diagnostics_collector_test.cc
+  service/attitude_limit_service_test.cc
   service/health_payload_builder_test.cc
   service/thingsboard_event_payload_builder_test.cc
   service/thingsboard_control_plane_test.cc
@@ -119,14 +118,14 @@ add_executable(unit_tests
   service/motion_service_test.cc
   service/heading_pid_test.cc
   service/uds_gyro_yaw_fusion_test.cc
-  service/recovery_motion_test.cc
 
   # 硬件测试配置解析（纯文件读取，无需真实硬件）
   integration/hardware/hw_config_test.cc
 
   # App 层
-  app/fault_detector_test.cc
-  app/fault_policy_test.cc
+  app/error_manager_test.cc
+  app/recovery_executor_test.cc
+  app/robot_application_config_test.cc
   app/robot_controller_test.cc
   app/watchdog_mgr_test.cc
 
@@ -152,11 +151,14 @@ add_executable(hw_tests
   integration/hardware/bms_hw_test.cc
   integration/hardware/imu_hw_test.cc
   integration/hardware/gpsd_hw_test.cc
+  integration/hardware/lock_motor_hw_test.cc
   integration/hardware/limit_switch_hw_test.cc
   integration/hardware/attitude_limit_switch_hw_test.cc
   integration/hardware/walk_motor_group_hw_test.cc
-  integration/hardware/distance_sensor_hw_test.cc
   integration/hardware/system_hw_motion_tests.cc
+  integration/hardware/system_hw_diagnostics_tests.cc
+  integration/hardware/system_hw_recovery_tests.cc
+  integration/hardware/system_hw_main_flow_tests.cc
   integration/hardware/system_hw_attitude_tests.cc
   integration/hardware/hw_exit_guard.cc
 

@@ -11,7 +11,7 @@ robot::domain::Endpoint to_endpoint(robot::device::LimitSide side) {
                                                   : robot::domain::Endpoint::B;
 }
 
-/// 返回单调时钟毫秒时间戳（用于防抖计时）
+/// 返回单调时钟毫秒时间戳，用于限位去抖和 release re-arm 计时。
 inline uint64_t now_ms() {
     return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
                                      std::chrono::steady_clock::now().time_since_epoch())
@@ -38,18 +38,27 @@ SafetyMonitor::~SafetyMonitor() {
 }
 
 bool SafetyMonitor::start() {
-    // 注册限位触发回调（在各自 GPIO 监控线程内同步调用）
+    if (!left_switch_ || !right_switch_) {
+        spdlog::error("[SafetyMonitor] start failed: missing limit switch");
+        return false;
+    }
+    if (!left_switch_->is_open() || !right_switch_->is_open()) {
+        spdlog::error("[SafetyMonitor] start failed: limit switch GPIO is not open");
+        return false;
+    }
+
+    // 注册限位开关触发回调；回调在各自 GPIO 监控线程内同步调用。
     left_switch_->set_trigger_callback(
         [this](device::LimitSide side) { on_limit_trigger(to_endpoint(side)); });
     right_switch_->set_trigger_callback(
         [this](device::LimitSide side) { on_limit_trigger(to_endpoint(side)); });
 
-    // 启动 GPIO 边沿监控
+    // 启动 GPIO 边沿监控。若底层配置为轮询模式，驱动层仍以相同回调语义上报触发。
     left_switch_->start_monitoring();
     right_switch_->start_monitoring();
 
-    // 启动监控主循环线程（SCHED_FIFO 94，绑定安全专用 CPU 4）
-    // 设计为低于 GPIO 线程(95)：保证边沿回调可优先执行，轮询仅作兜底。
+    // 启动监控主循环线程。优先级低于 GPIO 线程，保证首响急停路径优先执行；
+    // 本线程只做去抖确认、release re-arm 和备用轮询兜底。
     running_.store(true);
     monitor_thread_ = std::thread(&SafetyMonitor::monitor_loop, this);
 
@@ -68,18 +77,14 @@ void SafetyMonitor::set_limit_settled_callback(std::function<void(domain::Endpoi
     limit_settled_cb_ = std::move(cb);
 }
 
-void SafetyMonitor::set_limit_unstable_callback(std::function<void(domain::Endpoint)> cb) {
-    limit_unstable_cb_ = std::move(cb);
-}
-
 void SafetyMonitor::on_limit_trigger(domain::Endpoint endpoint) {
     // ============================================================
-    // 安全优先关键路径：此函数在 GPIO 监控线程中被调用（SCHED_FIFO 95）
-    // 目标：从触发到急停指令发出 ≤ 50 ms
+    // 安全优先关键路径：此函数在 GPIO 监控线程中被调用。
+    // 目标：从触发到急停指令发出不超过 50 ms。
     //
-    // 两端完全对称：立即停车 + 清除触发标志 + 置 pending 时间戳。
-    // 稳定到位确认和控制器通知由 monitor_loop（SCHED_FIFO 94）负责。
-    // pending 时间戳本身就是去重门闩：同一侧在 settled 前不接受重复触发。
+    // 两端完全对称：立即安全停机 + 清除触发标志 + 置 pending 时间戳。
+    // 稳定到位确认和状态机通知由 monitor_loop 负责。
+    // pending 时间戳本身就是去重门闩：同一侧在 settled 前抑制重复触发。
     // ============================================================
     std::atomic<uint64_t>& pending_ts =
         endpoint == domain::Endpoint::A ? pending_left_ts_ : pending_right_ts_;
@@ -104,7 +109,7 @@ void SafetyMonitor::on_limit_trigger(domain::Endpoint endpoint) {
 
 void SafetyMonitor::monitor_loop() {
     // ── 线程自身完成 RT 提权 + CPU 绑定 ──
-    // 必须在线程内设置：安全关键路径，不容许启动竞争窗口（尤其是 SCHED_FIFO 94）。
+    // 线程创建后立即设置调度参数，避免安全监控循环长期运行在普通调度策略下。
     {
         sched_param sp{};
         sp.sched_priority = 94;
@@ -121,7 +126,7 @@ void SafetyMonitor::monitor_loop() {
         pthread_setname_np(pthread_self(), "safety_mon");
     }
 
-    // 非阻塞并行防抖：前后端各自独立计时，互不阻塞。
+    // 非阻塞并行去抖：前后端各自独立计时，互不阻塞。
     // check_settled 每 5ms 被调用一次，持续低有效稳定后发布事件。
     auto check_settled = [&](std::atomic<uint64_t>& ts_atom,
                              domain::Endpoint endpoint,
@@ -131,14 +136,10 @@ void SafetyMonitor::monitor_loop() {
             return;
         if (sw->read_current_level()) {
             ts_atom.store(0, std::memory_order_release);
-            event_bus_.publish(LimitUnstableEvent{endpoint});
-            if (limit_unstable_cb_) {
-                limit_unstable_cb_(endpoint);
-            }
             return;
         }
         if (now_ms() - t >= kLimitSettleStableMs) {
-            ts_atom.store(0, std::memory_order_release);  // 清除，防止重复触发
+            ts_atom.store(0, std::memory_order_release);  // 清除 pending，防止同一次触发重复发布。
             event_bus_.publish(LimitSettledEvent{endpoint});
             if (limit_settled_cb_) {
                 limit_settled_cb_(endpoint);
@@ -152,7 +153,7 @@ void SafetyMonitor::monitor_loop() {
         if (!wait_release.load(std::memory_order_acquire)) {
             return;
         }
-        // 感应式限位低有效：电平回高才允许同侧重新 armed。
+        // 感应式限位低有效：电平回高且稳定后才允许同侧重新触发。
         if (!sw->read_current_level()) {
             release_ts.store(0, std::memory_order_release);
             return;
@@ -175,11 +176,11 @@ void SafetyMonitor::monitor_loop() {
         check_release(left_wait_release_, left_release_ts_, left_switch_);
         check_release(right_wait_release_, right_release_ts_, right_switch_);
 
-        // ── 非阻塞并行防抖检查（前后端独立计时）──────────────────────
+        // ── 非阻塞并行去抖检查（前后端独立计时）──────────────────────
         check_settled(pending_left_ts_, domain::Endpoint::A, left_switch_);
         check_settled(pending_right_ts_, domain::Endpoint::B, right_switch_);
 
-        // ── 备用轮询路径：以防 GPIO 边沿回调丢失（双保险）────────────
+        // ── 备用轮询路径：防止 GPIO 边沿回调丢失 ────────────────────
         // 注意：on_limit_trigger() 内部已调用 clear_trigger()，
         // 因此重复触发被抑制，无需额外去重计数器。
         if (left_switch_->is_triggered() && pending_left_ts_.load(std::memory_order_acquire) == 0) {
@@ -189,7 +190,7 @@ void SafetyMonitor::monitor_loop() {
             pending_right_ts_.load(std::memory_order_acquire) == 0) {
             on_limit_trigger(domain::Endpoint::B);
         }
-        // 5 ms 轮询（SCHED_FIFO 94，低于 GPIO 95，避免兜底轮询反向压制边沿线程）
+        // 5 ms 轮询；低于 GPIO 监控线程优先级，避免兜底路径反向压制首响急停。
         struct timespec poll_ts {
             0, 5 * 1000 * 1000
         };

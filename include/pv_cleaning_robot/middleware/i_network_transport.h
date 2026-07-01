@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 #include <functional>
 #include <string>
 
@@ -14,6 +15,19 @@ public:
 
     /// 建立连接（阻塞直到连接成功或失败）
     virtual bool connect() = 0;
+
+    /// 建立连接；running 变为 false 时应尽快返回 false。
+    virtual bool connect(const std::atomic<bool>* running) {
+        if (running && !running->load(std::memory_order_acquire)) {
+            return false;
+        }
+        return connect();
+    }
+
+    /// 请求正在进行的 connect()/publish()/subscribe 尽快返回；默认实现只断开连接。
+    virtual void request_stop() {
+        disconnect();
+    }
 
     /// 断开连接
     virtual void disconnect() = 0;

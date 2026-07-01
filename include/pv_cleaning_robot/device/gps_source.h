@@ -49,6 +49,7 @@ class IGpsSource {
     /// 具体实现负责打开/关闭数据通道，控制输出速率，并支持重启。
     virtual ~IGpsSource() = default;
     virtual bool open() = 0;
+    virtual void request_stop() = 0;
     virtual void close() = 0;
     virtual DeviceError set_output_rate(int hz) = 0;
     virtual DeviceError hot_restart() = 0;
@@ -65,6 +66,7 @@ class SerialGpsSource final : public IGpsSource {
     ~SerialGpsSource() override;
 
     bool open() override;
+    void request_stop() override;
     void close() override;
     DeviceError set_output_rate(int hz) override;
     DeviceError hot_restart() override;
@@ -94,6 +96,7 @@ class GpsdGpsSource final : public IGpsSource {
     ~GpsdGpsSource() override;
 
     bool open() override;
+    void request_stop() override;
     void close() override;
     DeviceError set_output_rate(int hz) override;
     DeviceError hot_restart() override;

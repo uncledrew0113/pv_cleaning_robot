@@ -1,12 +1,8 @@
-#include <chrono>
-#include <cmath>
+#include <rapidjson/document.h>
 #include <rapidjson/stringbuffer.h>
 #include <rapidjson/writer.h>
-#include <set>
 #include <spdlog/spdlog.h>
-#include <stdexcept>
 #include <string>
-#include <thread>
 #include <utility>
 #include <vector>
 
@@ -78,45 +74,6 @@ class RapidJsonFixedBufferStream {
     size_t len_{0};
     bool overflow_{false};
 };
-
-template <typename WriterT>
-void write_schedule_entries(const std::vector<RuntimeScheduleEntry>& schedules, WriterT& writer) {
-    // 将调度窗口列表写为 JSON 数组。
-    writer.StartArray();
-    for (const auto& schedule : schedules) {
-        writer.StartObject();
-        writer.Key("hour");
-        writer.Int(schedule.hour);
-        writer.Key("minute");
-        writer.Int(schedule.minute);
-        writer.EndObject();
-    }
-    writer.EndArray();
-}
-
-template <typename WriterT>
-void write_runtime_config(const char* key, const RuntimeConfig& config, WriterT& writer) {
-    // 将 RuntimeConfig 序列化为 JSON 对象，键名由调用方指定。
-    writer.Key(key);
-    writer.StartObject();
-    writer.Key("repeat_count");
-    writer.Uint(config.repeat_count);
-    writer.Key("clean_speed_rpm");
-    writer.Double(config.clean_speed_rpm);
-    writer.Key("return_speed_rpm");
-    writer.Double(config.return_speed_rpm);
-    writer.Key("brush_rpm");
-    writer.Int(config.brush_rpm);
-    writer.Key("primary_dock");
-    writer.String(endpoint_config_string(config.primary_dock));
-    writer.Key("min_battery_soc");
-    writer.Double(config.min_battery_soc);
-    writer.Key("charge_stop_soc");
-    writer.Double(config.charge_stop_soc);
-    writer.Key("schedules");
-    write_schedule_entries(config.schedules, writer);
-    writer.EndObject();
-}
 
 }  // namespace
 

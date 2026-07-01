@@ -1,12 +1,40 @@
 #include "pv_cleaning_robot/app/robot_controller.h"
 
 #include <chrono>
+#include <future>
+#include <spdlog/spdlog.h>
 #include <utility>
 
 namespace robot::app {
 
 namespace {
-constexpr int kMaxSourceLimitRepeats = 10;
+
+bool is_rpc_command(const domain::RobotCommand& command) noexcept {
+    return command.source == domain::CommandSource::Rpc;
+}
+
+domain::PositionState position_state_from_endpoint(domain::Endpoint endpoint) noexcept {
+    return endpoint == domain::Endpoint::A ? domain::PositionState::AtA
+                                           : domain::PositionState::AtB;
+}
+
+uint32_t fault_code_from_error_decision(const ErrorDecision& decision) noexcept {
+    switch (decision.root_error.code) {
+    case ErrorCode::AttitudeLimitBoth:
+        return domain::FaultCode::kConflictingLimitSides;
+    case ErrorCode::RecoveryFailed:
+        return domain::FaultCode::kRecoveryFailed;
+    case ErrorCode::GpsStuck:
+        return domain::FaultCode::kRobotStuck;
+    case ErrorCode::DriverCommError:
+    case ErrorCode::WalkMotorStall:
+    case ErrorCode::BrushMotorFault:
+    case ErrorCode::AttitudeLimit:
+        return domain::FaultCode::kRecoveryFailed;
+    }
+    return domain::FaultCode::kRecoveryFailed;
+}
+
 }  // namespace
 
 RobotController::RobotController(ActionPorts ports) : actions_(std::move(ports)) {}
@@ -74,24 +102,7 @@ void RobotController::post_for_test(std::function<void()> fn) {
 }
 
 void RobotController::post_limit_settled(domain::Endpoint endpoint) {
-    post([this, endpoint] {
-        std::lock_guard<std::mutex> lk(mtx_);
-        handle_limit_settled_locked(endpoint);
-    });
-}
-
-void RobotController::post_limit_unstable(domain::Endpoint endpoint) {
-    post([this, endpoint] {
-        std::lock_guard<std::mutex> lk(mtx_);
-        handle_limit_unstable_locked(endpoint);
-    });
-}
-
-void RobotController::post_watchdog_timeout(std::string thread_name) {
-    post([this, thread_name = std::move(thread_name)] {
-        std::lock_guard<std::mutex> lk(mtx_);
-        handle_watchdog_timeout_locked(thread_name);
-    });
+    post([this, endpoint] { handle_limit_settled_unlocked(endpoint); });
 }
 
 void RobotController::post_recovery_finished(bool ok) {
@@ -111,15 +122,54 @@ void RobotController::post_schedule_window_hit() {
     });
 }
 
-void RobotController::post_fault(FaultFact fact) {
-    post([this, fact = std::move(fact)] {
-        std::lock_guard<std::mutex> lk(mtx_);
-        handle_fault_locked(fact);
-    });
-}
-
 void RobotController::post_tick() {
     post([] {});
+}
+
+void RobotController::apply_error_decision(const ErrorDecision& decision) {
+    bool do_stop_motion = false;
+    bool do_start_recovery = false;
+    bool do_emergency_stop = false;
+
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+
+        switch (decision.action) {
+        case ErrorAction::Ignore:
+        case ErrorAction::WarnOnly:
+            return;
+        case ErrorAction::StartRecovery:
+            if (!decision.requires_robot_recovering) {
+                return;
+            }
+            if (state_ == RobotState::ExecutingMission && mission_) {
+                recovery_return_state_ = RobotState::ExecutingMission;
+                state_ = RobotState::Recovering;
+                do_stop_motion = true;
+                do_start_recovery = true;
+            }
+            break;
+        case ErrorAction::FaultStopped:
+            active_fault_ = fault_code_from_error_decision(decision);
+            mission_.reset();
+            recovery_return_state_.reset();
+            state_ = RobotState::FaultStopped;
+            do_emergency_stop = true;
+            break;
+        }
+    }
+
+    // 外部动作可能访问 CAN/串口/运动服务，必须在状态机锁外执行，避免阻塞 RPC、
+    // snapshot() 和后续事件处理。动作只依据上面锁内计算出的标志执行，不再重新读取状态。
+    if (do_stop_motion && actions_.stop_motion) {
+        actions_.stop_motion();
+    }
+    if (do_start_recovery && actions_.start_recovery) {
+        actions_.start_recovery();
+    }
+    if (do_emergency_stop && actions_.emergency_stop) {
+        actions_.emergency_stop();
+    }
 }
 
 void RobotController::drain_for_test() {
@@ -141,7 +191,43 @@ void RobotController::loop() {
             handling_event_ = true;
         }
 
-        fn();
+        try {
+            fn();
+        } catch (const std::exception& ex) {
+            spdlog::error("[RobotController] event handler threw exception: {}", ex.what());
+            std::lock_guard<std::mutex> state_lk(mtx_);
+            active_fault_ = domain::FaultCode::kTaskContextInconsistent;
+            mission_.reset();
+            recovery_return_state_.reset();
+            state_ = RobotState::FaultStopped;
+            if (actions_.emergency_stop) {
+                try {
+                    actions_.emergency_stop();
+                } catch (const std::exception& stop_ex) {
+                    spdlog::error(
+                        "[RobotController] emergency_stop threw during exception fallback: {}",
+                        stop_ex.what());
+                } catch (...) {
+                    spdlog::error(
+                        "[RobotController] emergency_stop threw unknown exception during fallback");
+                }
+            }
+        } catch (...) {
+            spdlog::error("[RobotController] event handler threw unknown exception");
+            std::lock_guard<std::mutex> state_lk(mtx_);
+            active_fault_ = domain::FaultCode::kTaskContextInconsistent;
+            mission_.reset();
+            recovery_return_state_.reset();
+            state_ = RobotState::FaultStopped;
+            if (actions_.emergency_stop) {
+                try {
+                    actions_.emergency_stop();
+                } catch (...) {
+                    spdlog::error(
+                        "[RobotController] emergency_stop threw during unknown exception fallback");
+                }
+            }
+        }
 
         {
             std::lock_guard<std::mutex> lk(queue_mtx_);
@@ -214,7 +300,7 @@ CommandResult RobotController::submit_command_locked(const domain::RobotCommand&
         }
         active_fault_.reset();
         mission_.reset();
-        reset_source_limit_repeat_locked();
+        recovery_return_state_.reset();
         if (actions_.clear_fault) {
             actions_.clear_fault();
         }
@@ -234,7 +320,9 @@ CommandResult RobotController::start_command_locked(const domain::RobotCommand& 
     const auto pending_cfg = config_.pending_runtime_config ? config_.pending_runtime_config()
                                                             : std::optional<domain::RuntimeConfig>{};
     const auto start_cfg = pending_cfg.value_or(active_cfg);
-    if (battery_soc_query_ && battery_soc_query_() < static_cast<float>(start_cfg.min_battery_soc)) {
+    // RPC 在本项目中定义为维护类指令：人工确认后执行，不参与调度启动的电量门槛。
+    if (!is_rpc_command(command) && battery_soc_query_ &&
+        battery_soc_query_() < static_cast<float>(start_cfg.min_battery_soc)) {
         return {false, "battery_below_start_threshold"};
     }
 
@@ -254,7 +342,7 @@ CommandResult RobotController::start_command_locked(const domain::RobotCommand& 
     }
 
     mission_ = build_start_mission_locked(command, lane, position_state);
-    reset_source_limit_repeat_locked();
+    recovery_return_state_.reset();
     state_ = RobotState::SelfChecking;
     return {true, "accepted"};
 }
@@ -263,6 +351,12 @@ CommandResult RobotController::validate_start_command_locked(
     const domain::RobotCommand& command,
     const domain::LaneConfig& lane,
     domain::PositionState position_state) const {
+    // RPC 统一作为维护类指令处理：跳过位置合法性检查，避免维护场景被限位事实阻断。
+    // 调度和本地自动任务仍保留位置门槛，防止无人值守时盲动。
+    if (is_rpc_command(command)) {
+        return {true, "start_allowed"};
+    }
+
     if (command.kind == domain::RobotCommandKind::StartConfiguredMission &&
         !domain::can_start_configured_mission(lane, position_state)) {
         return {false, "configured_mission_requires_start_endpoint"};
@@ -293,9 +387,14 @@ domain::MissionContext RobotController::build_start_mission_locked(
     if (command.kind == domain::RobotCommandKind::StartConfiguredMission) {
         const auto active_cfg = config_.active_runtime_config ? config_.active_runtime_config()
                                                               : domain::RuntimeConfig{};
+        // RPC 配置任务按维护约定假定机器人当前位于 primary_dock；
+        // 非 RPC 任务继续使用真实位置，让调度启动保持自动安全边界。
+        const auto start_state = is_rpc_command(command)
+                                     ? position_state_from_endpoint(lane.primary_dock)
+                                     : position_state;
         return domain::build_configured_mission_context(
             lane,
-            position_state,
+            start_state,
             command.source,
             command.command_id,
             std::max<uint32_t>(1u, active_cfg.repeat_count));
@@ -311,14 +410,16 @@ domain::MissionContext RobotController::build_start_mission_locked(
 }
 
 CommandResult RobotController::stop_locked() {
-    if (!mission_active()) {
+    // stop RPC 只允许任务正常执行中响应；自检、恢复、端点切段和故障态都拒绝，
+    // 避免维护命令打断恢复闭环或把半完成状态静默清成 Idle。
+    if (state_ != RobotState::ExecutingMission) {
         return {false, "not_running"};
     }
     if (actions_.stop_motion) {
         actions_.stop_motion();
     }
     mission_.reset();
-    reset_source_limit_repeat_locked();
+    recovery_return_state_.reset();
     state_ = RobotState::Idle;
     return {true, "accepted"};
 }
@@ -327,7 +428,7 @@ bool RobotController::start_current_segment_locked() {
     namespace FaultCode = robot::domain::FaultCode;
     if (!mission_) {
         active_fault_ = FaultCode::kTaskContextInconsistent;
-        reset_source_limit_repeat_locked();
+        recovery_return_state_.reset();
         state_ = RobotState::FaultStopped;
         return false;
     }
@@ -335,14 +436,14 @@ bool RobotController::start_current_segment_locked() {
     if (segment == nullptr) {
         active_fault_ = FaultCode::kTaskContextInconsistent;
         mission_.reset();
-        reset_source_limit_repeat_locked();
+        recovery_return_state_.reset();
         state_ = RobotState::FaultStopped;
         return false;
     }
     if (actions_.start_segment && !actions_.start_segment(*segment)) {
         active_fault_ = FaultCode::kSegmentStartFailed;
         mission_.reset();
-        reset_source_limit_repeat_locked();
+        recovery_return_state_.reset();
         state_ = RobotState::FaultStopped;
         if (actions_.emergency_stop) {
             actions_.emergency_stop();
@@ -350,10 +451,6 @@ bool RobotController::start_current_segment_locked() {
         return false;
     }
     return true;
-}
-
-void RobotController::reset_source_limit_repeat_locked() noexcept {
-    source_limit_repeat_count_ = 0;
 }
 
 RobotControllerSnapshot RobotController::snapshot() const {
@@ -365,132 +462,175 @@ RobotControllerSnapshot RobotController::snapshot() const {
         snap.repeat_count = mission_->repeat_count;
         snap.completed_cycles = static_cast<int>(mission_->completed_cycles);
     }
-    if (config_.active_runtime_config) {
-        snap.active_config = config_.active_runtime_config();
-    }
-    if (config_.pending_runtime_config) {
-        snap.pending_config = config_.pending_runtime_config();
-    }
-    if (snap.active_config && config_.runtime_config_version) {
-        snap.cfg_ver = config_.runtime_config_version(*snap.active_config);
+    if (config_.active_runtime_config && config_.runtime_config_version) {
+        const auto active_config = config_.active_runtime_config();
+        snap.cfg_ver = config_.runtime_config_version(active_config);
     }
     return snap;
 }
 
 void RobotController::complete_self_check(bool ok) {
-    if (ok) {
-        post([this] {
-            std::lock_guard<std::mutex> lk(mtx_);
-            complete_self_check_locked(true);
-        });
-        return;
-    }
-    post([this] {
-        std::lock_guard<std::mutex> lk(mtx_);
-        complete_self_check_locked(false);
-    });
+    post([this, ok] { complete_self_check_unlocked(ok); });
 }
 
 void RobotController::complete_self_check_for_test(bool ok) {
-    std::lock_guard<std::mutex> lk(mtx_);
-    complete_self_check_locked(ok);
+    complete_self_check_unlocked(ok);
 }
 
-void RobotController::complete_self_check_locked(bool ok) {
-    if (state_ != RobotState::SelfChecking) {
+void RobotController::complete_self_check_unlocked(bool ok) {
+    std::function<bool()> close_lock_motor;
+    bool do_emergency_stop = false;
+
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        if (state_ != RobotState::SelfChecking) {
+            return;
+        }
+        if (!ok) {
+            active_fault_ = domain::FaultCode::kSelfCheckFailed;
+            mission_.reset();
+            recovery_return_state_.reset();
+            state_ = RobotState::FaultStopped;
+            do_emergency_stop = static_cast<bool>(actions_.emergency_stop);
+        } else {
+            close_lock_motor = actions_.close_lock_motor;
+        }
+    }
+
+    if (do_emergency_stop) {
+        actions_.emergency_stop();
         return;
     }
-    if (!ok) {
-        mission_.reset();
-        reset_source_limit_repeat_locked();
-        state_ = RobotState::Idle;
-        return;
+
+    const bool lock_closed = !close_lock_motor || close_lock_motor();
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        if (state_ != RobotState::SelfChecking) {
+            return;
+        }
+        if (!lock_closed) {
+            // 锁止电机关动作失败时禁止启动清扫：设备没有机械反馈，GPIO 写入失败必须显式停机上报。
+            active_fault_ = domain::FaultCode::kLockMotorCloseFailed;
+            mission_.reset();
+            recovery_return_state_.reset();
+            state_ = RobotState::FaultStopped;
+            do_emergency_stop = static_cast<bool>(actions_.emergency_stop);
+        } else {
+            state_ = RobotState::ExecutingMission;
+            start_current_segment_locked();
+            return;
+        }
     }
-    state_ = RobotState::ExecutingMission;
-    start_current_segment_locked();
+
+    if (do_emergency_stop) {
+        actions_.emergency_stop();
+    }
 }
 
 void RobotController::handle_limit_settled_for_test(domain::Endpoint endpoint) {
-    std::lock_guard<std::mutex> lk(mtx_);
-    handle_limit_settled_locked(endpoint);
+    handle_limit_settled_unlocked(endpoint);
 }
 
-void RobotController::handle_limit_settled_locked(domain::Endpoint endpoint) {
+void RobotController::handle_limit_settled_unlocked(domain::Endpoint endpoint) {
     namespace FaultCode = robot::domain::FaultCode;
 
-    if (state_ == RobotState::Idle ||
-        state_ == RobotState::SelfChecking ||
-        state_ == RobotState::FaultStopped ||
-        state_ == RobotState::Charging) {
-        return;
+    std::function<void()> stop_motion;
+    std::function<bool()> open_lock_motor;
+    bool mission_finished = false;
+    bool do_emergency_stop = false;
+
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        if (state_ == RobotState::Idle ||
+            state_ == RobotState::SelfChecking ||
+            state_ == RobotState::Recovering ||
+            state_ == RobotState::FaultStopped ||
+            state_ == RobotState::Charging) {
+            return;
+        }
+
+        if (state_ != RobotState::ExecutingMission || !mission_) {
+            active_fault_ = FaultCode::kUnexpectedLimitSide;
+            mission_.reset();
+            recovery_return_state_.reset();
+            state_ = RobotState::FaultStopped;
+            return;
+        }
+
+        const auto* segment = mission_->current_segment();
+        if (segment == nullptr) {
+            active_fault_ = FaultCode::kUnexpectedLimitSide;
+            mission_.reset();
+            recovery_return_state_.reset();
+            state_ = RobotState::FaultStopped;
+            return;
+        }
+        if (segment->target != endpoint) {
+            handle_source_limit_repeat_locked(endpoint);
+            return;
+        }
+
+        state_ = RobotState::SettlingEndpoint;
+        ++mission_->current_segment_index;
+        if (mission_->current_segment_index >= mission_->segments.size()) {
+            ++mission_->completed_cycles;
+            mission_->current_segment_index = 0;
+        }
+        if (mission_->completed_cycles < mission_->repeat_count) {
+            state_ = RobotState::ExecutingMission;
+            start_current_segment_locked();
+            return;
+        }
+
+        mission_finished = true;
+        stop_motion = actions_.stop_motion;
+        auto lane = config_.lane_config ? config_.lane_config() : domain::LaneConfig{};
+        if (config_.active_runtime_config) {
+            lane.primary_dock = config_.active_runtime_config().primary_dock;
+        }
+        const bool finished_at_dock =
+            lane.dock_mode == domain::DockMode::DualDock || endpoint == lane.primary_dock;
+        if (finished_at_dock) {
+            open_lock_motor = actions_.open_lock_motor;
+        }
     }
 
-    if (state_ != RobotState::ExecutingMission || !mission_) {
-        active_fault_ = FaultCode::kUnexpectedLimitSide;
-        mission_.reset();
-        state_ = RobotState::FaultStopped;
+    if (!mission_finished) {
         return;
+    }
+    if (stop_motion) {
+        stop_motion();
+    }
+    const bool lock_opened = !open_lock_motor || open_lock_motor();
+
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        if (state_ != RobotState::SettlingEndpoint) {
+            return;
+        }
+        if (!lock_opened) {
+            // 锁止电机只在最终停机位动作；GPIO 写入失败必须进入故障停机，避免误认为已锁车。
+            active_fault_ = FaultCode::kLockMotorOpenFailed;
+            mission_.reset();
+            recovery_return_state_.reset();
+            state_ = RobotState::FaultStopped;
+            do_emergency_stop = static_cast<bool>(actions_.emergency_stop);
+        } else {
+            mission_.reset();
+            recovery_return_state_.reset();
+            state_ = RobotState::Idle;
+        }
     }
 
-    const auto* segment = mission_->current_segment();
-    if (segment == nullptr) {
-        active_fault_ = FaultCode::kUnexpectedLimitSide;
-        mission_.reset();
-        reset_source_limit_repeat_locked();
-        state_ = RobotState::FaultStopped;
-        return;
+    if (do_emergency_stop) {
+        actions_.emergency_stop();
     }
-    if (segment->target != endpoint) {
-        handle_source_limit_repeat_locked(endpoint);
-        return;
-    }
-
-    state_ = RobotState::SettlingEndpoint;
-    reset_source_limit_repeat_locked();
-    ++mission_->current_segment_index;
-    if (mission_->current_segment_index >= mission_->segments.size()) {
-        ++mission_->completed_cycles;
-        mission_->current_segment_index = 0;
-    }
-    if (mission_->completed_cycles >= mission_->repeat_count) {
-        mission_.reset();
-        reset_source_limit_repeat_locked();
-        state_ = RobotState::Idle;
-        return;
-    }
-    state_ = RobotState::ExecutingMission;
-    start_current_segment_locked();
 }
 
 void RobotController::handle_source_limit_repeat_locked(domain::Endpoint) {
-    namespace FaultCode = robot::domain::FaultCode;
-
-    ++source_limit_repeat_count_;
-    if (source_limit_repeat_count_ > kMaxSourceLimitRepeats) {
-        active_fault_ = FaultCode::kUnexpectedLimitSide;
-        mission_.reset();
-        reset_source_limit_repeat_locked();
-        state_ = RobotState::FaultStopped;
-        if (actions_.emergency_stop) {
-            actions_.emergency_stop();
-        }
-        return;
-    }
-
+    // 单侧主限位重复触发按业务事件处理：重新启动当前段，不再作为 v1 错误来源。
     state_ = RobotState::ExecutingMission;
     start_current_segment_locked();
-}
-
-void RobotController::handle_limit_unstable_locked(domain::Endpoint) {
-    handle_fault_locked(FaultFact{FaultSource::SafetyMonitor,
-                                  domain::FaultCode::kLimitUnstableAfterEmergencyStop,
-                                  "limit_unstable_after_hard_stop"});
-}
-
-void RobotController::handle_watchdog_timeout_locked(const std::string& thread_name) {
-    handle_fault_locked(FaultFact{FaultSource::Watchdog,
-                                  domain::FaultCode::kCanCommunicationLost,
-                                  "watchdog_timeout:" + thread_name});
 }
 
 void RobotController::handle_recovery_finished_locked(bool ok) {
@@ -498,53 +638,24 @@ void RobotController::handle_recovery_finished_locked(bool ok) {
         return;
     }
     if (!ok) {
-        handle_fault_locked(FaultFact{FaultSource::Recovery,
-                                      domain::FaultCode::kRecoveryFailed,
-                                      "recovery_failed"});
-        return;
-    }
-    state_ = RobotState::ExecutingMission;
-    start_current_segment_locked();
-}
-
-void RobotController::handle_fault_for_test(const FaultFact& fact) {
-    std::lock_guard<std::mutex> lk(mtx_);
-    handle_fault_locked(fact);
-}
-
-void RobotController::handle_fault_locked(const FaultFact& fact) {
-    const auto decision = fault_policy_.decide(fact);
-    switch (decision.action) {
-    case FaultAction::WarnOnly:
-        return;
-    case FaultAction::RejectStart:
-        if (state_ == RobotState::SelfChecking) {
-            mission_.reset();
-            reset_source_limit_repeat_locked();
-            state_ = RobotState::Idle;
-        }
-        return;
-    case FaultAction::StartRecovery:
-        if (state_ == RobotState::ExecutingMission && mission_) {
-            if (actions_.stop_motion) {
-                actions_.stop_motion();
-            }
-            if (actions_.start_recovery) {
-                actions_.start_recovery();
-            }
-            state_ = RobotState::Recovering;
-        }
-        return;
-    case FaultAction::EmergencyStopAndLatch:
-        active_fault_ = fact.code;
+        // RecoveryExecutor 的连续失败升级已由 ErrorManager 仲裁；这里仅处理执行器明确返回失败的兜底闭环。
+        active_fault_ = domain::FaultCode::kRecoveryFailed;
         mission_.reset();
-        reset_source_limit_repeat_locked();
+        recovery_return_state_.reset();
         state_ = RobotState::FaultStopped;
         if (actions_.emergency_stop) {
             actions_.emergency_stop();
         }
         return;
     }
+    const auto return_state = recovery_return_state_.value_or(RobotState::ExecutingMission);
+    recovery_return_state_.reset();
+    if (return_state == RobotState::SelfChecking) {
+        state_ = RobotState::SelfChecking;
+        return;
+    }
+    state_ = RobotState::ExecutingMission;
+    start_current_segment_locked();
 }
 
 }  // namespace robot::app

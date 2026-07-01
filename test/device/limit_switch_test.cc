@@ -121,7 +121,7 @@ TEST_CASE("LimitSwitch: GPIO 低边沿触发后 is_triggered() 为 true", "[devi
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 
-    // 不崩溃是主要验证目标；消抖后触发路径在集成测试中覆盖
+    // 不崩溃是主要验证目标；去抖后的触发路径在集成测试中覆盖。
     REQUIRE_NOTHROW(f.sw.is_triggered());
 }
 

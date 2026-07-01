@@ -1,5 +1,7 @@
 #include <catch2/catch.hpp>
 
+#include <atomic>
+
 #include "pv_cleaning_robot/middleware/network_manager.h"
 
 using robot::middleware::INetworkTransport;
@@ -13,6 +15,8 @@ struct MockTransport : INetworkTransport {
     bool subscribe_result{true};
     bool connected{false};
     bool connect_called{false};
+    bool connect_with_cancel_called{false};
+    bool request_stop_called{false};
     bool publish_called{false};
     bool subscribe_called{false};
 
@@ -20,6 +24,21 @@ struct MockTransport : INetworkTransport {
         connect_called = true;
         connected = connect_result;
         return connect_result;
+    }
+
+    bool connect(const std::atomic<bool>* running) override {
+        connect_with_cancel_called = true;
+        connect_called = true;
+        if (running && !running->load(std::memory_order_acquire)) {
+            connected = false;
+            return false;
+        }
+        connected = connect_result;
+        return connect_result;
+    }
+
+    void request_stop() override {
+        request_stop_called = true;
     }
 
     void disconnect() override {
@@ -62,7 +81,33 @@ TEST_CASE("NetworkManager: DUAL_PARALLEL connect succeeds when one transport is 
 
     REQUIRE(manager.connect());
     REQUIRE(mqtt->connect_called);
+    REQUIRE(mqtt->connect_with_cancel_called);
     REQUIRE(lora->connect_called);
+    REQUIRE(lora->connect_with_cancel_called);
+}
+
+TEST_CASE("NetworkManager: connect(running) propagates cancellation",
+          "[middleware][network]") {
+    auto mqtt = std::make_shared<MockTransport>();
+    std::atomic<bool> running{false};
+    NetworkManager manager(mqtt, nullptr, NetworkManager::Mode::MQTT_ONLY);
+
+    REQUIRE_FALSE(manager.connect(&running));
+    REQUIRE(mqtt->connect_called);
+    REQUIRE(mqtt->connect_with_cancel_called);
+    REQUIRE_FALSE(mqtt->connected);
+}
+
+TEST_CASE("NetworkManager: request_stop forwards to both transports",
+          "[middleware][network]") {
+    auto mqtt = std::make_shared<MockTransport>();
+    auto lora = std::make_shared<MockTransport>();
+    NetworkManager manager(mqtt, lora, NetworkManager::Mode::DUAL_PARALLEL);
+
+    manager.request_stop();
+
+    REQUIRE(mqtt->request_stop_called);
+    REQUIRE(lora->request_stop_called);
 }
 
 TEST_CASE("NetworkManager: MQTT_ONLY publish does not touch LoRaWAN transport",

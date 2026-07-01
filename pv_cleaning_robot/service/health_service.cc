@@ -1,12 +1,8 @@
 /*
- * @Author: UncleDrew
- * @Date: 2026-03-14 16:03:29
- * @LastEditors: UncleDrew
- * @LastEditTime: 2026-05-09 09:53:14
- * @FilePath: /pv_cleaning_robot/pv_cleaning_robot/service/health_service.cc
- * @Description:
+ * 健康与诊断 payload 序列化实现。
  *
- * Copyright (c) 2026 by UncleDrew, All Rights Reserved.
+ * HealthService 优先消费 DiagnosticsCollector 的统一快照，保证健康上报和错误管理使用
+ * 同一份设备诊断事实；保留直接读取设备 getter 的构造路径仅用于兼容测试和旧调用点。
  */
 #include <chrono>
 #include <cstdarg>
@@ -211,6 +207,19 @@ size_t HealthPayloadBuilder::build_health(const HealthView& view, char* out, siz
     return w.size();
 }
 
+size_t HealthPayloadBuilder::build_health(const DiagnosticsCollector::Snapshot& snapshot,
+                                          char* out,
+                                          size_t cap) noexcept {
+    HealthView view{};
+    view.ts_ms = snapshot.epoch_ms;
+    view.walk = snapshot.walk_status;
+    view.brush = snapshot.brush_status;
+    view.bms = snapshot.bms_data;
+    view.imu = snapshot.imu_data;
+    view.gps = snapshot.gps_data;
+    return build_health(view, out, cap);
+}
+
 size_t HealthPayloadBuilder::build_diagnostics(const DiagnosticsView& view,
                                                char* out,
                                                size_t cap) noexcept {
@@ -332,6 +341,19 @@ size_t HealthPayloadBuilder::build_diagnostics(const DiagnosticsView& view,
     return w.size();
 }
 
+size_t HealthPayloadBuilder::build_diagnostics(const DiagnosticsCollector::Snapshot& snapshot,
+                                               char* out,
+                                               size_t cap) noexcept {
+    DiagnosticsView view{};
+    view.ts_ms = snapshot.epoch_ms;
+    view.walk = snapshot.walk_diagnostics;
+    view.brush = snapshot.brush_diagnostics;
+    view.bms = snapshot.bms_diagnostics;
+    view.imu = snapshot.imu_diagnostics;
+    view.gps = snapshot.gps_diagnostics;
+    return build_diagnostics(view, out, cap);
+}
+
 HealthService::HealthService(std::shared_ptr<device::WalkMotorGroup> walk,
                              std::shared_ptr<device::BrushMotor> brush,
                              std::shared_ptr<device::BMS> bms,
@@ -374,6 +396,40 @@ HealthService::HealthService(std::shared_ptr<device::WalkMotorGroup> walk,
     }
 }
 
+HealthService::HealthService(std::shared_ptr<DiagnosticsCollector> diagnostics,
+                             std::shared_ptr<CloudService> cloud,
+                             Mode mode,
+                             std::string local_log_path,
+                             size_t local_log_max_bytes,
+                             size_t local_log_max_files)
+    : cloud_(std::move(cloud))
+    , diagnostics_(std::move(diagnostics))
+    , mode_(mode) {
+    payload_cache_.reserve(kPayloadBufferBytes);
+    // 本地 JSONL 轮转日志（仅 local_log_path 非空时开启，独立于 MQTT/LoRaWAN）
+    if (!local_log_path.empty()) {
+        try {
+            const auto log_path = std::filesystem::path(local_log_path);
+            const auto parent = log_path.parent_path();
+            if (!parent.empty()) {
+                std::filesystem::create_directories(parent);
+            }
+
+            auto sink = std::make_shared<spdlog::sinks::rotating_file_sink_mt>(
+                local_log_path,
+                std::max<size_t>(1u, local_log_max_bytes),
+                std::max<size_t>(1u, local_log_max_files),
+                false);
+            local_log_ = std::make_shared<spdlog::logger>("", std::move(sink));
+            local_log_->set_pattern("%v");
+            local_log_->flush_on(spdlog::level::info);
+        } catch (const std::exception& ex) {
+            spdlog::error("[HealthService] failed to initialize local rotating log: {}", ex.what());
+            local_log_.reset();
+        }
+    }
+}
+
 void HealthService::update() {
     const size_t payload_len = build_payload(payload_buf_.data(), payload_buf_.size());
     if (payload_len == 0u) {
@@ -383,8 +439,8 @@ void HealthService::update() {
 
     payload_cache_.assign(payload_buf_.data(), payload_len);
     if (cloud_)
-        cloud_->publish_telemetry(payload_cache_);  // cloud_ 为 nullptr 时（单元测试场景）跳过
-    // 本地 JSONL 落盘：每条记录一行，独立于网络，离线测试直接 cat 查看
+        cloud_->publish_telemetry(payload_cache_);  // cloud_ 为 nullptr 时（单元测试场景）跳过。
+    // 本地 JSONL 落盘：每条记录一行，独立于网络链路，便于现场离线排查。
     if (local_log_) {
         try {
             local_log_->log(spdlog::level::info,
@@ -399,6 +455,14 @@ void HealthService::update() {
 }
 
 size_t HealthService::build_payload(char* out, size_t cap) const {
+    if (diagnostics_) {
+        const auto snapshot = diagnostics_->snapshot();
+        if (mode_ == Mode::DIAGNOSTICS) {
+            return HealthPayloadBuilder::build_diagnostics(snapshot, out, cap);
+        }
+        return HealthPayloadBuilder::build_health(snapshot, out, cap);
+    }
+
     const auto now = std::chrono::system_clock::now();
     const auto ts_ms = static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count());

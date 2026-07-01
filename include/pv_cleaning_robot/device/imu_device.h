@@ -1,12 +1,8 @@
 /*
- * @Author: UncleDrew
- * @Date: 2026-03-14 13:19:39
- * @LastEditors: UncleDrew
- * @LastEditTime: 2026-03-24 16:01:08
- * @FilePath: /pv_cleaning_robot/include/pv_cleaning_robot/device/imu_device.h
- * @Description:
+ * IMU 设备接口。
  *
- * Copyright (c) 2026 by UncleDrew, All Rights Reserved.
+ * 本类内部维护串口读取线程，持续解析 WIT Motion 数据帧并缓存最新姿态。
+ * 配置命令期间会暂停后台读帧，避免 ACK 与流式数据互相抢占串口响应。
  */
 #pragma once
 #include <atomic>
@@ -21,8 +17,7 @@
 
 namespace robot::device {
 
-/// @brief 9轴 IMU 设备（UART，WIT Motion 协议）
-/// 内部启动读取线程，流式接收并解析帧
+/// @brief 9 轴 IMU 设备（UART，WIT Motion 协议）。
 class ImuDevice {
    public:
     struct ImuData {
@@ -53,6 +48,7 @@ class ImuDevice {
 
     // ── 生命周期 ──────────────────────────────────────────────
     bool open();   ///< 打开串口，启动读取线程
+    void request_stop();  ///< 请求后台读取线程尽快退出；不替代 close/open 生命周期管理
     void close();  ///< 停止读取线程，关闭串口
 
     // ── 配置命令（发送配置帧，等待生效，验证）──────────────
@@ -82,7 +78,7 @@ class ImuDevice {
     std::thread read_thread_;
     std::atomic<bool> running_{false};
 
-    // 【新增】配置标志：当下发命令时，挂起后台读取线程，防止 ACK 冲突
+    // 配置命令标志：下发命令时暂停后台读取线程，防止 ACK 与流式帧冲突。
     std::atomic<bool> is_configuring_{false};
 };
 

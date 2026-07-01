@@ -1,5 +1,6 @@
 #pragma once
 #include <atomic>
+#include <chrono>
 #include <functional>
 #include <memory>
 
@@ -28,6 +29,7 @@ class MotionService : public middleware::IRunnable, public domain::EmergencyStop
         int brush_rpm{1200};            ///< 滚刷转速绝对值
         int brush_direction_sign{1};     ///< 测试/调试用滚刷方向乘子：1=默认，-1=反向
         bool heading_pid_en{true};      ///< 是否使能视觉纠偏
+        float control_dt_s{0.05f};      ///< 姿态纠偏控制周期，必须与 walk_ctrl 调度周期保持一致
         HeadingCorrector::Params pid{};  ///< 视觉纠偏参数
     };
 
@@ -56,7 +58,27 @@ class MotionService : public middleware::IRunnable, public domain::EmergencyStop
     /// 原地急停（失能行走，停滚刷）
     void emergency_stop() override;
 
-    void update() override;  ///< 由 ThreadExecutor 20ms 调用（50Hz 姿态纠偏）
+    /// @brief 按当前运动方向反向短距离恢复。
+    ///
+    /// 用于 GpsStuck / WalkMotorStall 这类“通信正常但现场卡住”的恢复。
+    /// 运动命令仍由 MotionService 统一换算并下发，调用方只提供时长和中断条件。
+    bool reverse_for_recovery(std::chrono::milliseconds duration,
+                              std::chrono::milliseconds tick,
+                              std::function<bool()> interrupted);
+
+    /// @brief 进入姿态回中运动模式。
+    ///
+    /// 只负责准备运动侧状态：停止滚刷、关闭清扫段命令、解除安全覆盖并切到速度模式。
+    /// 姿态限位状态、回中时序和超时判断由 AttitudeLimitService 负责。
+    bool begin_attitude_center_motion();
+
+    /// @brief 姿态回中期间只驱动下轮 LB/RB，上轮 LT/RT 保持 0。
+    bool command_lower_wheels_for_attitude_center(float lower_rpm);
+
+    /// @brief 停止姿态回中运动并失能行走电机。
+    bool stop_attitude_center_motion();
+
+    void update() override;  ///< 由 walk_ctrl 线程按 control_dt_s 对应周期调用
     HeadingCorrector::DebugState heading_pid_debug_state() const;
 
    private:

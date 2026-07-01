@@ -12,10 +12,9 @@
  *   IMU      : /dev/ttyS1（默认），WIT Motion，9600 baud
  *   GPSD     : 127.0.0.1:2947（默认），由目标机 gpsd 服务提供 TCP JSON 数据
  *   BMS      : /dev/ttyS8（默认），嘉佰达通用协议 V4，9600 baud
- *   距离传感器: /dev/ttyS9（默认），RS485 Modbus RTU，9600 baud
  *   GPIO     : gpiochip5 line0=左限位，line1=右限位，
  *              line2=左下姿态极限，line3=右下姿态极限，
- *              line4=辅助停机接近（默认）
+ *              line4=辅助停机接近，line8=锁止电机开，line9=锁止电机关（默认）
  */
 #include <filesystem>
 #include <memory>
@@ -67,16 +66,18 @@ struct HwParams {
     std::string gpsd_watch = "?WATCH={\"enable\":true,\"json\":true};";
     std::string bms_port = "/dev/ttyS8";
     int bms_baud = 9600;
-    std::string dist_port = "/dev/ttyS9";  ///< 距离传感器 RS485 串口
-    int dist_baud = 9600;
-    uint8_t dist_slave_id = 1u;
-    uint8_t dist_channel_count = 2u;
     std::string gpio_chip = "gpiochip5";
     unsigned left_limit_line = 0u;
     unsigned right_limit_line = 1u;
     unsigned left_attitude_limit_line = 2u;
     unsigned right_attitude_limit_line = 3u;
     unsigned aux_dock_limit_line = 4u;
+    std::string lock_motor_open_chip = "gpiochip5";
+    unsigned lock_motor_open_line = 8u;
+    std::string lock_motor_close_chip = "gpiochip5";
+    unsigned lock_motor_close_line = 9u;
+    uint32_t lock_motor_pulse_ms = 200u;
+    uint32_t lock_motor_settle_ms = 8000u;
     // timing
     int limit_timeout_sec = 60;   ///< 每段（单一限位）等待最大秒数
     int online_timeout_ms = 600;  ///< 等待电机上线最大毫秒数
@@ -190,12 +191,6 @@ inline HwParams load_hw_test_config() {
         p.gpsd_watch = cfg.get<std::string>("hardware.gpsd_watch", p.gpsd_watch);
         p.bms_port = cfg.get<std::string>("hardware.bms_port", p.bms_port);
         p.bms_baud = cfg.get<int>("hardware.bms_baud", p.bms_baud);
-        p.dist_port = cfg.get<std::string>("hardware.dist_port", p.dist_port);
-        p.dist_baud = cfg.get<int>("hardware.dist_baud", p.dist_baud);
-        p.dist_slave_id =
-            static_cast<uint8_t>(cfg.get<int>("hardware.dist_slave_id", (int)p.dist_slave_id));
-        p.dist_channel_count = static_cast<uint8_t>(
-            cfg.get<int>("hardware.dist_channel_count", (int)p.dist_channel_count));
         p.gpio_chip = cfg.get<std::string>("hardware.gpio_chip", p.gpio_chip);
         p.left_limit_line =
             static_cast<unsigned>(cfg.get<int>("hardware.left_limit_line", (int)p.left_limit_line));
@@ -207,6 +202,18 @@ inline HwParams load_hw_test_config() {
             "hardware.right_attitude_limit_line", (int)p.right_attitude_limit_line));
         p.aux_dock_limit_line = static_cast<unsigned>(
             cfg.get<int>("hardware.aux_dock_limit_line", (int)p.aux_dock_limit_line));
+        p.lock_motor_open_chip =
+            cfg.get<std::string>("hardware.lock_motor_open_chip", p.lock_motor_open_chip);
+        p.lock_motor_open_line = static_cast<unsigned>(cfg.get<int>(
+            "hardware.lock_motor_open_line", static_cast<int>(p.lock_motor_open_line)));
+        p.lock_motor_close_chip =
+            cfg.get<std::string>("hardware.lock_motor_close_chip", p.lock_motor_close_chip);
+        p.lock_motor_close_line = static_cast<unsigned>(cfg.get<int>(
+            "hardware.lock_motor_close_line", static_cast<int>(p.lock_motor_close_line)));
+        p.lock_motor_pulse_ms = static_cast<uint32_t>(std::max(
+            0, cfg.get<int>("hardware.lock_motor_pulse_ms", (int)p.lock_motor_pulse_ms)));
+        p.lock_motor_settle_ms = static_cast<uint32_t>(std::max(
+            0, cfg.get<int>("hardware.lock_motor_settle_ms", (int)p.lock_motor_settle_ms)));
         p.limit_timeout_sec = cfg.get<int>("timing.limit_timeout_sec", p.limit_timeout_sec);
         p.online_timeout_ms = cfg.get<int>("timing.online_timeout_ms", p.online_timeout_ms);
         p.sweep_duration_ms = cfg.get<int>("timing.sweep_duration_ms", p.sweep_duration_ms);

@@ -1,12 +1,7 @@
 /*
- * @Author: UncleDrew
- * @Date: 2026-03-14 13:19:14
- * @LastEditors: UncleDrew
- * @LastEditTime: 2026-03-22 21:37:48
- * @FilePath: /pv_cleaning_robot/include/pv_cleaning_robot/protocol/imu_protocol.h
- * @Description:
+ * WIT Motion IMU UART 协议解析与配置命令编码。
  *
- * Copyright (c) 2026 by UncleDrew, All Rights Reserved.
+ * 本文件只处理字节流解析和固定配置帧编码，不访问串口、不创建线程，也不决定设备恢复策略。
  */
 #pragma once
 #include <array>
@@ -16,7 +11,7 @@
 
 namespace robot::protocol {
 
-/// @brief IMU 测量数据（完整9轴 + 姿态解算结果）
+/// @brief IMU 测量数据，包含 9 轴原始量和姿态解算结果。
 struct ImuData {
     float accel[3];         ///< 加速度 (m/s²) [x, y, z]
     float gyro[3];          ///< 角速度 (rad/s) [x, y, z]
@@ -29,7 +24,7 @@ struct ImuData {
     bool valid;             ///< 数据有效标志
 };
 
-/// @brief WIT Motion / 维特智能 UART 协议解析器
+/// @brief WIT Motion / 维特智能 UART 协议解析器。
 ///
 /// 帧格式（每帧11字节）：
 ///   [0x55][type][d0][d1][d2][d3][d4][d5][d6][d7][checksum]
@@ -49,18 +44,18 @@ class ImuProtocol {
     static constexpr size_t FRAME_LEN = 11;
     static constexpr uint8_t FRAME_HEADER = 0x55;
 
-    /// 推入一个字节，内部维护状态机
+    /// 推入一个字节，内部维护协议解析状态机。
     void push_byte(uint8_t b);
 
-    /// 是否已积累了一个完整可用帧（推入后立即查询）
+    /// 是否已积累一个完整可用帧，推入字节后可立即查询。
     bool frame_complete() const {
         return frame_ready_;
     }
 
-    /// 取出解析后的数据（同时清除 frame_ready_ 标志）
+    /// 取出解析后的数据，同时清除 frame_ready_ 标志。
     const ImuData& take_frame();
 
-    /// 清除缓冲区并重置解析状态
+    /// 清除缓冲区并重置解析状态。
     void reset();
 
     // ── 配置命令编码（发送给 IMU 模组）──────────────────────────────────

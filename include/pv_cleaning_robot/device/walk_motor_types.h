@@ -7,8 +7,8 @@ namespace robot::device {
 
 /// @brief 单轮状态与诊断数据类型定义
 ///
-/// 从已废弃的 WalkMotor 设备类中提取，由 WalkMotorGroup 继续使用。
-/// 不包含任何硬件操作接口，仅作数据结构定义。
+/// 供 WalkMotorGroup、健康上报和诊断采集共享使用。
+/// 不包含任何硬件操作接口，仅作单轮数据结构定义。
 class WalkMotor {
 public:
     /// 单轮精简状态

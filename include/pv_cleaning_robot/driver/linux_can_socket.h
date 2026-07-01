@@ -1,12 +1,8 @@
 /*
- * @Author: UncleDrew
- * @Date: 2026-03-14 13:19:23
- * @LastEditors: UncleDrew
- * @LastEditTime: 2026-03-24 09:44:57
- * @FilePath: /pv_cleaning_robot/include/pv_cleaning_robot/driver/linux_can_socket.h
- * @Description:
+ * Linux SocketCAN 驱动接口。
  *
- * Copyright (c) 2026 by UncleDrew, All Rights Reserved.
+ * 本类封装 CAN socket 打开、过滤器、收发、bus-off 检测和恢复。调用方必须保证
+ * close()/recover() 前相关收发线程已经停止，避免文件描述符被内核复用后出现并发误用。
  */
 #pragma once
 #include <atomic>
@@ -18,9 +14,9 @@
 
 namespace robot::driver {
 
-/// @brief Linux SocketCAN 实现（基于 linux/can.h + linux/can/raw.h）
+/// @brief Linux SocketCAN 实现（基于 linux/can.h + linux/can/raw.h）。
 ///
-/// **线程安全合约（Thread-Safety Contract）：**
+/// 线程安全合约：
 ///   - `is_open()` / `is_bus_off()` / `get_last_error()` 并发安全（atomic 实现）
 ///   - `send()` 与 `recv()` 可被不同线程并发调用（两者不共享写状态）
 ///   - `close()` 调用方**必须**保证所有 `send()` / `recv()` 线程已退出后再调用，
@@ -65,11 +61,11 @@ class LinuxCanSocket final : public hal::ICanBus {
     // last_error_ 仅由 recv() 写入（接收方状态）；send() 错误通过返回值传递，
     // 不再写 last_error_，彻底消除 TX/RX 线程互相覆盖错误状态的竞争。
     std::atomic<hal::CanResult> last_error_{hal::CanResult::OK};
-    // TX 缓冲区满丢帧计数（RT 热路径，无锁，无日志）
+    // TX 缓冲区满丢帧计数：实时热路径只做无锁计数，不打印日志。
     std::atomic<uint32_t> tx_drop_count_{0};
 
-    // 保存上次 set_filters() 配置，供 recover() 重建 socket 后恢复
-    // filter_mutex_ 防止 set_filters()/clear_filter()/recover() 并发修改数组导致的数据竞争
+    // 保存上次 set_filters() 配置，供 recover() 重建 socket 后恢复。
+    // filter_mutex_ 防止 set_filters()/clear_filter()/recover() 并发修改数组导致数据竞争。
     static constexpr size_t kMaxFilters = 16u;
     hal::CanFilter saved_filters_[kMaxFilters]{};
     size_t saved_filter_count_{0u};

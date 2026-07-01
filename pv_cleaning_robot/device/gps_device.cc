@@ -34,6 +34,12 @@ bool GpsDevice::open() {
     return source_ && source_->open();
 }
 
+/// @brief 请求当前 GPS 数据源尽快停止后台读取。
+void GpsDevice::request_stop() {
+    if (source_)
+        source_->request_stop();
+}
+
 /// @brief 关闭当前 GPS 数据源。
 void GpsDevice::close() {
     if (source_)

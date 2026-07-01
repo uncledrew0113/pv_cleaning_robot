@@ -5,6 +5,7 @@
 #include "pv_cleaning_robot/device/imu_device.h"
 #include "pv_cleaning_robot/device/gps_device.h"
 #include "pv_cleaning_robot/service/cloud_service.h"
+#include "pv_cleaning_robot/service/diagnostics_collector.h"
 #include "pv_cleaning_robot/middleware/thread_executor.h"
 #include <array>
 #include <cstdint>
@@ -17,9 +18,8 @@ class logger;
 
 namespace robot::service {
 
-// Health payload formatting is only consumed by HealthService at runtime.
-// Keep the serialization contract next to the owner instead of splitting a
-// two-file helper that forces readers to jump across the service boundary.
+// 健康 payload 序列化只由 HealthService 在运行时消费。格式契约保留在服务边界内，
+// 避免为了单一调用点再拆出额外 helper 文件，增加维护跳转成本。
 class HealthPayloadBuilder {
 public:
     struct HealthView {
@@ -41,7 +41,13 @@ public:
     };
 
     static size_t build_health(const HealthView& view, char* out, size_t cap) noexcept;
+    static size_t build_health(const DiagnosticsCollector::Snapshot& snapshot,
+                               char* out,
+                               size_t cap) noexcept;
     static size_t build_diagnostics(const DiagnosticsView& view,
+                                    char* out,
+                                    size_t cap) noexcept;
+    static size_t build_diagnostics(const DiagnosticsCollector::Snapshot& snapshot,
                                     char* out,
                                     size_t cap) noexcept;
 };
@@ -62,6 +68,13 @@ class HealthService : public middleware::IRunnable {
 public:
     enum class Mode { HEALTH, DIAGNOSTICS };
 
+    HealthService(std::shared_ptr<DiagnosticsCollector> diagnostics,
+                  std::shared_ptr<CloudService> cloud,
+                  Mode mode = Mode::HEALTH,
+                  std::string local_log_path = "",
+                  size_t local_log_max_bytes = 10u * 1024u * 1024u,
+                  size_t local_log_max_files = 3u);
+
     HealthService(std::shared_ptr<device::WalkMotorGroup> walk,
                   std::shared_ptr<device::BrushMotor>     brush,
                   std::shared_ptr<device::BMS>            bms,
@@ -73,7 +86,8 @@ public:
                   size_t                                  local_log_max_bytes = 10u * 1024u * 1024u,
                   size_t                                  local_log_max_files = 3u);
 
-    void update() override;  ///< 由 ThreadExecutor 调用
+    /// 由 ThreadExecutor 调用。优先使用 DiagnosticsCollector 快照；兼容构造路径只读取设备缓存 getter。
+    void update() override;
 
 private:
     static constexpr size_t kPayloadBufferBytes = 8192;
@@ -85,10 +99,11 @@ private:
     std::shared_ptr<device::ImuDevice>      imu_;
     std::shared_ptr<device::GpsDevice>      gps_;
     std::shared_ptr<CloudService>           cloud_;
+    std::shared_ptr<DiagnosticsCollector> diagnostics_;
     Mode                                mode_;
     mutable std::array<char, kPayloadBufferBytes> payload_buf_{};
     mutable std::string                 payload_cache_;
-    std::shared_ptr<spdlog::logger>     local_log_; ///< 本地 JSONL 轮转日志器（local_log_path 非空时创建）
+    std::shared_ptr<spdlog::logger>     local_log_; ///< 本地 JSONL 轮转日志器，local_log_path 非空时创建。
 };
 
-} // namespace robot::service
+}  // namespace robot::service

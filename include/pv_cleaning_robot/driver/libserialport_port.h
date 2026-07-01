@@ -1,12 +1,8 @@
 /*
- * @Author: UncleDrew
- * @Date: 2026-03-14 13:19:23
- * @LastEditors: UncleDrew
- * @LastEditTime: 2026-03-24 10:28:13
- * @FilePath: /pv_cleaning_robot/include/pv_cleaning_robot/driver/libserialport_port.h
- * @Description:
+ * libserialport 串口驱动接口。
  *
- * Copyright (c) 2026 by UncleDrew, All Rights Reserved.
+ * 本实现通过读写锁保护 close() 与 read/write 并发边界。上层恢复流程仍应先停止
+ * 对应 update 线程，再执行 close/open，避免设备协议事务被中途打断。
  */
 #pragma once
 #include <atomic>
@@ -16,13 +12,14 @@
 
 #include "pv_cleaning_robot/hal/i_serial_port.h"
 
-// 前置声明，避免在头文件暴露 libserialport 类型
+// 前置声明，避免在公共头文件暴露 libserialport 类型。
 struct sp_port;
 
 namespace robot::driver {
 
-/// @brief libserialport 串口实现
-/// 支持 UART（IMU/GPS）和 RS485（由硬件自动切换方向）
+/// @brief libserialport 串口实现。
+///
+/// 支持 UART 设备和硬件自动切换方向的 RS485 设备。
 class LibSerialPort final : public hal::ISerialPort {
    public:
     /// @param port_name 串口设备路径，如 "/dev/ttyS1"
@@ -51,9 +48,9 @@ class LibSerialPort final : public hal::ISerialPort {
     hal::UartConfig config_;
     sp_port* port_{nullptr};
 
-    // 原子标志：is_open() 通过此标志读取，避免裸指针 port_ 的数据竞争
+    // 原子标志：is_open() 通过此标志读取，避免裸指针 port_ 的数据竞争。
     std::atomic<bool> connected_{false};
-    // 并发安全的错误状态标志
+    // 并发安全的错误状态标志。
     std::atomic<hal::UartResult> last_error_{hal::UartResult::OK};
 
     // 防 TOCTOU：close() 与 write()/read() 并发时 port_ 可能已被 sp_free_port 释放。
@@ -61,7 +58,7 @@ class LibSerialPort final : public hal::ISerialPort {
     // 由于 Modbus 层已通过 bus_mutex_ 串行化，IMU 层只有读操作，此锁无额外 RT 开销。
     mutable std::shared_mutex port_rwlock_;
 
-    // 内部辅助函数，用于检查 libserialport 的返回值并设置 last_error_
+    // 内部辅助函数，用于检查 libserialport 返回值并设置 last_error_。
     bool check_sp_return(int ret_code, const char* operation);
 
     void close_locked();

@@ -104,6 +104,27 @@ TEST_CASE("WatchdogMgr: 喂狗后重置超时计时器", "[app][watchdog]") {
     wdg.stop();
 }
 
+TEST_CASE("WatchdogMgr: 暂停 ticket 后主动停止线程不触发超时", "[app][watchdog]") {
+    WatchdogMgr wdg;
+    wdg.start();
+
+    std::atomic<int> timeout_count{0};
+    wdg.set_timeout_callback([&](const std::string&) { ++timeout_count; });
+
+    int id = wdg.register_thread("recovering_thread", 100);
+    REQUIRE(wdg.set_thread_paused(id, true));
+
+    // 模拟恢复流程主动 stop executor，时间明显超过 timeout_ms。
+    std::this_thread::sleep_for(std::chrono::milliseconds(450));
+    CHECK(timeout_count.load() == 0);
+
+    REQUIRE(wdg.set_thread_paused(id, false));
+    std::this_thread::sleep_for(std::chrono::milliseconds(450));
+    CHECK(timeout_count.load() == 1);
+
+    wdg.stop();
+}
+
 // ────────────────────────────────────────────────────────────────
 // 硬件看门狗路径（空路径 = 不启用）
 // ────────────────────────────────────────────────────────────────

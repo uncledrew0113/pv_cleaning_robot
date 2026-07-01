@@ -57,6 +57,19 @@ TEST_CASE("GpsDevice: close() 可重复调用不崩溃", "[device][gps]") {
     REQUIRE_NOTHROW(f.gps.close());
 }
 
+TEST_CASE("GpsDevice: request_stop 不直接关闭串口，close 完成生命周期收敛",
+          "[device][gps]") {
+    GpsFixture f;
+    REQUIRE(f.gps.open());
+    REQUIRE(f.serial->opened);
+
+    f.gps.request_stop();
+    CHECK(f.serial->opened);
+
+    REQUIRE_NOTHROW(f.gps.close());
+    CHECK_FALSE(f.serial->opened);
+}
+
 // ────────────────────────────────────────────────────────────────
 // 初始状态：get_latest() 返回 valid=false
 // ────────────────────────────────────────────────────────────────

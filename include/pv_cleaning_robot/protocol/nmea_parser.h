@@ -1,12 +1,7 @@
 /*
- * @Author: UncleDrew
- * @Date: 2026-03-14 13:19:14
- * @LastEditors: UncleDrew
- * @LastEditTime: 2026-03-14 15:48:23
- * @FilePath: /pv_cleaning_robot/include/pv_cleaning_robot/protocol/nmea_parser.h
- * @Description:
+ * NMEA 0183 GPS 语句解析器接口。
  *
- * Copyright (c) 2026 by UncleDrew, All Rights Reserved.
+ * 本文件只处理 NMEA 语句解析和字段累计，不访问串口/GPSD，也不决定 GPS 卡滞或通信恢复策略。
  */
 #pragma once
 #include <cstdint>
@@ -16,7 +11,7 @@
 
 namespace robot::protocol {
 
-/// @brief 解析后的 GPS 定位数据
+/// @brief 解析后的 GPS 定位数据。
 struct GpsData {
     double latitude;             ///< 纬度（度，负=南纬）
     double longitude;            ///< 经度（度，负=西经）
@@ -33,7 +28,7 @@ struct GpsData {
     uint64_t utc_timestamp_ms;   ///< UTC 毫秒时间戳（从 epoch 起算）
 };
 
-/// @brief NMEA 0183 语句解析器（无状态纯函数）
+/// @brief NMEA 0183 语句解析器。
 ///
 /// 支持以下语句类型：
 ///   $GxGGA — 全球定位数据（位置/高程/定位质量/卫星数/HDOP）
@@ -50,12 +45,12 @@ class NmeaParser {
     /// 每次成功调用后通过 get_data() 获取最新值。
     bool parse_sentence(const std::string& sentence);
 
-    /// 获取当前积累的 GPS 数据（线程不安全：调用方自行保护）
+    /// 获取当前积累的 GPS 数据；线程安全由调用方保证。
     const GpsData& get_data() const {
         return data_;
     }
 
-    /// 重置数据
+    /// 重置解析累计数据。
     void reset();
 
    private:

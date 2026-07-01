@@ -48,8 +48,6 @@ enum class CommandSource {
     Scheduler,
     /// 本地按钮、维护工具或近端控制。
     Local,
-    /// 故障处理表触发的保护动作。
-    FaultPolicy,
     /// 系统启动、恢复上下文等内部流程。
     System,
 };
@@ -353,15 +351,16 @@ namespace FaultCode {
 // - 0x3xxx: P2 类告警或业务拒绝，通常只上报，不强制改变运行状态。
 //
 // 这里定义的是跨层共享的稳定故障码，不在 domain 中放故障处理逻辑；
-// 具体动作由 app::FaultPolicy 和 RobotController 统一执行。
+// 具体动作由 app::ErrorManager、RecoveryExecutor 和 RobotController 统一执行。
 static constexpr uint32_t kRobotStuck = 0x0002u;
 static constexpr uint32_t kCanCommunicationLost = 0x1001u;
 static constexpr uint32_t kSegmentStartFailed = 0x1101u;
 static constexpr uint32_t kRecoveryFailed = 0x1102u;
 static constexpr uint32_t kTaskContextInconsistent = 0x1103u;
+static constexpr uint32_t kLockMotorCloseFailed = 0x1104u;
+static constexpr uint32_t kLockMotorOpenFailed = 0x1105u;
 static constexpr uint32_t kUnexpectedLimitSide = 0x1003u;
 static constexpr uint32_t kConflictingLimitSides = 0x1004u;
-static constexpr uint32_t kLimitUnstableAfterEmergencyStop = 0x1005u;
 static constexpr uint32_t kSelfCheckFailed = 0x3001u;
 static constexpr uint32_t kTransientAttitudeError = 0x3007u;
 static constexpr uint32_t kStartRejectedBusy = 0x3003u;
@@ -385,10 +384,6 @@ struct RobotRuntimeSnapshot {
     uint32_t completed_cycles{0};
     /// 当前激活运行配置的版本号。
     uint64_t cfg_ver{0};
-    /// 当前正在使用的运行时配置；无配置服务时可为空。
-    std::optional<RuntimeConfig> active_config;
-    /// 当前待下次任务生效的运行时配置；没有 pending 修改时为空。
-    std::optional<RuntimeConfig> pending_config;
 };
 
 /// @brief 最小急停端口。

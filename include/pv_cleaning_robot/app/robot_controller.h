@@ -3,13 +3,12 @@
 #include <condition_variable>
 #include <deque>
 #include <functional>
-#include <future>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <thread>
 
-#include "pv_cleaning_robot/app/fault_policy.h"
+#include "pv_cleaning_robot/app/error_manager.h"
 #include "pv_cleaning_robot/domain/robot_domain.h"
 
 namespace robot::app {
@@ -35,25 +34,35 @@ struct RobotControllerSnapshot {
     uint32_t repeat_count{0};
     int completed_cycles{0};
     uint64_t cfg_ver{0};
-    std::optional<domain::RuntimeConfig> active_config;
-    std::optional<domain::RuntimeConfig> pending_config;
 };
 
 class RobotController {
 public:
     struct ActionPorts {
+        /// 启动当前任务段；具体电机命令由 MotionService 负责换算和下发。
         std::function<bool(const domain::MissionSegment&)> start_segment;
+        /// 正常停止当前任务段，用于 stop 命令、端点完成和进入恢复流程前的业务停机。
         std::function<void()> stop_motion;
+        /// 故障停机兜底急停；状态机只调用端口，不直接操作电机。
         std::function<void()> emergency_stop;
+        /// 进入 Recovering 时的外部通知钩子，当前用于上层观测，不承载恢复动作。
         std::function<void()> start_recovery;
+        /// 故障复位时的外部清理钩子；故障锁存仍由 RobotController 自身维护。
         std::function<void()> clear_fault;
+        /// 任务完成回到停机位后执行锁止；失败会锁存 FaultStopped。
+        std::function<bool()> open_lock_motor;
+        /// 自检通过、清扫启动前解除锁止；失败会锁存 FaultStopped。
+        std::function<bool()> close_lock_motor;
     };
 
     struct ConfigPorts {
+        /// 当前生效运行配置，任务启动和运动服务同步都以它为基准。
         std::function<domain::RuntimeConfig()> active_runtime_config;
+        /// 待生效运行配置；启动任务前提升为 active，避免任务中途变更参数。
         std::function<std::optional<domain::RuntimeConfig>()> pending_runtime_config;
         std::function<uint64_t(const domain::RuntimeConfig&)> runtime_config_version;
         std::function<bool()> promote_pending_runtime_config;
+        /// 固定车道配置，描述主停机端和端点几何关系。
         std::function<domain::LaneConfig()> lane_config;
     };
 
@@ -70,18 +79,18 @@ public:
     CommandResult submit_command(const domain::RobotCommand& command);
     RobotControllerSnapshot snapshot() const;
 
+    /// SafetyMonitor 去抖确认主限位后投递；状态机线程内再决定切段或忽略。
     void post_limit_settled(domain::Endpoint endpoint);
-    void post_limit_unstable(domain::Endpoint endpoint);
-    void post_watchdog_timeout(std::string thread_name);
+    /// RecoveryExecutor 返回后投递；只有 Recovering 状态会消费该事件。
     void post_recovery_finished(bool ok);
     void post_schedule_window_hit();
-    void post_fault(FaultFact fact);
     void post_tick();
+    /// ErrorHandlingService 调用的状态机入口；只处理切状态和故障锁存，不执行恢复动作。
+    void apply_error_decision(const ErrorDecision& decision);
 
     void complete_self_check(bool ok);
     void complete_self_check_for_test(bool ok);
     void handle_limit_settled_for_test(domain::Endpoint endpoint);
-    void handle_fault_for_test(const FaultFact& fact);
     void post_for_test(std::function<void()> fn);
     void drain_for_test();
 
@@ -100,25 +109,20 @@ private:
                                                       domain::PositionState position_state) const;
     CommandResult stop_locked();
     bool start_current_segment_locked();
-    void reset_source_limit_repeat_locked() noexcept;
-    void complete_self_check_locked(bool ok);
-    void handle_limit_settled_locked(domain::Endpoint endpoint);
+    void complete_self_check_unlocked(bool ok);
+    void handle_limit_settled_unlocked(domain::Endpoint endpoint);
     void handle_source_limit_repeat_locked(domain::Endpoint endpoint);
-    void handle_limit_unstable_locked(domain::Endpoint endpoint);
-    void handle_watchdog_timeout_locked(const std::string& thread_name);
     void handle_recovery_finished_locked(bool ok);
-    void handle_fault_locked(const FaultFact& fact);
 
     mutable std::mutex mtx_;
     RobotState state_{RobotState::Idle};
     std::optional<domain::MissionContext> mission_;
     std::optional<uint32_t> active_fault_;
-    FaultPolicy fault_policy_;
+    std::optional<RobotState> recovery_return_state_;
     ActionPorts actions_{};
     ConfigPorts config_{};
     std::function<domain::PositionState()> position_state_query_;
     std::function<float()> battery_soc_query_;
-    int source_limit_repeat_count_{0};
 
     mutable std::mutex queue_mtx_;
     std::condition_variable queue_cv_;

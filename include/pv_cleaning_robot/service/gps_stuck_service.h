@@ -1,12 +1,8 @@
 /*
- * @Author: UncleDrew
- * @Date: 2026-06-25 14:46:02
- * @LastEditors: UncleDrew
- * @LastEditTime: 2026-06-26 09:31:31
- * @FilePath: /pv_cleaning_robot/include/pv_cleaning_robot/service/gps_stuck_service.h
- * @Description:
+ * GPS 卡滞检测服务接口。
  *
- * Copyright (c) 2026 by UncleDrew, All Rights Reserved.
+ * 本服务只在清扫任务运行期间启用，用 GPS 质量和速度持续性判断“机器人运行但位置未变化”。
+ * 恢复流程或非任务状态必须暂停监控，避免急停、倒车、驱动重启期间产生误报。
  */
 #pragma once
 
@@ -53,7 +49,7 @@ struct GpsStuckStatus {
     uint8_t latest_fix_quality{0};
 };
 
-/// @brief 基于普通 GPS 的机器人卡住检测服务。
+/// @brief 基于普通 GPS 的机器人卡滞检测服务。
 class GpsStuckService : public middleware::IRunnable {
    public:
     using GpsData = device::GpsDevice::GpsData;

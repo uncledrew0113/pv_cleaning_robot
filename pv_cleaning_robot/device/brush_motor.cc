@@ -1,19 +1,10 @@
 /*
- * @Author: UncleDrew
- * @Date: 2026-03-14 16:03:29
- * @LastEditors: UncleDrew
- * @LastEditTime: 2026-03-30 16:02:45
- * @FilePath: /pv_cleaning_robot/pv_cleaning_robot/device/brush_motor.cc
- * @Description: 滚刷电机驱动类 - 基于ODrive控制器的串口通信实现
+ * 滚刷电机 ODrive ASCII 串口驱动实现。
  *
- * 该文件实现了BrushMotor类，用于控制光伏清扫机器人的滚刷电机。
- * 通过串口与ODrive控制器通信，支持速度控制、故障检测和状态监控功能。
- *
- * 主要特性：
- * - 实时状态反馈和故障诊断
- * - 线程安全的操作接口
- *
- * Copyright (c) 2026 by UncleDrew, All Rights Reserved.
+ * 维护边界：
+ * - 本类只封装 ODrive ASCII 命令、状态读取和通信错误计数；
+ * - 任务何时开停滚刷由 MotionService 决定，故障恢复流程由 RecoveryExecutor 编排；
+ * - close()/restart() 前应先停止 brush_exec，避免周期 update() 与串口重建并发。
  */
 
 #include <cmath>
@@ -27,63 +18,36 @@ namespace robot::device {
 
 namespace {
 
-// 通信超时常量：200ms，用于串口读写操作的超时时间
-// 这个值需要在保证响应速度的同时，避免因网络延迟导致的频繁超时
+// 串口读写超时。滚刷状态采集不在实时运动线程中执行，200ms 可兼顾现场响应和误超时抑制。
 constexpr int kIoTimeoutMs = 200;
 
-// 命令缓冲区容量：128字节，足够存放ODrive ASCII协议的命令字符串
+// ODrive ASCII 命令上限较短，固定栈缓冲避免周期 update() 堆分配。
 constexpr size_t kCmdCap = 128;
 
-// 响应缓冲区容量：128字节，足够存放ODrive的响应数据
+// ODrive ASCII 响应同样使用固定栈缓冲，超出时由解析失败路径累计通信错误。
 constexpr size_t kRespCap = 128;
 
-/**
- * @brief 将串口错误转换为设备错误枚举
- *
- * @param err 串口操作结果
- * @return 对应的设备错误类型
- */
 DeviceError uart_error_to_device_error(hal::UartResult err) {
     switch (err) {
         case hal::UartResult::TIMEOUT:
-            return DeviceError::COMM_TIMEOUT;  // 通信超时
+            return DeviceError::COMM_TIMEOUT;
         case hal::UartResult::OK:
-            return DeviceError::OK;  // 操作成功
+            return DeviceError::OK;
         default:
-            return DeviceError::COMM_NO_RESP;  // 无响应或其他通信错误
+            return DeviceError::COMM_NO_RESP;
     }
 }
 
-/**
- * @brief 将 turns/s 转换为 RPM（转每分钟）
- *
- * @param turns_per_sec 每秒转数
- * @return 对应的RPM值
- */
 int turns_per_sec_to_rpm(float turns_per_sec) {
     return static_cast<int>(std::lround(turns_per_sec * 60.0f));
 }
 
-/**
- * @brief 将 RPM 转换为 turns/s
- *
- * @param rpm 转速（RPM）
- * @return 对应的每秒转数
- */
 float rpm_to_turns_per_sec(int rpm) {
     return static_cast<float>(rpm) / 60.0f;
 }
 
 }  // namespace
 
-/**
- * @brief BrushMotor构造函数
- *
- * 初始化滚刷电机控制器，配置串口通信参数
- *
- * @param serial 串口接口的共享指针
- * @param axis ODrive控制器中的轴编号（通常为0）
- */
 BrushMotor::BrushMotor(std::shared_ptr<hal::ISerialPort> serial, uint8_t axis)
     : serial_(std::move(serial))
     , axis_(axis) {}
@@ -95,17 +59,9 @@ BrushMotor::~BrushMotor() noexcept {
     }
 }
 
-/**
- * @brief 打开并初始化电机控制器
- *
- * 执行以下初始化步骤：
- * 1. 打开串口连接
- * 2. 清空串口缓冲区
- *
- * @return 初始化是否成功
- */
 bool BrushMotor::open() {
     std::lock_guard<hal::PiMutex> guard(mtx_);
+    clear_stop_request();
     if (!serial_) {
         return false;
     }
@@ -118,6 +74,7 @@ bool BrushMotor::open() {
 }
 
 void BrushMotor::close() {
+    request_stop();
     std::lock_guard<hal::PiMutex> guard(mtx_);
     if (!serial_ || !serial_->is_open()) {
         diag_ = Diagnostics{};
@@ -136,16 +93,19 @@ void BrushMotor::close() {
     serial_->close();
 }
 
-/**
- * @brief 设置电机目标转速
- *
- * ODrive 需已在设备侧固化为速度控制闭环；本方法只发送速度给定。
- *
- * @param rpm 目标转速（RPM），正值表示正转，负值表示反转
- * @return 操作结果
- */
+void BrushMotor::request_stop() {
+    stop_requested_.store(true, std::memory_order_release);
+}
+
+void BrushMotor::clear_stop_request() {
+    stop_requested_.store(false, std::memory_order_release);
+}
+
 DeviceError BrushMotor::set_rpm(int rpm) {
     std::lock_guard<hal::PiMutex> guard(mtx_);
+    if (stop_requested()) {
+        return DeviceError::EXEC_FAILED;
+    }
     if (!serial_ || !serial_->is_open()) {
         return DeviceError::NOT_OPEN;
     }
@@ -161,13 +121,6 @@ DeviceError BrushMotor::set_rpm(int rpm) {
     return DeviceError::OK;
 }
 
-/**
- * @brief 停止电机运行
- *
- * 将电机转速设置为0，实现平滑停止。
- *
- * @return 操作结果
- */
 DeviceError BrushMotor::stop() {
     std::lock_guard<hal::PiMutex> guard(mtx_);
     if (!serial_ || !serial_->is_open()) {
@@ -184,15 +137,11 @@ DeviceError BrushMotor::stop() {
     return DeviceError::OK;
 }
 
-/**
- * @brief 清除电机故障
- *
- * 发送清除错误命令到ODrive控制器，尝试恢复电机正常工作状态。
- *
- * @return 操作结果
- */
 DeviceError BrushMotor::clear_fault() {
     std::lock_guard<hal::PiMutex> guard(mtx_);
+    if (stop_requested()) {
+        return DeviceError::EXEC_FAILED;
+    }
     if (!serial_ || !serial_->is_open()) {
         return DeviceError::NOT_OPEN;
     }
@@ -203,6 +152,9 @@ DeviceError BrushMotor::clear_fault() {
 
 DeviceError BrushMotor::restart() {
     std::lock_guard<hal::PiMutex> guard(mtx_);
+    if (stop_requested()) {
+        return DeviceError::EXEC_FAILED;
+    }
     if (!serial_ || !serial_->is_open()) {
         return DeviceError::NOT_OPEN;
     }
@@ -216,42 +168,23 @@ DeviceError BrushMotor::restart() {
     return err;
 }
 
-/**
- * @brief 获取电机当前状态
- *
- * 返回电机当前的运行状态，包括实际转速、电流、运行状态和故障信息。
- *
- * @return 电机状态结构体
- */
 BrushMotor::Status BrushMotor::get_status() const {
     std::lock_guard<hal::PiMutex> guard(mtx_);
     return Status{diag_.actual_rpm, diag_.current_a, diag_.running, diag_.fault, diag_.fault_code};
 }
 
-/**
- * @brief 获取电机诊断信息
- *
- * 返回详细的电机诊断数据，包括所有状态信息和额外的诊断参数。
- *
- * @return 电机诊断结构体
- */
 BrushMotor::Diagnostics BrushMotor::get_diagnostics() const {
     std::lock_guard<hal::PiMutex> guard(mtx_);
     return diag_;
 }
 
-/**
- * @brief 更新电机状态（周期性调用）
- *
- * 该方法需要定期调用（通常在单独线程中），用于：
- * 1. 读取电机反馈数据（位置、速度、电压、电流、温度）
- * 2. 检查电机和控制器错误状态
- * 3. 更新运行状态
- *
- * 这个方法是线程安全的，可以在后台线程中调用。
- */
+// 周期状态采集：连续通信失败通过 comm_error_count 暴露给 DiagnosticsCollector，
+// 不在设备层直接决定恢复或停机。
 void BrushMotor::update() {
     std::lock_guard<hal::PiMutex> guard(mtx_);
+    if (stop_requested()) {
+        return;
+    }
     if (!serial_ || !serial_->is_open()) {
         return;
     }
@@ -330,14 +263,6 @@ void BrushMotor::update() {
     update_running_locked();
 }
 
-/**
- * @brief 线程安全的ASCII命令写入
- *
- * 将ASCII命令写入串口，包含错误处理和超时控制。
- * @param line 要写入的命令字符串
- * @param len 命令字符串长度
- * @return 操作结果
- */
 DeviceError BrushMotor::write_ascii_locked(const char* line, size_t len) {
     if (!serial_ || !serial_->is_open()) {
         return DeviceError::NOT_OPEN;
@@ -353,23 +278,15 @@ DeviceError BrushMotor::write_ascii_locked(const char* line, size_t len) {
     return DeviceError::OK;
 }
 
-/**
- * @brief 线程安全的ASCII命令请求
- *
- * 发送命令并读取响应，实现完整的命令-响应交互。
- *
- * @param line 要发送的命令
- * @param len 命令长度
- * @param response 响应缓冲区
- * @param response_cap 响应缓冲区容量
- * @param timeout_ms 超时时间（毫秒）
- * @return 操作结果
- */
+// 完整 ASCII 请求事务。调用方已持有 mtx_，保证同一串口不会交错发送多条命令。
 DeviceError BrushMotor::request_ascii_locked(const char* line,
                                              size_t len,
                                              char* response,
                                              size_t response_cap,
                                              int timeout_ms) {
+    if (stop_requested()) {
+        return DeviceError::EXEC_FAILED;
+    }
     serial_->flush_input();
     const DeviceError err = write_ascii_locked(line, len);
     if (err != DeviceError::OK) {
@@ -378,23 +295,17 @@ DeviceError BrushMotor::request_ascii_locked(const char* line,
     return read_line_locked(response, response_cap, timeout_ms);
 }
 
-/**
- * @brief 线程安全的行读取
- *
- * 从串口读取一行ASCII响应，以换行符结束。
- * 支持超时控制和错误处理。
- *
- * @param response 响应缓冲区
- * @param response_cap 缓冲区容量
- * @param timeout_ms 读取超时时间
- * @return 操作结果
- */
+// 读取一行 ODrive ASCII 响应；超时或系统错误会累计通信错误计数。
 DeviceError BrushMotor::read_line_locked(char* response, size_t response_cap, int timeout_ms) {
     if (!response || response_cap < 2) {
         return DeviceError::INVALID_PARAM;
     }
     size_t used = 0;
     while (used + 1 < response_cap) {
+        if (stop_requested()) {
+            response[0] = '\0';
+            return DeviceError::EXEC_FAILED;
+        }
         uint8_t ch = 0;
         const int n = serial_->read(&ch, 1, timeout_ms);
         if (n < 0) {
@@ -419,21 +330,15 @@ DeviceError BrushMotor::read_line_locked(char* response, size_t response_cap, in
     return DeviceError::OK;
 }
 
-/**
- * @brief 标记通信错误
- *
- * 增加通信错误计数器，用于诊断通信质量问题。
- */
+bool BrushMotor::stop_requested() const {
+    return stop_requested_.load(std::memory_order_acquire);
+}
+
 void BrushMotor::mark_comm_error_locked() {
     ++diag_.comm_error_count;
 }
 
-/**
- * @brief 更新运行状态（内部方法）
- *
- * 根据目标值和故障状态更新电机运行状态。
- * 运行状态用于指示电机是否正在按照目标参数工作。
- */
+// running 是上报语义：目标转速非 0 且当前无锁存故障，不表示已达到目标转速。
 void BrushMotor::update_running_locked() {
     diag_.running = !diag_.fault && diag_.target_rpm != 0;
 }

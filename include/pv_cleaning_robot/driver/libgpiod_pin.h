@@ -1,15 +1,9 @@
 /*
- * @Author: UncleDrew
- * @Date: 2026-03-14 13:19:23
- * @LastEditors: UncleDrew
- * @LastEditTime: 2026-03-24 11:37:17
- * @FilePath: /pv_cleaning_robot/include/pv_cleaning_robot/driver/libgpiod_pin.h
- * @Description: libgpiod v1.6 GPIO 引脚驱动实现。
- *               支持输入（边沿检测）和输出两种模式。
- *               边沿检测优先使用硬件 IRQ，不可用时自动回退至 1ms 软件轮询。
- *               支持软件消抖（可配置延迟）、RT 提权（SCHED_FIFO）和 CPU 绑定。
+ * libgpiod v1.6 GPIO 引脚驱动接口。
  *
- * Copyright (c) 2026 by UncleDrew, All Rights Reserved.
+ * 支持输入边沿监控和输出 DO 控制。边沿监控优先使用硬件 IRQ；当 GPIO 控制器不支持
+ * 可靠边沿事件时，降级为固定周期软件轮询。业务层 read_value() 读取缓存值，避免
+ * SafetyMonitor / 主线程直接卡入 pca953x 等慢速 GPIO 扩展芯片的 ioctl 路径。
  */
 #pragma once
 #include <atomic>
@@ -22,13 +16,13 @@
 #include "pv_cleaning_robot/hal/pi_mutex.h"
 #include "pv_cleaning_robot/hal/i_gpio_pin.h"
 
-// 前置声明，避免暴露 libgpiod C 类型
+// 前置声明，避免在公共头文件暴露 libgpiod C 类型。
 struct gpiod_chip;
 struct gpiod_line;
 
 namespace robot::driver {
 
-/// @brief libgpiod v1.6 GPIO 引脚实现（支持输入/输出两种模式）
+/// @brief libgpiod v1.6 GPIO 引脚实现，支持输入和输出两种模式。
 class LibGpiodPin final : public hal::IGpioPin {
    public:
     /// @param chip_name GPIO 控制器名，如 "gpiochip0"
@@ -49,11 +43,13 @@ class LibGpiodPin final : public hal::IGpioPin {
     void stop_monitoring() override;
 
    private:
-    void monitor_loop();     ///< 中断驱动循环（硬件 IRQ 可用时）
-    void poll_loop();        ///< 轮询循环（IRQ 不可用时自动回退，1ms 检测周期）
-    void setup_thread_rt_(); ///< RT 提权 + CPU 绑定（两个循环共用）
+    void monitor_loop();     ///< IRQ 监控循环，硬件边沿事件可用时使用。
+    void poll_loop();        ///< 轮询监控循环，IRQ 不可用时降级使用。
+    void setup_thread_rt_(); ///< 实时优先级和 CPU 绑定设置，两个监控循环共用。
     bool request_line_as_input();
     void stop_monitoring_locked();
+    bool read_hardware_value_locked(bool& value);
+    void update_cached_value(bool value);
 
     std::string chip_name_;
     unsigned int line_num_;
@@ -68,17 +64,20 @@ class LibGpiodPin final : public hal::IGpioPin {
 
     std::thread monitor_thread_;
     std::atomic<bool> running_{false};
+    std::atomic<bool> cached_value_{false};
+    std::atomic<bool> cache_valid_{false};
+    std::atomic<uint32_t> read_error_count_{0};
 
-    // ── 核心并发控制器 ──
-    // 读写锁：保证 close() 与 read/write 并发时的绝对安全 (防 TOCTOU)
+    // ── 核心并发控制 ──
+    // 读写锁：保证 close() 与 read/write 并发时不会出现文件描述符 TOCTOU。
     mutable std::shared_mutex io_mutex_;
-    // 用于瞬间打断 poll() 的事件通知 FD
+    // 用于立即打断 poll()/等待循环的事件通知 FD。
     std::atomic<int> cancel_fd_{-1};
 
     // RT 优先级继承互斥量：防止主线程（低优先级）持锁时，
     // GPIO 监控线程（高 RT 优先级）被阻塞而引发优先级反转。
     hal::PiMutex cb_mutex_;
-    // 软件消抖状态
+    // 软件去抖状态。
     std::chrono::steady_clock::time_point last_event_time_;
 };
 }  // namespace robot::driver

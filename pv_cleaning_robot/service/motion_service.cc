@@ -1,14 +1,13 @@
 /*
- * @Author: UncleDrew
- * @Date: 2026-03-14 16:03:29
- * @LastEditors: UncleDrew
- * @LastEditTime: 2026-05-27 16:35:16
- * @FilePath: /pv_cleaning_robot/pv_cleaning_robot/service/motion_service.cc
- * @Description: 运动服务——集成 WalkMotorGroup + 视觉纠偏 + 边缘触发覆盖
+ * 运动服务实现。
  *
- * Copyright (c) 2026 by UncleDrew, All Rights Reserved.
+ * 维护边界：
+ * - app 层通过 MotionService 下发所有行走/滚刷运动命令，避免绕过统一方向换算和急停策略；
+ * - SafetyMonitor 触发的 emergency_override 属于安全覆盖，update() 不会用普通心跳抢回控制权；
+ * - 恢复流程复用本服务提供的运动入口，但错误仲裁和状态机切换不在本文件处理。
  */
 #include <cmath>
+#include <thread>
 
 #include "pv_cleaning_robot/service/motion_service.h"
 
@@ -128,7 +127,9 @@ void MotionService::update_heading_correction(const StateSnapshot& state, bool o
     }
 
     HeadingCorrector::Input input;
-    input.dt_s = 0.02f;
+    // PID / 融合预测必须使用真实控制周期；写死 20ms 会导致 50ms walk_ctrl 下
+    // 积分和微分时间基准错误。非法配置回退到当前主程序默认的 50ms。
+    input.dt_s = state.cfg.control_dt_s > 0.0f ? state.cfg.control_dt_s : 0.05f;
     input.has_base_command = true;
     input.base_command = to_corrector_command(state.base_speed_cmd);
     input.travel_direction = state.travel_direction;
@@ -164,7 +165,7 @@ void MotionService::apply_speed_if_command_current(
     if (!walk_command_active_ || command_generation_ != generation) {
         return;
     }
-    // set_speeds() only updates WalkMotorGroup's normal control slot; CAN TX remains in update().
+    // set_speeds() 只更新 WalkMotorGroup 的 normal 控制槽；实际 CAN 发送仍由 update() 周期完成。
     static_cast<void>(group_->set_speeds(cmd));
 }
 
@@ -195,7 +196,7 @@ void MotionService::handle_override_clear() {
 
 bool MotionService::start_cleaning_to(domain::Endpoint target) {
     sync_runtime_config();
-    // 解除可能由 SafetyMonitor::on_limit_trigger() 触发的 emergency_override 锁
+    // 解除可能由 SafetyMonitor 触发的安全覆盖；随后由当前任务段重新接管 normal 电机命令。
     group_->clear_override();
     deactivate_walk_command();
 
@@ -225,9 +226,10 @@ bool MotionService::start_cleaning_to(domain::Endpoint target) {
 void MotionService::stop_cleaning() {
     heading_corrector_.enable(false);
     deactivate_walk_command();
-    brush_->stop();
+    // 正常停机也先清行走轮命令，避免滚刷串口锁或写超时拖慢车辆停止。
     group_->set_speed_uniform(0.0f);
     group_->disable_all();
+    brush_->stop();
 }
 
 bool MotionService::start_segment(const domain::MissionSegment& segment) {
@@ -241,9 +243,78 @@ bool MotionService::start_segment(const domain::MissionSegment& segment) {
 void MotionService::emergency_stop() {
     heading_corrector_.enable(false);
     deactivate_walk_command();
-    brush_->stop();
+    // 急停优先级：行走轮先进入 override 停车，避免滚刷串口锁或写超时拖慢行走制动。
     group_->emergency_override(0.0f);  // 原地停止 + 抑制心跳
     group_->disable_all();
+    brush_->stop();
+}
+
+bool MotionService::reverse_for_recovery(std::chrono::milliseconds duration,
+                                         std::chrono::milliseconds tick,
+                                         std::function<bool()> interrupted) {
+    if (duration <= std::chrono::milliseconds::zero() || tick <= std::chrono::milliseconds::zero()) {
+        return false;
+    }
+
+    const auto state = snapshot_state();
+    const auto reverse_target = state.travel_direction == domain::TravelDirection::AToB
+                                    ? domain::Endpoint::A
+                                    : domain::Endpoint::B;
+
+    // 恢复后退复用正常任务段的方向换算和 PID 使能逻辑，只额外关闭滚刷。
+    if (!start_cleaning_to(reverse_target)) {
+        emergency_stop();
+        return false;
+    }
+    brush_->stop();
+
+    const auto deadline = std::chrono::steady_clock::now() + duration;
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (interrupted && interrupted()) {
+            emergency_stop();
+            return false;
+        }
+        std::this_thread::sleep_for(tick);
+    }
+
+    emergency_stop();
+    return true;
+}
+
+bool MotionService::begin_attitude_center_motion() {
+    // 姿态回中属于恢复动作，不继承清扫段 PID/滚刷状态；这里只准备最小运动能力。
+    heading_corrector_.enable(false);
+    deactivate_walk_command();
+    brush_->stop();
+    group_->clear_override();
+    return enable_speed_mode();
+}
+
+bool MotionService::command_lower_wheels_for_attitude_center(float lower_rpm) {
+    // AttitudeLimitService 负责决定 lower_rpm 的方向和时长；
+    // MotionService 只保证所有行走电机命令仍从统一运动入口下发。
+    if (group_->is_override_active()) {
+        // 回中期间触发对侧姿态限位时，GPIO 回调会先执行 emergency_stop()，
+        // 重新锁存安全 override 并 disable 电机。后续半程回中命令必须先恢复
+        // speed mode，并请求 walk_ctrl 下一周期解除 override，否则 set_speeds()
+        // 只会写入 normal 控制槽，不会真正发到电机。
+        group_->clear_override();
+        if (!enable_speed_mode()) {
+            return false;
+        }
+    }
+    return group_->set_speeds(0.0f, 0.0f, lower_rpm, lower_rpm) ==
+           device::DeviceError::OK;
+}
+
+bool MotionService::stop_attitude_center_motion() {
+    heading_corrector_.enable(false);
+    deactivate_walk_command();
+    brush_->stop();
+    const bool speed_zero_ok =
+        group_->set_speeds(0.0f, 0.0f, 0.0f, 0.0f) == device::DeviceError::OK;
+    const bool disable_ok = group_->disable_all() == device::DeviceError::OK;
+    return speed_zero_ok && disable_ok;
 }
 
 // ── 周期心跳（50 ms，由 ThreadExecutor 调用）──────────────────────────────
@@ -255,10 +326,8 @@ void MotionService::update() {
     group_->update();
     handle_override_clear();
 
-    // 注意：brush_->update() 已移到 bms_exec 线程（SCHED_OTHER, 500ms）
-    // 原因：Modbus RTU 读取寄存器需 5~10ms 阻塞 I/O，放在 walk_ctrl(FIFO 80, 20ms)
-    // 中将占用 25%~50% 控制周期时间预算。BrushMotor 状态 50~500ms 周期变化，
-    // 移至低优先级 bms_exec 线程可完全消除对运动控制周期的干扰。
+    // 滚刷状态采集由独立 brush_exec 线程执行。Modbus RTU 读寄存器可能阻塞数毫秒，
+    // 不放入 walk_ctrl 实时路径，避免 Modbus 阻塞占用行走控制周期预算。
 }
 
 HeadingCorrector::DebugState MotionService::heading_pid_debug_state() const {

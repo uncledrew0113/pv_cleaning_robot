@@ -1,12 +1,8 @@
 /*
- * @Author: UncleDrew
- * @Date: 2026-03-24 09:26:08
- * @LastEditors: UncleDrew
- * @LastEditTime: 2026-03-24 10:49:29
- * @FilePath: /pv_cleaning_robot/include/pv_cleaning_robot/hal/pi_mutex.h
- * @Description:
+ * 优先级继承互斥量封装。
  *
- * Copyright (c) 2026 by UncleDrew, All Rights Reserved.
+ * 用于实时线程和普通线程共享状态的边界，降低优先级反转风险；同时启用 robust mutex，
+ * 让持锁线程异常退出时能够显式失败，而不是让等待线程永久死锁。
  */
 #pragma once
 #include <cerrno>
@@ -16,7 +12,7 @@
 
 namespace robot::hal {
 
-/// @brief 支持优先级继承（PI）和持有者死亡恢复（Robust）的互斥量
+/// @brief 支持优先级继承（PI）和持有者死亡恢复（robust）的互斥量。
 ///
 /// 工业场景价值：
 ///   - PTHREAD_PRIO_INHERIT：消除 RT 线程与普通线程之间的优先级反转
@@ -32,9 +28,9 @@ class PiMutex {
     PiMutex() {
         pthread_mutexattr_t attr;
         pthread_mutexattr_init(&attr);
-        // 优先级继承：持锁线程临时继承等待线程的最高优先级
+        // 优先级继承：持锁线程临时继承等待线程的最高优先级。
         pthread_mutexattr_setprotocol(&attr, PTHREAD_PRIO_INHERIT);
-        // Robust：持有者异常终止后，等待者收到 EOWNERDEAD 而非永久死锁
+        // Robust：持有者异常终止后，等待者收到 EOWNERDEAD 而非永久死锁。
         pthread_mutexattr_setrobust(&attr, PTHREAD_MUTEX_ROBUST);
 
         int rc = pthread_mutex_init(&mutex_, &attr);
@@ -52,7 +48,7 @@ class PiMutex {
     PiMutex(const PiMutex&) = delete;
     PiMutex& operator=(const PiMutex&) = delete;
 
-    // 适配 std::lock_guard，必须返回 void
+    // 适配 std::lock_guard，必须返回 void。
     void lock() {
         int rc = pthread_mutex_lock(&mutex_);
         if (rc == 0) {
@@ -65,7 +61,7 @@ class PiMutex {
             //   1. consistent() 将锁标记为一致，使后续 unlock() 不返回 ENOTRECOVERABLE
             //   2. unlock() 释放所有权，防止 throw 后 lock_guard 析构缺失导致永久死锁
             pthread_mutex_consistent(&mutex_);
-            pthread_mutex_unlock(&mutex_);  // 先释放，再抛出
+            pthread_mutex_unlock(&mutex_);  // 先释放，再抛出。
             throw std::runtime_error(
                 "[PiMutex] lock acquired but previous owner died. State inconsistent!");
         }
@@ -89,7 +85,7 @@ class PiMutex {
 
         if (rc == EOWNERDEAD) {
             pthread_mutex_consistent(&mutex_);
-            pthread_mutex_unlock(&mutex_);  // 先释放，再抛出
+            pthread_mutex_unlock(&mutex_);  // 先释放，再抛出。
             throw std::runtime_error(
                 "[PiMutex] trylock acquired but previous owner died. State inconsistent!");
         }

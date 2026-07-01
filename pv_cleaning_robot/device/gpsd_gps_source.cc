@@ -55,11 +55,15 @@ bool GpsdGpsSource::open() {
     return true;
 }
 
+void GpsdGpsSource::request_stop() {
+    running_.store(false);
+    close_socket(sock_fd_);
+}
+
 /// @brief 关闭 gpsd 连接并停止后台线程。
 /// @brief 关闭 gpsd 连接并停止读取线程。
 void GpsdGpsSource::close() {
-    running_.store(false);
-    close_socket(sock_fd_);
+    request_stop();
     if (read_thread_.joinable())
         read_thread_.join();
 }

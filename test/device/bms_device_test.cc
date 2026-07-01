@@ -365,6 +365,27 @@ TEST_CASE("BMS 设备层 - update_count 反映成功读取次数", "[device][bms
     CHECK(diag.hw_version == "V1.0");
 }
 
+TEST_CASE("BMS 设备层 - request_stop 使 update 跳过串口事务", "[device][bms]") {
+    auto mock = std::make_shared<BmsMockSerial>();
+    register_version(*mock);
+    register_basic_info(*mock);
+
+    device::BMS bms(mock);
+    REQUIRE(bms.open() == device::DeviceError::OK);
+    mock->clear_tx();
+
+    bms.request_stop();
+    bms.update();
+
+    CHECK(mock->tx_captured.empty());
+
+    REQUIRE(bms.open() == device::DeviceError::OK);
+    mock->clear_tx();
+    bms.update();
+
+    CHECK_FALSE(mock->tx_captured.empty());
+}
+
 TEST_CASE("BMS 设备层 - mos_control() 成功应答", "[device][bms]") {
     auto mock = std::make_shared<BmsMockSerial>();
     register_version(*mock);
@@ -427,4 +448,3 @@ TEST_CASE("BMS 设备层 - get_data/get_diagnostics 线程安全", "[device][bms
 // ═══════════════════════════════════════════════════════════════════════════
 //  Part 5: BMS 硬件集成测试（需接 /dev/ttyS8，9600-8-N-1）
 // ═══════════════════════════════════════════════════════════════════════════
-

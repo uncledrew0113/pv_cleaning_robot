@@ -31,7 +31,6 @@
 #include "pv_cleaning_robot/middleware/safety_monitor.h"
 #include "pv_cleaning_robot/middleware/thread_executor.h"
 #include "pv_cleaning_robot/service/config_service.h"
-#include "pv_cleaning_robot/service/fault_service.h"
 #include "pv_cleaning_robot/service/health_service.h"
 #include "pv_cleaning_robot/service/motion_service.h"
 #include "pv_cleaning_robot/service/gps_stuck_service.h"
@@ -69,8 +68,6 @@ const char* fault_code_name(uint32_t code) {
             return "UnexpectedLimitSide";
         case kConflictingLimitSides:
             return "ConflictingLimitSides";
-        case kLimitUnstableAfterEmergencyStop:
-            return "LimitUnstableAfterEmergencyStop";
         default:
             return "Unknown";
     }
@@ -270,6 +267,7 @@ robot::service::MotionService::Config make_motion_config(bool pid_enabled) {
     cfg.return_speed_rpm = std::abs(kp.test_return_rpm);
     cfg.brush_rpm = static_cast<int>(std::lround(std::abs(kp.brush_test_rpm)));
     cfg.heading_pid_en = pid_enabled;
+    cfg.control_dt_s = static_cast<float>(kp.loop_period_ms) / 1000.0f;
     cfg.pid.uds_path = kp.pid.uds_path;
     cfg.pid.reconnect_interval_ms = kp.pid.reconnect_interval_ms;
     cfg.pid.result_timeout_ms = kp.pid.result_timeout_ms;
@@ -337,7 +335,6 @@ class SystemHwFixture : public hw::IGracefulShutdown {
     std::unique_ptr<robot::app::WatchdogMgr> watchdog;
     std::shared_ptr<robot::service::GpsStuckService> gps_stuck;
     std::unique_ptr<robot::service::ConfigService> config;
-    std::shared_ptr<robot::service::FaultService> fault;
     std::shared_ptr<robot::service::MotionService> motion;
     std::shared_ptr<robot::app::RobotController> controller;
     std::shared_ptr<robot::driver::LibGpiodPin> left_gpio;
@@ -418,7 +415,6 @@ class SystemHwFixture : public hw::IGracefulShutdown {
         gps = robot::device::GpsDevice::create_gpsd(gpsd_cfg);
         gps->open();
         gps_stuck = std::make_shared<robot::service::GpsStuckService>(gps);
-        fault = std::make_shared<robot::service::FaultService>(bus);
         const auto motion_cfg =
             motion_config_override ? *motion_config_override : make_motion_config(pid_enabled);
         motion =
@@ -438,7 +434,8 @@ class SystemHwFixture : public hw::IGracefulShutdown {
         };
         actions.stop_motion = [this]() { motion->stop_cleaning(); };
         actions.emergency_stop = [this]() { motion->emergency_stop(); };
-        actions.clear_fault = [this]() { fault->clear_active_fault(); };
+        // RobotController 自身锁存/清除故障，测试夹具不再维护额外故障缓存。
+        actions.clear_fault = []() {};
         controller = std::make_shared<robot::app::RobotController>(actions);
         controller->set_config_ports(robot::app::RobotController::ConfigPorts{
             [this]() { return config->active_runtime_config(); },
@@ -505,9 +502,6 @@ class SystemHwFixture : public hw::IGracefulShutdown {
             bus);
         safety->set_limit_settled_callback(
             [this](robot::domain::Endpoint endpoint) { controller->post_limit_settled(endpoint); });
-        safety->set_limit_unstable_callback([this](robot::domain::Endpoint endpoint) {
-            controller->post_limit_unstable(endpoint);
-        });
         return safety->start();
     }
 
@@ -1597,15 +1591,6 @@ void run_configured_system_chain(SystemHwFixture& f,
             }
             spdlog::info("[{}] limit settled endpoint={}", tag, endpoint_to_config(evt.endpoint));
         });
-    std::atomic<int> unstable_count{0};
-    f.bus.subscribe<robot::middleware::SafetyMonitor::LimitUnstableEvent>(
-        [&](const robot::middleware::SafetyMonitor::LimitUnstableEvent& evt) {
-            ++unstable_count;
-            spdlog::warn("[{}] limit unstable endpoint={} (emergency stop already sent)",
-                         tag,
-                         endpoint_to_config(evt.endpoint));
-        });
-
     std::atomic<bool> watchdog_timeout{false};
     f.watchdog->set_timeout_callback([&](const std::string& name) {
         spdlog::error("[{}] watchdog timeout: {}", tag, name);
@@ -1659,7 +1644,6 @@ void run_configured_system_chain(SystemHwFixture& f,
             INFO("controller entered FaultStopped");
             INFO("fault=" << fault_to_string(controller_snapshot.fault));
             INFO("settled_count=" << settled_count.load());
-            INFO("unstable_count=" << unstable_count.load());
             REQUIRE(controller_snapshot.state != "FaultStopped");
         }
 
@@ -1668,7 +1652,6 @@ void run_configured_system_chain(SystemHwFixture& f,
             INFO("限位等待超时，请检查导轨/传感器接线");
             INFO("current_segment=" << current_segment);
             INFO("settled_count=" << settled_count.load());
-            INFO("unstable_count=" << unstable_count.load());
             INFO("fault=" << fault_to_string(controller_snapshot.fault));
             REQUIRE(now < segment_deadline);
         }
@@ -1745,7 +1728,7 @@ void run_configured_system_chain(SystemHwFixture& f,
         f.motion->update();
         f.gps_stuck->update();
         // BMS 串口离线时一次 update 可能阻塞数百毫秒，组合运动链路测试中不轮询 BMS，
-        // HealthService 直接读取最近缓存，避免打断行走电机 50Hz 心跳。
+        // HealthService 直接读取最近缓存，避免打断行走电机控制心跳。
         if (f.brush) {
             f.brush->update();
         }
@@ -1828,7 +1811,7 @@ void run_configured_system_chain(SystemHwFixture& f,
             }
 
             spdlog::info(
-                "[{}] state={} target={} fault={} limits={} unstable={} "
+                "[{}] state={} target={} fault={} limits={} "
                 "LT={:.1f}/{:.1f} RT={:.1f}/{:.1f} LB={:.1f}/{:.1f} RB={:.1f}/{:.1f} "
                 "brush={} fault={} yaw={:.2f} drift={:.2f} pid(mode={} connected={} valid={} "
                 "latest_yaw={:.3f} filtered_yaw={:.3f} conf={:.2f} age_ms={} corr={:.3f})",
@@ -1837,7 +1820,6 @@ void run_configured_system_chain(SystemHwFixture& f,
                 f.active_segment_target ? endpoint_to_config(*f.active_segment_target) : "none",
                 fault_to_string(snapshot.fault),
                 settled_count.load(),
-                unstable_count.load(),
                 walk_diag.wheel[0].speed_rpm,
                 walk_diag.wheel[0].target_value,
                 walk_diag.wheel[1].speed_rpm,
@@ -1878,11 +1860,9 @@ void run_configured_system_chain(SystemHwFixture& f,
         INFO("settled_count=" << settled_count.load());
         INFO("target_settled_count=" << target_settled_count.load());
         INFO("source_repeat_settled_count=" << source_repeat_settled_count.load());
-        INFO("unstable_count=" << unstable_count.load());
     }
     REQUIRE(final_snapshot.state == "Idle");
     CHECK(target_settled_count.load() >= static_cast<int>(f.repeat_count * 2u));
-    CHECK(unstable_count.load() == 0);
     CHECK_FALSE(watchdog_timeout.load());
     CHECK(health_records > 0);
 

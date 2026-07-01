@@ -11,6 +11,14 @@
 
 namespace robot::driver {
 
+namespace {
+
+// pca953x 等 I2C GPIO 扩展芯片不适合多线程 1ms 高频轮询。20ms 对限位/姿态机械动作
+// 仍有足够响应余量，同时显著降低同一 gpiochip 上多路输入并发抢占内核 GPIO 锁的风险。
+constexpr int kPollingPeriodMs = 20;
+
+}  // namespace
+
 LibGpiodPin::LibGpiodPin(std::string chip_name, unsigned int line_num, std::string consumer)
     : chip_name_(std::move(chip_name))
     , line_num_(line_num)
@@ -42,6 +50,28 @@ bool LibGpiodPin::request_line_as_input() {
     return true;
 }
 
+bool LibGpiodPin::read_hardware_value_locked(bool& value) {
+    if (!chip_ || !line_) {
+        return false;
+    }
+    const int raw = gpiod_line_get_value(line_);
+    if (raw < 0) {
+        read_error_count_.fetch_add(1, std::memory_order_relaxed);
+        spdlog::warn("[LibGpiodPin] read_value failed for {}/{}: {}",
+                     chip_name_,
+                     line_num_,
+                     std::strerror(errno));
+        return false;
+    }
+    value = raw == 1;
+    return true;
+}
+
+void LibGpiodPin::update_cached_value(bool value) {
+    cached_value_.store(value, std::memory_order_release);
+    cache_valid_.store(true, std::memory_order_release);
+}
+
 bool LibGpiodPin::open(const hal::GpioConfig& config) {
     std::unique_lock<std::shared_mutex> lock(io_mutex_);
     // 允许以新配置重新打开：先安全释放旧资源，再重新申请
@@ -68,6 +98,7 @@ bool LibGpiodPin::open(const hal::GpioConfig& config) {
         return false;
     }
 
+    cache_valid_.store(false, std::memory_order_release);
     bool success = false;
     if (config_.direction == hal::GpioDirection::OUTPUT) {
         success = (gpiod_line_request_output(line_, consumer_.c_str(), 0) == 0);
@@ -77,8 +108,17 @@ bool LibGpiodPin::open(const hal::GpioConfig& config) {
                           line_num_,
                           std::strerror(errno));
         }
+        if (success) {
+            update_cached_value(false);
+        }
     } else {
         success = request_line_as_input();
+        if (success) {
+            bool value = false;
+            if (read_hardware_value_locked(value)) {
+                update_cached_value(value);
+            }
+        }
     }
 
     if (!success) {
@@ -147,7 +187,12 @@ bool LibGpiodPin::read_value() {
     std::shared_lock<std::shared_mutex> lock(io_mutex_);
     if (!chip_ || !line_)
         return false;
-    return gpiod_line_get_value(line_) == 1;
+    if (!cache_valid_.load(std::memory_order_acquire)) {
+        // 业务线程只读缓存，避免主线程或安全监控线程重新进入慢速 GPIO ioctl。
+        // 输入引脚在 open()/monitor_loop()/poll_loop() 中刷新缓存；缓存无效时按未触发处理。
+        return false;
+    }
+    return cached_value_.load(std::memory_order_acquire);
 }
 
 bool LibGpiodPin::write_value(bool high) {
@@ -164,6 +209,7 @@ bool LibGpiodPin::write_value(bool high) {
                       std::strerror(errno));
         return false;
     }
+    update_cached_value(high);
     return true;
 }
 
@@ -190,7 +236,7 @@ void LibGpiodPin::start_monitoring() {
     }
 
     // ── 轮询模式（use_irq=false）──────────────────────────────────────────────
-    // 直接以 1ms 周期软件轮询，不尝试硬件 IRQ 申请。
+    // 直接以固定周期软件轮询，不尝试硬件 IRQ 申请。
     // 适用于不支持 IRQ 的 GPIO 控制器（如 RK3576 gpiochip5）。
     if (!config_.use_irq) {
         // 线已在 INPUT 模式（open() 已 request_line_as_input），无需重新申请
@@ -206,9 +252,10 @@ void LibGpiodPin::start_monitoring() {
         }
         last_event_time_ = std::chrono::steady_clock::now();
         monitor_thread_ = std::thread(&LibGpiodPin::poll_loop, this);
-        spdlog::info("[LibGpiodPin] polling-mode started: {}/{} (1ms period)",
+        spdlog::info("[LibGpiodPin] polling-mode started: {}/{} ({}ms period)",
                      chip_name_,
-                     line_num_);
+                     line_num_,
+                     kPollingPeriodMs);
         return;
     }
 
@@ -307,8 +354,13 @@ void LibGpiodPin::monitor_loop() {
             gpiod_line_event event{};
             if (gpiod_line_event_read(line_, &event) != 0)
                 continue;
+            if (event.event_type == GPIOD_LINE_EVENT_RISING_EDGE) {
+                update_cached_value(true);
+            } else if (event.event_type == GPIOD_LINE_EVENT_FALLING_EDGE) {
+                update_cached_value(false);
+            }
 
-            // 软件消抖 (完全线程隔离，无锁开销)
+            // 软件去抖：监控线程内独立处理，不增加跨线程锁开销。
             if (config_.debounce_ms > 0) {
                 auto now = std::chrono::steady_clock::now();
                 auto elapsed_ms =
@@ -379,31 +431,34 @@ void LibGpiodPin::setup_thread_rt_() {
     }
 }
 
-// ── 1ms 软件轮询循环（use_irq=false 时使用）──────────────────────────────────
+// ── 软件轮询循环（use_irq=false 时使用）──────────────────────────────────────
 // 通过定期读取 gpiod_line_get_value() 检测电平变化并触发回调；
-// 消抖逻辑与 monitor_loop() 完全一致。
+// 去抖逻辑与 monitor_loop() 完全一致。
 void LibGpiodPin::poll_loop() {
     setup_thread_rt_();
     int prev_value = -1;
     while (running_.load()) {
-        // cancel_fd_ 可用时用 poll() 睡眠 1ms，这样 stop_monitoring() 写
-        // EventFD 后可立即唤醒，否则退化为 sleep_for(1ms)
+        // cancel_fd_ 可用时用 poll() 睡眠一个轮询周期；stop_monitoring() 写
+        // EventFD 后可立即唤醒，否则退化为同周期 sleep_for。
         const int cancel_fd = cancel_fd_.load(std::memory_order_acquire);
         if (cancel_fd >= 0) {
             pollfd pfd{cancel_fd, POLLIN, 0};
-            ::poll(&pfd, 1, 1);
+            ::poll(&pfd, 1, kPollingPeriodMs);
             if (pfd.revents & POLLIN)
                 break;
         } else {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            std::this_thread::sleep_for(std::chrono::milliseconds(kPollingPeriodMs));
         }
 
         if (!line_)
             break;
 
         int val = gpiod_line_get_value(line_);
-        if (val < 0)
+        if (val < 0) {
+            read_error_count_.fetch_add(1, std::memory_order_relaxed);
             continue;
+        }
+        update_cached_value(val == 1);
 
         if (prev_value >= 0 && val != prev_value) {
             hal::GpioEdge snap_edge;

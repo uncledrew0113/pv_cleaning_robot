@@ -148,6 +148,12 @@ MqttTransport::~MqttTransport()
 
 bool MqttTransport::connect()
 {
+    return connect(nullptr);
+}
+
+bool MqttTransport::connect(const std::atomic<bool>* running)
+{
+    stop_connect_requested_.store(false, std::memory_order_release);
     initial_connect_completed_.store(false);
     spdlog::info("[MqttTransport] connecting: broker_uri='{}' client_id='{}' tls_enabled={} skip_server_name_check={}",
                  cfg_.broker_uri,
@@ -190,8 +196,27 @@ bool MqttTransport::connect()
     }
 
     try {
-        client_->connect(opts)->wait_for(
-            std::chrono::seconds(cfg_.connect_timeout_sec));
+        auto token = client_->connect(opts);
+        const auto deadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds(cfg_.connect_timeout_sec);
+        bool completed = false;
+        while (std::chrono::steady_clock::now() < deadline) {
+            if ((running && !running->load(std::memory_order_acquire)) ||
+                stop_connect_requested_.load(std::memory_order_acquire)) {
+                spdlog::warn("[MqttTransport] connect cancelled");
+                connected_.store(false);
+                return false;
+            }
+            if (token->wait_for(std::chrono::milliseconds(100))) {
+                completed = true;
+                break;
+            }
+        }
+        if (!completed) {
+            spdlog::error("[MqttTransport] connect timeout after {}s", cfg_.connect_timeout_sec);
+            connected_.store(false);
+            return false;
+        }
         connected_.store(client_->is_connected());
         spdlog::info("[MqttTransport] connect result: connected={}", connected_.load());
         if (connected_.load()) {
@@ -214,6 +239,11 @@ bool MqttTransport::connect()
         connected_.store(false);
         return false;
     }
+}
+
+void MqttTransport::request_stop()
+{
+    stop_connect_requested_.store(true, std::memory_order_release);
 }
 
 void MqttTransport::subscribe_all_registered_topics(bool wait_for_ack)
@@ -303,6 +333,7 @@ void MqttTransport::delivery_loop()
 
 void MqttTransport::disconnect()
 {
+    request_stop();
     if (connected_.load()) {
         try { client_->disconnect()->wait(); } catch (...) {}
         connected_.store(false);

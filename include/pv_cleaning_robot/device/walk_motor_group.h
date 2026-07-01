@@ -15,11 +15,10 @@
 
 namespace robot::device {
 
-/// 4轮行走电机组（M1502E_111，单 CAN 总线）
+/// @brief 4 轮行走电机组（M1502E_111，单 CAN 总线）。
 ///
-/// 核心优化：协议层一帧覆盖4台电机（0x32 或 0x33），
-/// set_speeds() 仅更新当前 normal 控制槽，由 update() 统一重发同步下发，
-/// 彻底消除逐台发送带来的时间偏斜与总线负载（4帧→1帧，负载降低 75%）。
+/// 协议层一帧覆盖 4 台电机（0x32 或 0x33）。set_speeds() 只更新 normal 控制槽，
+/// 由 update() 周期重发，避免逐台发送造成时间偏斜和额外总线负载。
 ///
 /// 物理布局（清扫机器人）：
 ///   Wheel::LT （左上）  motor_id = id_base + 0
@@ -27,10 +26,10 @@ namespace robot::device {
 ///   Wheel::LB （左下）  motor_id = id_base + 2
 ///   Wheel::RB （右下）  motor_id = id_base + 3
 ///
-/// 新增功能：
-///   - 通信超时下发：open() 时自动向电机写入 comm_timeout_ms 超时时间
-///   - 锁存式紧急覆盖：emergency_override() 立即发停车或反转帧，
-///     并锁存屏蔽 normal 心跳，直到 clear_override() 被 update() 应用
+/// 安全边界：
+///   - open() 时向电机写入 comm_timeout_ms，主控失联后由驱动器自停；
+///   - emergency_override() 立即发送停车或反转帧，并锁存抑制 normal 心跳，
+///     直到 clear_override() 被 update() 确认应用。
 ///
 /// 使用步骤：
 ///   1. 构造时传入共享 CAN 总线实例和 id_base（默认 1）
@@ -77,10 +76,8 @@ class WalkMotorGroup {
 
     /// @param can      与4台电机共用的 CAN 总线实例
     /// @param id_base  组内首台电机的 motor_id（必须为 1 或 5）
-    /// @param comm_timeout_ms  开机时写入电机的通信超时（ms），0=禁用；
-    ///                         建议设为 update() 周期的 3~5 倍，如
-    ///                         建议设为 update() 周期的 5~10 倍，如
-    ///                         update()=20ms 时设 200ms（10× 余量）
+    /// @param comm_timeout_ms 开机时写入电机的通信超时（ms），0 表示禁用；
+    ///                        建议设为 update() 周期的 5~10 倍，如 20ms 周期对应 200ms。
     /// @param termination_init_enabled open() 时是否自动发送终端电阻初始化帧
     /// @param termination_init_retry_count 终端电阻初始化发送次数，0 按 1 次处理
     /// @param termination_motor_id 需打开终端电阻的物理 motor_id
@@ -93,10 +90,10 @@ class WalkMotorGroup {
     ~WalkMotorGroup();
 
     // ── 生命周期 ──────────────────────────────────────────────────────────
-    /// 打开 CAN 总线，设置4路接收过滤器，启动单一后台接收线程；
-    /// 若 comm_timeout_ms > 0，向每台电机写入通信超时
+    /// 打开 CAN 总线，设置 4 路接收过滤器并启动单一后台接收线程；
+    /// 若 comm_timeout_ms > 0，同时向每台电机写入通信超时。
     DeviceError open();
-    /// 先安全停机，再停接收线程，再关闭 CAN
+    /// 先安全停机，再停接收线程，最后关闭 CAN。
     void close();
 
     // ── 模式控制 ──────────────────────────────────────────────────────────
@@ -107,9 +104,9 @@ class WalkMotorGroup {
                           protocol::WalkMotorMode rt,
                           protocol::WalkMotorMode lb,
                           protocol::WalkMotorMode rb);
-    /// 使能全部
+    /// 使能全部行走电机。
     DeviceError enable_all();
-    /// 失能全部
+    /// 失能全部行走电机。
     DeviceError disable_all();
 
     /// 批量设置反馈方式（0x106 批量 1 帧）
@@ -123,10 +120,10 @@ class WalkMotorGroup {
     DeviceError query_firmware();
 
     // ── 同步批量给定 ─────────────────────────────────────────────────────
-    /// 速度环给定：更新当前 normal 速度控制槽（-210 ~ +210 RPM）
+    /// 速度环给定：更新当前 normal 速度控制槽（-210 ~ +210 RPM）。
     DeviceError set_speeds(float lt, float rt, float lb, float rb);
     DeviceError set_speeds(const SpeedCmd& cmd);
-    /// 全部相同速度（正=前进，负=后退）
+    /// 全部相同速度。该函数按车辆前后语义换算四轮安装方向。
     DeviceError set_speed_uniform(float rpm);
 
     /// 电流环给定：更新当前 normal 电流控制槽（-33 ~ +33 A）
@@ -138,7 +135,7 @@ class WalkMotorGroup {
     DeviceError set_positions(float lt_deg, float rt_deg, float lb_deg, float rb_deg);
 
     // ── 边缘紧急覆盖（优先级最高，立即生效）────────────────────────────
-    /// 立即发送停止或反转帧，并暂停心跳重发直到 clear_override() + update()
+    /// 立即发送停止或反转帧，并抑制 normal 心跳直到 clear_override() + update() 生效。
     /// @param reverse_rpm  反转速度（>0 表示反转，0 表示原地停止）
     DeviceError emergency_override(float reverse_rpm = 0.0f);
     /// 请求解除紧急覆盖；真正切回 Normal 发生在下一次 update() 中。
@@ -191,8 +188,8 @@ class WalkMotorGroup {
     // ── 边缘紧急覆盖 ──────────────────────────────────────────────────
     // clear_override() 请求标志；在下一次 update() 中真正把状态从 override 切回 normal。
     bool clear_override_pending_{false};
-    /// CAN TX 串行化锁：确保 emergency_override() 的覆盖帧与 update() 的 normal 心跳
-    /// 不会交错发送；在 send 锁内会二次确认当前控制模式。
+    /// CAN TX 串行化锁：确保 emergency_override() 的安全覆盖帧与 update() 的 normal 心跳
+    /// 不会交错发送；send 锁内会二次确认当前控制模式。
     hal::PiMutex send_mtx_;
 
     static constexpr auto kOnlineTimeout = std::chrono::milliseconds(500);

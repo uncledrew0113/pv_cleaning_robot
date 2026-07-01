@@ -138,8 +138,7 @@ struct Fixture {
                     snap.state = "Idle";
                     snap.repeat_count = 2;
                     snap.completed_cycles = 1;
-                    snap.active_config = cfg.active_runtime_config();
-                    snap.cfg_ver = cfg.runtime_config_version(*snap.active_config);
+                    snap.cfg_ver = cfg.runtime_config_version(cfg.active_runtime_config());
                     return snap;
                 }});
     }

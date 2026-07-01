@@ -25,8 +25,13 @@ bool ImuDevice::open() {
     return true;
 }
 
-void ImuDevice::close() {
+void ImuDevice::request_stop() {
     running_.store(false);
+    is_configuring_.store(false, std::memory_order_release);
+}
+
+void ImuDevice::close() {
+    request_stop();
     if (read_thread_.joinable())
         read_thread_.join();
     serial_->close();

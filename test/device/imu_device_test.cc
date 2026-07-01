@@ -106,6 +106,21 @@ TEST_CASE("设备层 - open/close 基本生命周期", "[device][imu]") {
     REQUIRE_FALSE(serial->opened);
 }
 
+TEST_CASE("设备层 - request_stop 不直接关闭串口，close 完成线程和串口收敛",
+          "[device][imu]") {
+    auto serial = std::make_shared<MockSerialPort>();
+    device::ImuDevice imu(serial);
+
+    REQUIRE(imu.open());
+    REQUIRE(serial->opened);
+
+    REQUIRE_NOTHROW(imu.request_stop());
+    CHECK(serial->opened);
+
+    REQUIRE_NOTHROW(imu.close());
+    CHECK_FALSE(serial->opened);
+}
+
 TEST_CASE("设备层 - open() 串口打开失败时返回 false", "[device][imu]") {
     auto serial = std::make_shared<MockSerialPort>();
     serial->open_result = false;
@@ -303,4 +318,3 @@ TEST_CASE("设备层 - get_diagnostics frame_count 累计正确", "[device][imu]
 // ═══════════════════════════════════════════════════════════════════════════
 //  Part 4：硬件集成测试（需在目标机上接 IMU，/dev/ttyS1，9600 bps）
 // ═══════════════════════════════════════════════════════════════════════════
-

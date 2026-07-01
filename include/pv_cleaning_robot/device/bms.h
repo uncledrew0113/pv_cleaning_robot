@@ -1,5 +1,6 @@
 #pragma once
 #include <chrono>
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -90,6 +91,12 @@ class BMS {
     /// 关闭通信接口
     void close();
 
+    /// 请求当前 update()/transact() 尽快返回；不关闭串口，串口生命周期仍由 close() 管理。
+    void request_stop();
+
+    /// 清除协作停止标志；open()/恢复重启后允许重新执行通信事务。
+    void clear_stop_request();
+
     // == 周期更新（由外部 ~500ms 定时器调用）====================================
 
     /// 发送 0x03 请求读取基本信息；每 4 次额外发送 0x04 读取单体电压
@@ -110,9 +117,11 @@ class BMS {
     DeviceError mos_control(uint8_t mos_state);
 
    private:
-    // -- kUart 专用 -----------------------------------------------------------
-    // 发送 req 帧后阻塞等待完整应答帧（含校验），超时返回 false
+    // -- UART 通信路径 -------------------------------------------------------
+    // 发送 req 帧后阻塞等待完整应答帧（含校验）；超时或校验失败返回 false 并累计通信错误。
     bool transact(const uint8_t* req, size_t req_len, int timeout_ms = 300);
+    bool stop_requested() const;
+    bool sleep_interruptible(std::chrono::milliseconds duration) const;
     bool read_basic_info_uart();     // 命令 0x03
     bool read_cell_voltages_uart();  // 命令 0x04
 
@@ -125,6 +134,7 @@ class BMS {
 
     mutable std::mutex mtx_;
     std::mutex uart_tx_mtx_;
+    std::atomic<bool> stop_requested_{false};
     Diagnostics diag_{};
 
     int full_charge_count_{0};
@@ -132,9 +142,9 @@ class BMS {
 
     int update_cycle_{0};  // 每 4 次 update() 读一次单体电压（降低总线占用）
 
-    // 休眠机制：
+    // BMS 休眠机制：
     //   BMS 在 1 分钟无通讯后自动休眠；第一次请求触发唤醒，BMS 无响应（正常超时），
-    //   等待 kWakeupDelayMs 后重试正式请求。
+    //   等待 kWakeupDelayMs 后重试正式请求。该路径不作为故障处理，只用于兼容硬件休眠行为。
     using Clock = std::chrono::steady_clock;
     Clock::time_point last_comm_time_{Clock::time_point::min()};  ///< 上次通讯成功时刻
     static constexpr int kSleepTimeoutSec = 55;  ///< BMS 休眠阈值留 5s 余量（实际 60s）

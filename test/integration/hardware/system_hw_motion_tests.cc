@@ -50,11 +50,8 @@ TEST_CASE("SafetyMonitor 空闲状态不误触发限位事件", "[hw_system][saf
 
     robot::middleware::EventBus bus;
     std::atomic<int> settled_count{0};
-    std::atomic<int> unstable_count{0};
     bus.subscribe<robot::middleware::SafetyMonitor::LimitSettledEvent>(
         [&](const auto&) { ++settled_count; });
-    bus.subscribe<robot::middleware::SafetyMonitor::LimitUnstableEvent>(
-        [&](const auto&) { ++unstable_count; });
 
     robot::middleware::SafetyMonitor safety(
         [&]() { f.walk_group->emergency_override(0.0f); }, f.left_sw, f.right_sw, bus);
@@ -63,7 +60,6 @@ TEST_CASE("SafetyMonitor 空闲状态不误触发限位事件", "[hw_system][saf
     safety.stop();
 
     CHECK(settled_count.load() == 0);
-    CHECK(unstable_count.load() == 0);
 }
 
 TEST_CASE("运动 1s 后 emergency_override 急停", "[hw_system][motion_then_stop]") {
@@ -132,20 +128,22 @@ TEST_CASE("P0 故障链路急停并由云端复位回 Idle", "[hw_system][p0_fau
     REQUIRE(f.start_directional_to_opposite().accepted);
     REQUIRE(f.controller->snapshot().state == "ExecutingMission");
 
-    f.controller->post_fault(robot::app::FaultFact{robot::app::FaultSource::Watchdog,
-                                                   robot::domain::FaultCode::kCanCommunicationLost,
-                                                   "hw_p0"});
-    f.controller->drain_for_test();
+    robot::app::ErrorDecision decision;
+    decision.action = robot::app::ErrorAction::FaultStopped;
+    decision.latch_fault = true;
+    decision.root_error.code = robot::app::ErrorCode::AttitudeLimitBoth;
+    f.controller->apply_error_decision(decision);
 
     CHECK(f.controller->snapshot().state == "FaultStopped");
-    CHECK(f.controller->snapshot().fault == robot::domain::FaultCode::kCanCommunicationLost);
+    CHECK(f.controller->snapshot().fault ==
+          static_cast<uint32_t>(robot::app::ErrorCode::AttitudeLimitBoth));
     const auto reset = f.controller->submit_command(
         robot::domain::RobotCommand{robot::domain::RobotCommandKind::FaultReset,
                                     robot::domain::CommandSource::Rpc,
                                     "hw-reset"});
     REQUIRE(reset.accepted);
     CHECK(f.controller->snapshot().state == "Idle");
-    CHECK_FALSE(f.fault->has_active_fault());
+    CHECK_FALSE(f.controller->snapshot().fault.has_value());
 }
 
 TEST_CASE("配置完整任务通过真实限位闭环完成", "[hw_system][n1_clean_cycle]") {

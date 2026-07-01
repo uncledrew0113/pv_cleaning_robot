@@ -23,6 +23,10 @@
 using namespace robot;
 using namespace std::chrono_literals;
 
+// LibGpiodPin 输入 read_value() 读取的是驱动缓存；真实硬件电平变化需要等待
+// 底层 GPIO 轮询线程刷新缓存。这里统一留出超过 20ms 轮询周期的余量。
+static constexpr auto kCachedGpioRefreshWait = 60ms;
+
 // ── 硬件测试常量（按目标板实际 GPIO 布局修改）────────────────────────────
 static constexpr const char* TARGET_CHIP = "gpiochip0";
 static constexpr unsigned int TARGET_IN_LINE = 10;   ///< 输入引脚编号
@@ -173,24 +177,28 @@ TEST_CASE("LibGpiodPin 硬件 - 输出写值可被输入引脚读取（短接验
     hal::GpioConfig in_cfg;
     in_cfg.direction = hal::GpioDirection::INPUT;
     in_cfg.bias = hal::GpioBias::DISABLE;  // 不加偏置，完全由输出侧驱动
+    in_cfg.use_irq = false;
 
     hal::GpioConfig out_cfg;
     out_cfg.direction = hal::GpioDirection::OUTPUT;
 
     REQUIRE(in_pin.open(in_cfg));
     REQUIRE(out_pin.open(out_cfg));
+    in_pin.start_monitoring();
 
     SECTION("输出高 → 输入读高") {
         out_pin.write_value(true);
-        std::this_thread::sleep_for(5ms);  // 等电平稳定
+        std::this_thread::sleep_for(kCachedGpioRefreshWait);
         CHECK(in_pin.read_value() == true);
     }
 
     SECTION("输出低 → 输入读低") {
         out_pin.write_value(false);
-        std::this_thread::sleep_for(5ms);
+        std::this_thread::sleep_for(kCachedGpioRefreshWait);
         CHECK(in_pin.read_value() == false);
     }
+
+    in_pin.stop_monitoring();
 }
 
 TEST_CASE("LibGpiodPin 硬件 - 输入模式禁止 write_value", "[driver][gpio][hardware]") {
@@ -231,6 +239,7 @@ TEST_CASE("LibGpiodPin 硬件 - 边沿回调在翻转后触发", "[driver][gpio]
     in_cfg.direction = hal::GpioDirection::INPUT;
     in_cfg.bias = hal::GpioBias::DISABLE;
     in_cfg.debounce_ms = 0;
+    in_cfg.use_irq = false;
 
     hal::GpioConfig out_cfg;
     out_cfg.direction = hal::GpioDirection::OUTPUT;
@@ -244,11 +253,11 @@ TEST_CASE("LibGpiodPin 硬件 - 边沿回调在翻转后触发", "[driver][gpio]
     });
     in_pin.start_monitoring();
 
-    std::this_thread::sleep_for(20ms);
+    std::this_thread::sleep_for(kCachedGpioRefreshWait);
     out_pin.write_value(true);  // 上升沿
-    std::this_thread::sleep_for(30ms);
+    std::this_thread::sleep_for(kCachedGpioRefreshWait);
     out_pin.write_value(false);  // 下降沿
-    std::this_thread::sleep_for(50ms);
+    std::this_thread::sleep_for(kCachedGpioRefreshWait);
 
     in_pin.stop_monitoring();
 
@@ -263,7 +272,8 @@ TEST_CASE("LibGpiodPin 硬件 - 消抖过滤窗口内快速抖动", "[driver][gp
     hal::GpioConfig in_cfg;
     in_cfg.direction = hal::GpioDirection::INPUT;
     in_cfg.bias = hal::GpioBias::DISABLE;
-    in_cfg.debounce_ms = 100;  // 100 ms 消抖窗口
+    in_cfg.debounce_ms = 100;  // 100 ms 去抖窗口。
+    in_cfg.use_irq = false;
 
     hal::GpioConfig out_cfg;
     out_cfg.direction = hal::GpioDirection::OUTPUT;
@@ -276,16 +286,17 @@ TEST_CASE("LibGpiodPin 硬件 - 消抖过滤窗口内快速抖动", "[driver][gp
                              [&count]() { count.fetch_add(1, std::memory_order_relaxed); });
     in_pin.start_monitoring();
 
-    // 在 100 ms 消抖窗口内快速翻转 10 次（每次间隔 5 ms）
+    // 在 100 ms 去抖窗口内快速翻转。底层 20ms 缓存轮询会合并更短的电平抖动，
+    // 这里验证去抖后不会把抖动放大成大量回调。
     for (int i = 0; i < 10; ++i) {
         out_pin.write_value(i % 2 == 0);
         std::this_thread::sleep_for(5ms);
     }
-    std::this_thread::sleep_for(200ms);  // 等消抖窗口彻底结束
+    std::this_thread::sleep_for(200ms);  // 等去抖窗口彻底结束。
 
     in_pin.stop_monitoring();
 
-    // 10 次翻转因消抖被大量过滤，实际触发应 ≤ 2
+    // 10 次翻转因去抖被大量过滤，实际触发应不超过 2 次。
     CHECK(count.load() <= 2);
 }
 
@@ -302,7 +313,7 @@ TEST_CASE("LibGpiodPin 硬件 - 多次 start/stop 循环后引脚仍正常", "[d
     // start→stop 5 次循环：验证线程可反复创建/销毁
     for (int i = 0; i < 5; ++i) {
         REQUIRE_NOTHROW(pin.start_monitoring());
-        std::this_thread::sleep_for(20ms);
+        std::this_thread::sleep_for(kCachedGpioRefreshWait);
         REQUIRE_NOTHROW(pin.stop_monitoring());
     }
 

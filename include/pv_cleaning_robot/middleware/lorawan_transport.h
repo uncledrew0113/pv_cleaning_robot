@@ -29,6 +29,8 @@ public:
     ~LoRaWANTransport() override;
 
     bool connect()    override;  ///< 执行 OTAA 入网（AT+JOIN）
+    bool connect(const std::atomic<bool>* running) override;
+    void request_stop() override;
     void disconnect() override;
     bool is_connected() const override;
 
@@ -52,6 +54,7 @@ private:
     std::chrono::steady_clock::time_point last_send_time_{};
     MessageCallback                   downlink_cb_;
     mutable std::mutex                mtx_;
+    std::atomic<bool>                 stop_requested_{false};
 };
 
 } // namespace robot::middleware

@@ -2,69 +2,20 @@
 
 #include "pv_cleaning_robot/service/command_tracker.h"
 
-using robot::service::CommandPhase;
 using robot::service::CommandTracker;
 
-TEST_CASE("CommandTracker: moves active command into last completed on success",
+TEST_CASE("CommandTracker: generates monotonic command ids across accepted and rejected commands",
           "[service][command_tracker]") {
     CommandTracker tracker;
 
     const auto id = tracker.accept("start", "rpc-001");
-    const auto active = tracker.active();
-    REQUIRE(active.has_value());
-    CHECK(active->id == id);
-    CHECK(active->name == "start");
-    CHECK(active->request_id == "rpc-001");
-    CHECK(active->phase == CommandPhase::Accepted);
-    CHECK(active->finished_at_ms == 0);
-
+    CHECK(id == "cmd-1");
     tracker.mark_running(id);
-    const auto running = tracker.active();
-    REQUIRE(running.has_value());
-    CHECK(running->phase == CommandPhase::Running);
 
-    tracker.finish_success(id, "completed");
-    CHECK_FALSE(tracker.active().has_value());
+    // 当前 MVP 不再暴露命令完成态查询，但拒绝命令仍应消耗一个本地序号，
+    // 让日志中的 cmd-N 与 RPC 请求处理顺序保持一致。
+    tracker.reject("stop", "rpc-002", "not_running");
 
-    const auto last = tracker.last_completed();
-    REQUIRE(last.has_value());
-    CHECK(last->id == id);
-    CHECK(last->name == "start");
-    CHECK(last->phase == CommandPhase::Succeeded);
-    CHECK(last->reason == "completed");
-    CHECK(last->finished_at_ms >= last->accepted_at_ms);
-}
-
-TEST_CASE("CommandTracker: failed active command becomes last completed failure",
-          "[service][command_tracker]") {
-    CommandTracker tracker;
-
-    const auto id = tracker.accept("reset", "rpc-002");
-    tracker.mark_running(id);
-    tracker.finish_failure(id, "self_check_failed");
-
-    CHECK_FALSE(tracker.active().has_value());
-
-    const auto last = tracker.last_completed();
-    REQUIRE(last.has_value());
-    CHECK(last->id == id);
-    CHECK(last->phase == CommandPhase::Failed);
-    CHECK(last->reason == "self_check_failed");
-}
-
-TEST_CASE("CommandTracker: rejected command is recorded without active command",
-          "[service][command_tracker]") {
-    CommandTracker tracker;
-
-    tracker.reject("start", "rpc-003", "robot_not_at_primary_dock");
-
-    CHECK_FALSE(tracker.active().has_value());
-
-    const auto last = tracker.last_completed();
-    REQUIRE(last.has_value());
-    CHECK(last->name == "start");
-    CHECK(last->request_id == "rpc-003");
-    CHECK(last->phase == CommandPhase::Rejected);
-    CHECK(last->reason == "robot_not_at_primary_dock");
-    CHECK(last->finished_at_ms == last->accepted_at_ms);
+    const auto next_id = tracker.accept("fault_reset", "rpc-003");
+    CHECK(next_id == "cmd-3");
 }

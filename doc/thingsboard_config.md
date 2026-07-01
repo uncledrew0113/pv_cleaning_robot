@@ -1,24 +1,20 @@
 # ThingsBoard 接入说明
 
-本文档只描述当前主分支已经实现并接入主程序的 ThingsBoard 行为，不保留历史兼容语义。
+本文档只描述当前 MVP 已接入主程序的 ThingsBoard 行为，不保留历史兼容语义。
 
 ## 1. 当前接入范围
 
-当前设备通过 MQTT over TLS 接入 ThingsBoard，主程序实际使用的能力有三类：
+当前设备通过 MQTT over TLS 接入 ThingsBoard，主程序实际使用三类能力：
 
-- Shared Attributes 下发运行参数
-- RPC 下发控制命令
-- Telemetry / Attributes 上行设备状态、命令事件和健康数据
+- Shared Attributes 下发运行参数。
+- RPC 下发控制命令。
+- Telemetry / Attributes 上行设备状态和健康数据。
 
-主入口与接线见：
-
-- [main.cc](/home/tronlong/pv_cleaning_robot/pv_cleaning_robot/main.cc:447)
-- [thingsboard_control_plane.cc](/home/tronlong/pv_cleaning_robot/pv_cleaning_robot/service/thingsboard_control_plane.cc:883)
-- [cloud_service.cc](/home/tronlong/pv_cleaning_robot/pv_cleaning_robot/service/cloud_service.cc:26)
+当前接线由 `RobotApplication` 完成，进程入口 `main.cc` 只负责创建应用并调用 `run()`。
 
 ## 2. MQTT 与证书配置
 
-当前 MQTT 固定配置位于 [config.fixed.json](/home/tronlong/pv_cleaning_robot/config/config.fixed.json:41) 的 `network.mqtt`：
+MQTT 固定配置位于 `config.fixed.json` 的 `network.mqtt`：
 
 - `broker_uri`
 - `client_id`
@@ -32,26 +28,16 @@
 - `keep_alive_s`
 - `qos`
 
-当前代码启动后会：
+启动后会：
 
-1. 建立 MQTT 连接
-2. 订阅：
-   - `v1/devices/me/rpc/request/+`
-   - `v1/devices/me/attributes`
-   - `v1/devices/me/attributes/response/+`
-3. 发布启动属性
-4. 主动请求一次共享属性快照
-
-说明：
-
-- `insecure_skip_server_name_check=true` 只适合证书 CN / SAN 与 `broker_uri` 不匹配的调试环境。
-- 正式部署建议改为证书和域名完全匹配，并将该开关改回 `false`。
+1. 建立 MQTT 连接。
+2. 订阅 RPC、shared attributes push、shared attributes response。
+3. 发布启动属性。
+4. 主动请求一次共享属性快照。
 
 ## 3. Shared Attributes
 
-### 3.1 当前支持字段
-
-当前只支持这些共享属性：
+当前支持字段：
 
 - `repeat_count`
 - `clean_speed_rpm`
@@ -62,38 +48,13 @@
 - `charge_stop_soc`
 - `schedules`
 
-解析与生效逻辑见 [thingsboard_control_plane.cc](/home/tronlong/pv_cleaning_robot/pv_cleaning_robot/service/thingsboard_control_plane.cc:358)。
+生效规则：
 
-### 3.2 生效规则
-
-- `schedules`
-  - 立即写入 active 配置
-  - 同步更新调度器窗口
-  - 同时保存到 runtime 主配置
-- 其它业务参数
-  - 先写入 `config.runtime.pending.json`
-  - 当前任务不打断
-  - 在下一次任务启动前提升为 active
-
-配置文件关系：
-
-- `config.runtime.json`：当前 active 业务配置
-- `config.runtime.pending.json`：待下一个任务生效的补丁
-- `config.runtime.backup.json`：runtime 的最近一次备份
-
-### 3.3 快照拉取语义
-
-设备每次连上云端后会主动请求一次共享属性快照，目的是覆盖“离线期间平台改过配置，但设备重连后平台未主动补推”的情况。
-
-当前没有字段级合并机制，语义是：
-
-- 通过校验的更新直接应用
-- 后到的合法更新覆盖先到的合法更新
-- 最终以设备最后一次成功保存的值为准
+- `schedules` 立即写入 active 配置，并同步调度器窗口。
+- 其它业务参数写入 `config.runtime.pending.json`。
+- 下一次任务启动前，pending 配置提升为 active。
 
 ## 4. RPC
-
-### 4.1 当前支持命令
 
 当前注册五个 RPC：
 
@@ -103,39 +64,27 @@
 - `stop`
 - `fault_reset`
 
-### 4.2 设备侧语义
+语义：
 
-#### `clean_to_return`
+- `clean_to_return`：从可信位置向返机端方向清扫。
+- `clean_to_parking`：从可信位置向主停机端方向清扫。
+- `start_configured`：按配置任务从主停机端语义启动。
+- `stop`：只在任务运行中接受，执行后回到 `Idle`。
+- `fault_reset`：只在 `FaultStopped` 接受，清除锁存故障后回到 `Idle`。
 
-- 从可信位置启动，向返机端方向清扫，到达后停止。
+RPC 回复格式：
 
-#### `clean_to_parking`
+```json
+{"code":"accepted"}
+```
 
-- 从可信位置启动，向主停机端方向清扫，到达后停止。
-
-#### `start_configured`
-
-- 只允许从配置任务合法端点启动。
-- 要求当前电量满足 `robot.min_battery_soc`。
-
-#### `stop`
-
-- 只允许运行任务时触发。
-- 执行后进入 `Idle`
-- 立即停行走轮和滚刷
-
-#### `fault_reset`
-
-- 只允许 `FaultStopped`。
-- 清除锁存故障后回到 `Idle`。
-
-RPC 处理逻辑见 [thingsboard_control_plane.cc](/home/tronlong/pv_cleaning_robot/pv_cleaning_robot/service/thingsboard_control_plane.cc:883)。
+被拒绝时 `code` 为具体拒绝原因。
 
 ## 5. 上行数据
 
 ### 5.1 启动属性
 
-设备连接成功后会发布启动属性，字段为：
+字段：
 
 - `software_version`
 - `hardware_version`
@@ -144,28 +93,31 @@ RPC 处理逻辑见 [thingsboard_control_plane.cc](/home/tronlong/pv_cleaning_ro
 
 ### 5.2 业务遥测
 
-业务遥测由 `ThingsBoardControlPlane::publish_business_telemetry()` 发布，当前字段为：
+业务遥测由 `ThingsBoardControlPlane::publish_business_telemetry()` 发布。
 
-- `device_state`
-- `task_state`
-- `target_passes`
-- `completed_passes`
-- `clean_count`
-- `active_config_version`
-- `active_config`
-- `pending_config`
-- `active_command`
-- `last_command`
+当前字段：
 
-其中：
+- `state`
+- `fault`
+- `cfg_ver`
+- `repeat_count`
+- `completed_cycles`
 
-- `device_state` 直接反映 RobotController 状态
-- `task_state` 是给云端看的任务态抽象，如 `IdleTask`、`RunningTask`、`FaultTask`
-- `active_config` / `pending_config` 是当前和待生效业务配置快照
+示例：
+
+```json
+{
+  "state": "ExecutingMission",
+  "fault": 0,
+  "cfg_ver": 123456,
+  "repeat_count": 1,
+  "completed_cycles": 0
+}
+```
 
 ### 5.3 健康遥测
 
-健康上报由 `HealthService` 负责，统一使用 ThingsBoard 推荐格式：
+健康上报由 `HealthService` 负责，使用 ThingsBoard 推荐格式：
 
 ```json
 {
@@ -177,160 +129,40 @@ RPC 处理逻辑见 [thingsboard_control_plane.cc](/home/tronlong/pv_cleaning_ro
 }
 ```
 
-不是下面这种扁平格式：
+模式：
 
-```json
-{
-  "ts": 1778481758995,
-  "lt_rpm": 0.0,
-  "rt_rpm": 0.0
-}
-```
+- `production`：精简 health 字段。
+- `development`：完整 diagnostics 字段。
 
-当前健康数据分两种模式：
+配置位于 `config.fixed.json` 的 `diagnostics`：
 
-- `production`
-  - 精简 health 字段
-- `development`
-  - 完整 diagnostics 字段
+- `mode`
+- `cloud_upload`
+- `local_log`
+- `publish_interval_active_ms`
+- `publish_interval_idle_ms`
+- `local_log_path`
+- `local_log_max_bytes`
+- `local_log_max_files`
 
-诊断配置位于 [config.fixed.json](/home/tronlong/pv_cleaning_robot/config/config.fixed.json:71)：
+上报周期：
 
-- `diagnostics.mode`
-- `diagnostics.cloud_upload`
-- `diagnostics.local_log`
-- `diagnostics.publish_interval_active_ms`
-- `diagnostics.publish_interval_idle_ms`
-- `diagnostics.local_log_path`
-- `diagnostics.local_log_max_bytes`
-- `diagnostics.local_log_max_files`
-
-当前上报周期规则：
-
-- 运行态：使用 `publish_interval_active_ms`
-- 空闲态：使用 `publish_interval_idle_ms`
-
-当前主程序会将 `Idle`、`Charging`、`FaultStopped` 视为空闲态，因此 idle 时可以降到较低上报频率，例如 5 分钟一次。
-
-### 5.5 当前 health / diagnostics 字段
-
-`production` health 当前主要字段：
-
-- 行走轮：
-  - `lt_rpm`、`rt_rpm`、`lb_rpm`、`rb_rpm`
-  - `lt_cur`、`rt_cur`、`lb_cur`、`rb_cur`
-  - `lt_err`、`rt_err`、`lb_err`、`rb_err`
-- 滚刷：
-  - `br_rpm`
-  - `br_run`
-  - `br_err`
-- 电池：
-  - `bat_soc`
-  - `bat_vol`
-  - `bat_chg`
-  - `bat_alm`
-- IMU：
-  - `imu_p`
-  - `imu_r`
-  - `imu_y`
-- GPS：
-  - `gps_lat`
-  - `gps_lon`
-  - `gps_fix`
-
-`development` diagnostics 会在此基础上继续包含：
-
-- 四个行走轮目标速度、电流、错误码、在线状态、通讯错误
-- 行走电机组故障统计
-- 滚刷目标转速、电流、电压、温度、堵转状态
-- BMS 细项
-- IMU 三轴加速度、角速度、姿态、帧率
-- GPS 速度、海拔、卫星数、HDOP 等
-
-完整字段见 [health_service.cc](/home/tronlong/pv_cleaning_robot/pv_cleaning_robot/service/health_service.cc:39)。
+- 运行态使用 `publish_interval_active_ms`。
+- 空闲态使用 `publish_interval_idle_ms`。
 
 ## 6. 本地缓存与断网恢复
 
-当 `diagnostics.cloud_upload=true` 时，遥测通过 `CloudService` 进入发送队列；未成功确认的数据会写入本地缓存：
+当 `diagnostics.cloud_upload=true` 时，遥测通过 `CloudService` 进入发送队列。
+未成功确认的数据会写入本地缓存。
 
-- 默认路径：`data/pv_robot/telemetry_cache.jsonl`
+默认路径：
 
-缓存记录格式是本地发送队列记录，不是 ThingsBoard 原始协议体。例如：
+- `data/pv_robot/telemetry_cache.jsonl`
 
-```json
-{
-  "op": "push",
-  "id": 7,
-  "topic": "v1/devices/me/telemetry",
-  "payload": "{\"ts\":1778481758995,\"values\":{\"lt_rpm\":0.0}}",
-  "ts_ms": 1778481758995
-}
-```
+缓存由 `CloudService::flush_cache()` 在网络恢复后继续发送。
 
-其中 `payload` 字段内部仍然是发往 ThingsBoard 的标准 JSON 字符串。
+## 7. 旧业务遥测说明
 
-## 7. 平台侧联调建议
-
-### 7.1 先准备的 Shared Attributes
-
-建议先只使用这些合法字段：
-
-```json
-{
-  "repeat_count": 1,
-  "clean_speed_rpm": 20,
-  "return_speed_rpm": 20,
-  "brush_rpm": 2000,
-  "primary_dock": "B",
-  "min_battery_soc": 0.0,
-  "charge_stop_soc": 1.0,
-  "schedules": [
-    { "hour": 8, "minute": 0 },
-    { "hour": 14, "minute": 30 }
-  ]
-}
-```
-
-### 7.2 推荐观察面
-
-平台侧至少观察这些键：
-
-- `device_state`
-- `task_state`
-- `target_passes`
-- `completed_passes`
-- `active_config`
-- `pending_config`
-- `active_command`
-- `last_command`
-- 关键 health 字段，如 `lt_rpm`、`rb_err`、`imu_p`、`bat_soc`
-
-### 7.3 推荐联调顺序
-
-1. 启动设备，确认：
-   - MQTT connected
-   - 启动属性发布成功
-   - attributes 快照响应成功
-2. 修改 `schedules`
-   - 确认设备立即保存 active 配置
-3. 修改 `repeat_count` 或 `brush_rpm`
-   - 确认进入 pending，而不是直接打断当前任务
-4. 发送 RPC `start_configured`
-   - 确认接受并进入 `ExecutingMission`
-5. 发送 RPC `stop`
-   - 确认进入 `Idle`
-6. 发送 RPC `clean_to_return` 或 `clean_to_parking`
-   - 确认到目标端点后进入 `Idle`
-7. 触发故障后发送 RPC `fault_reset`
-   - 确认从 `FaultStopped` 回到 `Idle`
-
-## 8. 当前明确不在接入范围内的内容
-
-当前 ThingsBoard 文档只覆盖主程序已经接线的配置、控制和上报链路，不扩展到以下方向：
-
-- 未接入主程序的历史控制面
-- 未使用的旧业务字段
-- LoRaWAN 控制面
-- 更复杂的调度策略
-
-这些内容当前不属于主程序默认运行事实。
+当前业务遥测只以上文列出的五个字段为准。历史版本中的扩展任务字段、命令字段和
+配置快照字段不再作为当前 MVP 接口；如云端仪表盘仍依赖旧字段，需要按产品需求单独恢复，
+不应在旧残留清理中隐式保留。

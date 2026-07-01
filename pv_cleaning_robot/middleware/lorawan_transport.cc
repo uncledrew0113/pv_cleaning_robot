@@ -19,14 +19,32 @@ LoRaWANTransport::~LoRaWANTransport()
 
 bool LoRaWANTransport::connect()
 {
+    return connect(nullptr);
+}
+
+bool LoRaWANTransport::connect(const std::atomic<bool>* running)
+{
+    stop_requested_.store(false, std::memory_order_release);
     std::lock_guard<std::mutex> lk(mtx_);
     if (!serial_->is_open()) {
         if (!serial_->open()) return false;
     }
 
     // 设置 DevEUI 和 AppKey
+    if ((running && !running->load(std::memory_order_acquire)) ||
+        stop_requested_.load(std::memory_order_acquire)) {
+        return false;
+    }
     send_at("AT+DEVEUI=" + cfg_.dev_eui);
+    if ((running && !running->load(std::memory_order_acquire)) ||
+        stop_requested_.load(std::memory_order_acquire)) {
+        return false;
+    }
     send_at("AT+APPKEY=" + cfg_.app_key);
+    if ((running && !running->load(std::memory_order_acquire)) ||
+        stop_requested_.load(std::memory_order_acquire)) {
+        return false;
+    }
 
     // 发起 OTAA 入网
     auto resp = send_at("AT+JOIN", 1000);
@@ -39,19 +57,36 @@ bool LoRaWANTransport::connect()
     auto deadline = std::chrono::steady_clock::now()
         + std::chrono::seconds(cfg_.join_timeout_sec);
     while (std::chrono::steady_clock::now() < deadline) {
+        if ((running && !running->load(std::memory_order_acquire)) ||
+            stop_requested_.load(std::memory_order_acquire)) {
+            return false;
+        }
         auto line = send_at("AT+JOIN=?", 500);
         if (line.find("JOINED") != std::string::npos ||
             line.find("Network joined") != std::string::npos) {
             joined_ = true;
             return true;
         }
-        std::this_thread::sleep_for(std::chrono::seconds(2));
+        const auto sleep_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (std::chrono::steady_clock::now() < sleep_deadline) {
+            if ((running && !running->load(std::memory_order_acquire)) ||
+                stop_requested_.load(std::memory_order_acquire)) {
+                return false;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
     }
     return false;
 }
 
+void LoRaWANTransport::request_stop()
+{
+    stop_requested_.store(true, std::memory_order_release);
+}
+
 void LoRaWANTransport::disconnect()
 {
+    request_stop();
     std::lock_guard<std::mutex> lk(mtx_);
     joined_ = false;
     if (serial_->is_open()) serial_->close();
@@ -110,6 +145,9 @@ bool LoRaWANTransport::subscribe(const std::string& /*topic*/,
 
 std::string LoRaWANTransport::send_at(const std::string& cmd, int timeout_ms)
 {
+    if (stop_requested_.load(std::memory_order_acquire)) {
+        return {};
+    }
     std::string full = cmd + "\r\n";
     serial_->write(reinterpret_cast<const uint8_t*>(full.c_str()), full.size());
 
@@ -119,6 +157,9 @@ std::string LoRaWANTransport::send_at(const std::string& cmd, int timeout_ms)
         + std::chrono::milliseconds(timeout_ms);
 
     while (std::chrono::steady_clock::now() < deadline) {
+        if (stop_requested_.load(std::memory_order_acquire)) {
+            break;
+        }
         int n = serial_->read(buf, sizeof(buf), 50);
         if (n > 0) {
             response.append(reinterpret_cast<char*>(buf), n);

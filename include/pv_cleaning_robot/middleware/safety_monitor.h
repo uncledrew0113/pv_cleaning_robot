@@ -1,12 +1,8 @@
 /*
- * @Author: UncleDrew
- * @Date: 2026-03-14 16:02:26
- * @LastEditors: UncleDrew
- * @LastEditTime: 2026-03-27 16:04:36
- * @FilePath: /pv_cleaning_robot/include/pv_cleaning_robot/middleware/safety_monitor.h
- * @Description:
+ * 主限位安全监控器接口。
  *
- * Copyright (c) 2026 by UncleDrew, All Rights Reserved.
+ * SafetyMonitor 负责接近传感器触发后的安全停机和到位事件发布；
+ * 任务切段、故障锁存和恢复流程由 RobotController / ErrorManager 决定。
  */
 #pragma once
 #include <atomic>
@@ -23,25 +19,23 @@ class LimitSwitch;
 
 namespace robot::middleware {
 
-/// @brief 安全监控器
+/// @brief 主限位安全监控器。
 ///
-/// - 安全监控主循环：SCHED_FIFO 优先级 94，绑定 CPU 4
-/// - 端到端响应路径（触发 → 急停指令发送）目标 ≤ 50 ms：
-///     LimitSwitch::on_edge [GPIO 监控线程, SCHED_FIFO 95]
-///         → on_limit_trigger() [在 GPIO 监控线程栈上同步调用]
-///             → WalkMotorGroup::emergency_override(0.0f) [直写 CAN 帧, <1ms]
+/// - 安全监控主循环：SCHED_FIFO 优先级 94，绑定 CPU 4；
+/// - 端到端响应路径（触发 -> 急停指令发送）目标不超过 50 ms：
+///     LimitSwitch::on_edge [GPIO 监控线程，SCHED_FIFO 95]
+///         -> on_limit_trigger() [在 GPIO 监控线程中同步调用]
+///             -> 注入的 emergency_stop 回调 [生产环境直写行走轮急停 CAN 帧]
 ///
-/// @note 急停函数由组合根注入；生产环境绑定 WalkMotorGroup::emergency_override(0.0f)，
-/// 同时停全部4轮并锁定心跳，防止50ms周期帧重新驱动电机。
+/// @note 急停函数由组合根注入。当前生产路径绑定 WalkMotorGroup::emergency_override(0.0f)，
+/// 只负责最快速度停行走轮；滚刷停机由任务停止或系统级急停路径处理。
 class SafetyMonitor {
    public:
-    /// @brief 限位防抖完成事件（monitor_loop 确认持续触发稳定后发布）
-    /// device 层左/右接近传感器在本模块边界转换为 domain 的 Endpoint::A/B。
+    /// @brief 限位开关去抖完成事件，monitor_loop 确认持续触发稳定后发布。
+    ///
+    /// device 层左/右接近传感器在本模块边界转换为 domain 的 Endpoint::A/B，
+    /// 上层状态机只处理业务端点，不关心 GPIO 左右安装细节。
     struct LimitSettledEvent {
-        domain::Endpoint endpoint;
-    };
-    /// @brief 限位触发已急停，但未保持到稳定时间即释放；业务层应按异常收口。
-    struct LimitUnstableEvent {
         domain::Endpoint endpoint;
     };
 
@@ -51,20 +45,19 @@ class SafetyMonitor {
                   EventBus& event_bus);
     ~SafetyMonitor();
 
-    /// 启动安全监控（启动 GPIO 监控线程 SCHED_FIFO 95，monitor_loop SCHED_FIFO 94）
+    /// 启动安全监控：GPIO 监控线程负责首响急停，monitor_loop 负责去抖确认和事件发布。
     bool start();
 
-    /// 停止安全监控
+    /// 停止安全监控并等待后台线程退出。
     void stop();
 
     void set_limit_settled_callback(std::function<void(domain::Endpoint)> cb);
-    void set_limit_unstable_callback(std::function<void(domain::Endpoint)> cb);
 
     private:
-    /// LimitSwitch 触发回调（在 GPIO 监控线程中被调用，必须极短）
+    /// LimitSwitch 触发回调；在 GPIO 监控线程中执行，必须保持极短路径。
     void on_limit_trigger(domain::Endpoint endpoint);
 
-    /// 安全监视主循环（SCHED_FIFO 94，5ms 轮询）
+    /// 安全监控主循环：5ms 轮询兜底，负责去抖确认和 release re-arm。
     void monitor_loop();
 
     std::function<void()> emergency_stop_;
@@ -72,18 +65,17 @@ class SafetyMonitor {
     std::shared_ptr<device::LimitSwitch> right_switch_;
     EventBus& event_bus_;
     std::function<void(domain::Endpoint)> limit_settled_cb_;
-    std::function<void(domain::Endpoint)> limit_unstable_cb_;
 
     std::atomic<bool> running_{false};
-    /// 防抖 pending 时间戳（ms）：GPIO 线程触发后记录触发时刻，0 = 未触发。
+    /// 去抖 pending 时间戳（ms）：GPIO 线程触发后记录触发时刻，0 表示未触发。
     /// monitor_loop 每 5ms 非阻塞检查，确认持续触发稳定后发布 LimitSettledEvent。
-    /// 同一侧 pending 不为 0 时，GPIO 回调与备用轮询都会忽略重复触发。
+    /// 同一侧 pending 不为 0 时，GPIO 回调与备用轮询都会抑制重复触发。
     std::atomic<uint64_t> pending_left_ts_{0};
     std::atomic<uint64_t> pending_right_ts_{0};
     /// 同一侧触发一次后，必须先物理释放（电平回高）才允许重新 armed。
     std::atomic<bool> left_wait_release_{false};
     std::atomic<bool> right_wait_release_{false};
-    /// 释放候选时间戳（ms）：看到回高后开始计时，连续稳定后才清 wait_release。
+    /// release 候选时间戳（ms）：看到电平回高后开始计时，连续稳定后才清 wait_release。
     std::atomic<uint64_t> left_release_ts_{0};
     std::atomic<uint64_t> right_release_ts_{0};
     std::thread monitor_thread_;

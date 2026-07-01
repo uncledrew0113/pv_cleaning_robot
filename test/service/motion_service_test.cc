@@ -5,8 +5,10 @@
 #include <catch2/catch.hpp>
 
 #include <cstring>
+#include <chrono>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "../mock/mock_can_bus.h"
 #include "../mock/mock_serial_port.h"
@@ -20,6 +22,7 @@ using robot::device::BrushMotor;
 using robot::device::WalkMotorGroup;
 using robot::middleware::EventBus;
 using robot::service::MotionService;
+using namespace std::chrono_literals;
 
 namespace {
 
@@ -62,6 +65,48 @@ struct MotionFixture {
     MotionService motion{group, brush, nullptr, bus, make_motion_config()};
 
     MotionFixture() {
+        can->open_result = true;
+        can->send_result = true;
+        can->opened = true;
+        serial->open_result = true;
+        brush->open();
+    }
+};
+
+struct OrderedMockCanBus : MockCanBus {
+    std::vector<std::string>* events{nullptr};
+
+    bool send(const robot::hal::CanFrame& frame) override {
+        if (events) {
+            events->push_back("can");
+        }
+        return MockCanBus::send(frame);
+    }
+};
+
+struct OrderedMockSerialPort : MockSerialPort {
+    std::vector<std::string>* events{nullptr};
+
+    int write(const uint8_t* buf, size_t len, int timeout_ms = -1) override {
+        if (events) {
+            events->push_back("serial");
+        }
+        return MockSerialPort::write(buf, len, timeout_ms);
+    }
+};
+
+struct OrderedMotionFixture {
+    std::vector<std::string> events;
+    std::shared_ptr<OrderedMockCanBus> can{std::make_shared<OrderedMockCanBus>()};
+    std::shared_ptr<WalkMotorGroup> group{std::make_shared<WalkMotorGroup>(can)};
+    std::shared_ptr<OrderedMockSerialPort> serial{std::make_shared<OrderedMockSerialPort>()};
+    std::shared_ptr<BrushMotor> brush{std::make_shared<BrushMotor>(serial, 0)};
+    EventBus bus;
+    MotionService motion{group, brush, nullptr, bus, make_motion_config()};
+
+    OrderedMotionFixture() {
+        can->events = &events;
+        serial->events = &events;
         can->open_result = true;
         can->send_result = true;
         can->opened = true;
@@ -196,6 +241,90 @@ TEST_CASE("MotionService emergency_stop clears walk targets and brush", "[servic
     REQUIRE(diag.wheel[2].target_value == Approx(0.0f));
     REQUIRE(diag.wheel[3].target_value == Approx(0.0f));
     REQUIRE(f.serial->take_tx_text().find("v 0 0.000 0\n") != std::string::npos);
+}
+
+TEST_CASE("MotionService emergency_stop sends walk stop before brush stop",
+          "[service][motion]") {
+    OrderedMotionFixture f;
+    REQUIRE(f.motion.start_segment(segment(robot::domain::Endpoint::A,
+                                           robot::domain::SegmentMode::Cleaning)));
+    f.motion.update();
+    f.events.clear();
+
+    f.motion.emergency_stop();
+
+    REQUIRE(f.events.size() >= 2);
+    CHECK(f.events.front() == "can");
+    CHECK(std::find(f.events.begin(), f.events.end(), "serial") != f.events.end());
+}
+
+TEST_CASE("MotionService recovery reverse uses opposite cleaning direction and then stops",
+          "[service][motion]") {
+    MotionFixture f;
+    REQUIRE(f.motion.start_segment(segment(robot::domain::Endpoint::A,
+                                           robot::domain::SegmentMode::Cleaning)));
+    f.motion.update();
+    f.can->sent_frames.clear();
+
+    bool observed_reverse_command = false;
+    CHECK_FALSE(f.motion.reverse_for_recovery(50ms, 1ms, [&] {
+        const auto diag = f.group->get_group_diagnostics();
+        observed_reverse_command =
+            diag.wheel[0].target_value == Approx(-210.0f) &&
+            diag.wheel[1].target_value == Approx(-210.0f) &&
+            diag.wheel[2].target_value == Approx(210.0f) &&
+            diag.wheel[3].target_value == Approx(210.0f);
+        return true;
+    }));
+
+    REQUIRE(observed_reverse_command);
+    const auto diag = f.group->get_group_diagnostics();
+    REQUIRE(diag.wheel[0].target_value == Approx(0.0f));
+    REQUIRE(diag.wheel[1].target_value == Approx(0.0f));
+    REQUIRE(diag.wheel[2].target_value == Approx(0.0f));
+    REQUIRE(diag.wheel[3].target_value == Approx(0.0f));
+}
+
+TEST_CASE("MotionService attitude center motion commands only lower wheels",
+          "[service][motion]") {
+    MotionFixture f;
+
+    REQUIRE(f.motion.begin_attitude_center_motion());
+    REQUIRE(f.motion.command_lower_wheels_for_attitude_center(3.0f));
+
+    const auto moving = f.group->get_group_diagnostics();
+    REQUIRE(moving.wheel[0].target_value == Approx(0.0f));
+    REQUIRE(moving.wheel[1].target_value == Approx(0.0f));
+    REQUIRE(moving.wheel[2].target_value == Approx(3.0f));
+    REQUIRE(moving.wheel[3].target_value == Approx(3.0f));
+
+    REQUIRE(f.motion.stop_attitude_center_motion());
+    const auto stopped = f.group->get_group_diagnostics();
+    REQUIRE(stopped.wheel[0].target_value == Approx(0.0f));
+    REQUIRE(stopped.wheel[1].target_value == Approx(0.0f));
+    REQUIRE(stopped.wheel[2].target_value == Approx(0.0f));
+    REQUIRE(stopped.wheel[3].target_value == Approx(0.0f));
+}
+
+TEST_CASE("MotionService attitude center command can resume after safety override",
+          "[service][motion]") {
+    MotionFixture f;
+
+    REQUIRE(f.motion.begin_attitude_center_motion());
+    REQUIRE(f.motion.command_lower_wheels_for_attitude_center(3.0f));
+    f.group->update();
+
+    f.motion.emergency_stop();
+    REQUIRE(f.group->is_override_active());
+
+    f.can->sent_frames.clear();
+    REQUIRE(f.motion.command_lower_wheels_for_attitude_center(-3.0f));
+    f.group->update();
+
+    const auto expected =
+        robot::protocol::WalkMotorCanCodec::encode_group_speed(1u, 0.0f, 0.0f, -3.0f, -3.0f);
+    CHECK_FALSE(f.group->is_override_active());
+    CHECK(contains_frame(f.can->sent_frames, expected));
 }
 
 TEST_CASE("MotionService reports segment start failure on CAN send error", "[service][motion]") {

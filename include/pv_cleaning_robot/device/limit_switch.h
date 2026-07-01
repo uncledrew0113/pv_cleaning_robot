@@ -1,12 +1,8 @@
 /*
- * @Author: UncleDrew
- * @Date: 2026-03-14 13:19:39
- * @LastEditors: UncleDrew
- * @LastEditTime: 2026-03-24 16:38:30
- * @FilePath: /pv_cleaning_robot/include/pv_cleaning_robot/device/limit_switch.h
- * @Description:
+ * 主限位接近传感器接口。
  *
- * Copyright (c) 2026 by UncleDrew, All Rights Reserved.
+ * 本类只封装 GPIO 电平、边沿监控和软件去抖；触发后的安全停机、切段和故障处理
+ * 由 SafetyMonitor / RobotController 负责。
  */
 #pragma once
 #include <atomic>
@@ -21,11 +17,10 @@ namespace robot::device {
 
 enum class LimitSide { LEFT, RIGHT };
 
-/// @brief 感应式限位开关（GPIO边沿触发）
+/// @brief 主限位接近传感器，低有效 GPIO 触发。
 ///
-/// 触发后通过回调通知 SafetyMonitor（安全优先路径），
-/// 同时置位原子标志供轮询查询。由 SafetyMonitor 完成
-/// 紧急停车指令发送（目标：端到端 ≤50 ms）。
+/// 触发后通过回调通知 SafetyMonitor 的安全优先路径，同时置位原子标志供备用轮询查询。
+/// 本类不直接发送急停指令，避免 device 层绑定具体运动控制对象。
 class LimitSwitch {
    public:
     using TriggerCallback = std::function<void(LimitSide)>;
@@ -34,20 +29,21 @@ class LimitSwitch {
     ~LimitSwitch();
 
     // ── 生命周期 ─────────────────────────────────────────────
-    /// @param rt_priority 实时调度优先级（默认95，确保极限响应）
-    /// @param debounce_ms 软件消抖时间
+    /// @param rt_priority GPIO 监控线程实时优先级，默认高于 SafetyMonitor 主循环。
+    /// @param debounce_ms 软件去抖时间。
     /// @param cpu_affinity CPU 亲和性掩码（0=不绑定，1<<N=绑定到核心N）
     bool open(int rt_priority = 95, int debounce_ms = 2, int cpu_affinity = 0,
               bool use_irq = true);
     void close();
+    bool is_open() const;
 
     // ── 监控 ─────────────────────────────────────────────────
-    /// 启动边沿监控线程（FALLING 触发 = 感应到障碍物/轨道端头）
+    /// 启动边沿监控线程；FALLING 表示接近传感器进入低有效触发态。
     void start_monitoring();
     void stop_monitoring();
 
     // ── 回调（由 SafetyMonitor 注册，在监控线程内调用）──────
-    /// @warning 请在 start_monitoring() 前调用以保证最佳性能
+    /// @warning 请在 start_monitoring() 前注册，避免运行期替换回调带来额外同步开销。
     void set_trigger_callback(TriggerCallback cb);
 
     // ── 状态（原子，可供任意线程轮询）───────────────────────
@@ -69,7 +65,7 @@ class LimitSwitch {
     std::shared_ptr<hal::IGpioPin> pin_;
     LimitSide side_;
 
-    // 保护 callback_ 免受跨线程并发读写造成的 UB
+    // 保护 callback_，避免 GPIO 监控线程读回调时与控制线程替换回调产生数据竞争。
     hal::PiMutex cb_mtx_;
     TriggerCallback callback_;
 

@@ -1,5 +1,6 @@
 #pragma once
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <functional>
 #include <memory>
@@ -34,9 +35,10 @@ struct IRunnable {
     virtual void update() = 0;
 };
 
-/// @brief 线程执行器——以固定周期调用 IRunnable::update()
+/// @brief 线程执行器：以固定周期调用 IRunnable::update()。
 ///
-/// 支持可选 POSIX 调度策略配置（SCHED_FIFO / SCHED_RR / SCHED_OTHER）
+/// 支持可选 POSIX 调度策略配置。恢复流程可能会主动 stop/restart 执行器，
+/// 因此停止接口必须以“可超时、可报告失败”为边界，不能在调用方静默阻塞。
 class ThreadExecutor {
 public:
     struct Config {
@@ -50,9 +52,25 @@ public:
     explicit ThreadExecutor(Config cfg);
     ~ThreadExecutor();
 
-    void add_runnable(std::shared_ptr<IRunnable> runnable);
+    /// @brief 添加周期任务；只能在线程未启动且已停止时调用。
+    bool add_runnable(std::shared_ptr<IRunnable> runnable);
     bool start();
     void stop();
+
+    /// @brief 请求线程退出，不等待当前 update() 返回。
+    void request_stop();
+
+    /// @brief 等待线程退出；超时返回 false，保留 joinable 线程给调用方处理。
+    bool wait_stopped(std::chrono::milliseconds timeout);
+
+    /// @brief 协作式停止；不会 detach 被阻塞的线程。
+    ///
+    /// 该接口用于恢复流程停驱动前的线程收敛。返回 false 时，调用方必须把恢复视为失败，
+    /// 避免 close/open 与仍在运行的 update() 并发访问同一硬件句柄。
+    bool stop_with_timeout(std::chrono::milliseconds timeout);
+
+    /// @brief 仅在线程完全停止后重新启动。
+    bool restart();
     bool is_running() const { return running_.load(); }
     void set_period_ms(int period_ms);
     int period_ms() const { return period_ms_.load(); }
@@ -62,15 +80,22 @@ private:
 
     Config config_;
     std::vector<std::shared_ptr<IRunnable>> runnables_;
+    mutable std::mutex runnables_mtx_;
     std::atomic<bool> running_{false};
     std::atomic<int> period_ms_;
     std::thread thread_;
+
+    // sleep_mtx_ 只保护唤醒标志，lifecycle_mtx_ 只保护停止状态；
+    // 两者分离，避免 stop 请求因为等待 join 或生命周期锁而无法及时唤醒线程。
     mutable std::mutex sleep_mtx_;
     std::condition_variable sleep_cv_;
     bool wake_requested_{false};
+    mutable std::mutex lifecycle_mtx_;
+    std::condition_variable stopped_cv_;
+    bool stopped_{true};
 };
 
-/// @brief Lambda 适配器（将 std::function<void()> 包装为 IRunnable）
+/// @brief Lambda 适配器，将 std::function<void()> 包装为 IRunnable。
 class RunnableAdapter : public IRunnable {
 public:
     using Fn = std::function<void()>;

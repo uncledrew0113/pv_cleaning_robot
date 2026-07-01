@@ -26,20 +26,6 @@ TEST_CASE("ThingsBoardJsonCodec emits periodic business telemetry into caller bu
     snap.completed_cycles = 0;
     snap.cfg_ver = 42;
 
-    robot::service::RuntimeConfig active_config;
-    active_config.repeat_count = 2;
-    active_config.clean_speed_rpm = 180.0;
-    active_config.return_speed_rpm = 120.0;
-    active_config.brush_rpm = 900;
-    active_config.min_battery_soc = 30.0;
-    active_config.primary_dock = robot::domain::Endpoint::B;
-    active_config.schedules = {{8, 30}};
-    snap.active_config = active_config;
-
-    robot::service::RuntimeConfig pending_config = active_config;
-    pending_config.primary_dock = robot::domain::Endpoint::A;
-    snap.pending_config = pending_config;
-
     char out[2048];
     const size_t len =
         robot::service::ThingsBoardJsonCodec::build_business_telemetry(snap, out, sizeof(out));

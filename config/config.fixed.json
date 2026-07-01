@@ -40,6 +40,12 @@
     "right_limit": { "chip": "gpiochip5", "line": 1 },
     "left_attitude_limit": { "chip": "gpiochip5", "line": 2 },
     "right_attitude_limit": { "chip": "gpiochip5", "line": 3 },
+    "lock_motor": {
+      "open": { "chip": "gpiochip5", "line": 8 },
+      "close": { "chip": "gpiochip5", "line": 9 },
+      "pulse_ms": 200,
+      "settle_ms": 8000
+    },
     "use_irq": false
   },
   "network": {

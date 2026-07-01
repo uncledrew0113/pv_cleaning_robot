@@ -1,5 +1,6 @@
 #pragma once
 #include "pv_cleaning_robot/middleware/i_network_transport.h"
+#include <atomic>
 #include <memory>
 #include <string>
 
@@ -21,6 +22,10 @@ public:
 
     /// 连接所有激活的传输层
     bool connect();
+    /// 连接所有激活的传输层；running 变为 false 时尽快中止启动连接。
+    bool connect(const std::atomic<bool>* running);
+    /// 请求正在进行的网络操作尽快返回。
+    void request_stop();
 
     /// 断开所有传输层
     void disconnect();

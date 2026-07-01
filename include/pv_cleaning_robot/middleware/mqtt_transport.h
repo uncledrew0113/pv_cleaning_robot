@@ -85,6 +85,8 @@ public:
     ~MqttTransport() override;
 
     bool connect()    override;
+    bool connect(const std::atomic<bool>* running) override;
+    void request_stop() override;
     void disconnect() override;
     bool is_connected() const override;
 
@@ -117,6 +119,7 @@ private:
     std::thread delivery_thread_;
     std::atomic<bool> connected_{false};
     std::atomic<bool> initial_connect_completed_{false};
+    std::atomic<bool> stop_connect_requested_{false};
 };
 
 } // namespace robot::middleware

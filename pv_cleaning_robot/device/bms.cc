@@ -18,6 +18,7 @@ BMS::~BMS() {
 // == 生命周期 ==================================================================
 
 DeviceError BMS::open() {
+    clear_stop_request();
     if (not serial_->open()) {
         spdlog::error("[BMS] 串口打开失败");
         return DeviceError::NOT_OPEN;
@@ -46,7 +47,33 @@ DeviceError BMS::open() {
 }
 
 void BMS::close() {
+    request_stop();
     serial_->close();
+}
+
+void BMS::request_stop() {
+    stop_requested_.store(true, std::memory_order_release);
+}
+
+void BMS::clear_stop_request() {
+    stop_requested_.store(false, std::memory_order_release);
+}
+
+bool BMS::stop_requested() const {
+    return stop_requested_.load(std::memory_order_acquire);
+}
+
+bool BMS::sleep_interruptible(std::chrono::milliseconds duration) const {
+    using namespace std::chrono;
+    const auto deadline = Clock::now() + duration;
+    while (Clock::now() < deadline) {
+        if (stop_requested()) {
+            return false;
+        }
+        const auto remaining = duration_cast<milliseconds>(deadline - Clock::now());
+        std::this_thread::sleep_for(std::min(remaining, milliseconds(20)));
+    }
+    return !stop_requested();
 }
 
 // == 核心事务 ==================================================================
@@ -54,6 +81,10 @@ void BMS::close() {
 bool BMS::transact(const uint8_t* req, size_t req_len, int timeout_ms) {
     std::lock_guard<std::mutex> lock(uart_tx_mtx_);
     using namespace std::chrono;
+
+    if (stop_requested()) {
+        return false;
+    }
 
     // 判断 BMS 是否可能已休眠：从未通讯过、或距上次成功超过 kSleepTimeoutSec
     auto now = Clock::now();
@@ -71,9 +102,15 @@ bool BMS::transact(const uint8_t* req, size_t req_len, int timeout_ms) {
     int max_attempts = may_be_sleeping ? (kMaxRetries + 1) : 1;
 
     for (int attempt = 0; attempt < max_attempts; ++attempt) {
+        if (stop_requested()) {
+            return false;
+        }
         parser_.reset();
         serial_->flush_input();
 
+        if (stop_requested()) {
+            return false;
+        }
         if (serial_->write(req, req_len) < static_cast<int>(req_len)) {
             spdlog::warn("[BMS] 写入请求帧失败");
             return false;  // 串口级错误，重试无意义
@@ -91,6 +128,9 @@ bool BMS::transact(const uint8_t* req, size_t req_len, int timeout_ms) {
         uint64_t total_rx = 0;
         auto deadline = Clock::now() + milliseconds(timeout_ms);
         while (Clock::now() < deadline) {
+            if (stop_requested()) {
+                return false;
+            }
             auto remaining_ms = duration_cast<milliseconds>(deadline - Clock::now()).count();
             int read_ms = static_cast<int>(std::min<long long>(remaining_ms, 100LL));
             if (read_ms <= 0)
@@ -121,7 +161,9 @@ bool BMS::transact(const uint8_t* req, size_t req_len, int timeout_ms) {
                          max_attempts,
                          total_rx,
                          kWakeupDelayMs);
-            std::this_thread::sleep_for(milliseconds(kWakeupDelayMs));
+            if (!sleep_interruptible(milliseconds(kWakeupDelayMs))) {
+                return false;
+            }
         } else {
             spdlog::debug("[BMS] transact 超时 attempt={}/{} (cmd={:#04x} rx_bytes={})",
                           attempt + 1,
@@ -220,6 +262,9 @@ bool BMS::read_cell_voltages_uart() {
 // == 周期更新 ==================================================================
 
 void BMS::update() {
+    if (stop_requested()) {
+        return;
+    }
     ++update_cycle_;
 
     if (!read_basic_info_uart()) {
@@ -228,7 +273,7 @@ void BMS::update() {
     }
 
     // 每 4 次（约 2s）读一次单体电压，降低 9600 bps 总线占用
-    if (update_cycle_ % 4 == 0)
+    if (!stop_requested() && update_cycle_ % 4 == 0)
         read_cell_voltages_uart();
 }
 

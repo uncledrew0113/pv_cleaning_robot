@@ -5,7 +5,7 @@
  * 测试策略：
  *   - SafetyMonitor 使用真实 WalkMotorGroup(MockCanBus) 构造
  *   - LimitSwitch 使用真实 LimitSwitch(MockGpioPin) 构造
- *   - 通过 MockGpioPin::simulate_edge() 触发边沿中断路径
+ *   - 通过 MockGpioPin::simulate_edge() 触发 GPIO 驱动回调路径
  *   - SafetyMonitor::on_limit_trigger() 在 GPIO 监控线程中同步调用
  *     WalkMotorGroup::emergency_override()，验证 MockCanBus::sent_frames
  */
@@ -63,6 +63,20 @@ TEST_CASE("SafetyMonitor: start() 和 stop() 不崩溃", "[middleware][safety_mo
     f.monitor.stop();
 }
 
+TEST_CASE("SafetyMonitor: limit switch not open rejects start",
+          "[middleware][safety_monitor]") {
+    auto left_pin = std::make_shared<MockGpioPin>();
+    auto right_pin = std::make_shared<MockGpioPin>();
+    auto left_sw = std::make_shared<LimitSwitch>(left_pin, LimitSide::LEFT);
+    auto right_sw = std::make_shared<LimitSwitch>(right_pin, LimitSide::RIGHT);
+    EventBus bus;
+    SafetyMonitor monitor([] {}, left_sw, right_sw, bus);
+
+    REQUIRE_FALSE(monitor.start());
+    REQUIRE_FALSE(left_pin->monitoring);
+    REQUIRE_FALSE(right_pin->monitoring);
+}
+
 // ────────────────────────────────────────────────────────────────
 // 左侧限位触发：立即急停
 // ────────────────────────────────────────────────────────────────
@@ -71,7 +85,8 @@ TEST_CASE("SafetyMonitor: 左侧 GPIO 触发后立即发出急停帧",
     SafetyMonitorFixture f;
     f.monitor.start();
 
-    // 模拟左侧 GPIO 边沿触发（在 GPIO 监控线程路径上调用
+    // 模拟左侧 GPIO 驱动回调触发（真实硬件上可能来自 IRQ，也可能来自 20ms 软件轮询），
+    // 在 GPIO 监控线程路径上调用
     // on_limit_trigger，同步调用 emergency_override）
     if (f.left_pin->registered_cb) {
         f.left_pin->simulate_edge();
@@ -128,14 +143,9 @@ TEST_CASE("SafetyMonitor: 短暂触发释放后不发布 LimitSettledEvent",
           "[middleware][safety_monitor]") {
     SafetyMonitorFixture f;
     int settled_count = 0;
-    int unstable_count = 0;
     f.bus.subscribe<SafetyMonitor::LimitSettledEvent>(
         [&](const SafetyMonitor::LimitSettledEvent& e) {
             if (e.endpoint == robot::domain::Endpoint::A) ++settled_count;
-        });
-    f.bus.subscribe<SafetyMonitor::LimitUnstableEvent>(
-        [&](const SafetyMonitor::LimitUnstableEvent& e) {
-            if (e.endpoint == robot::domain::Endpoint::A) ++unstable_count;
         });
 
     f.monitor.start();
@@ -147,12 +157,11 @@ TEST_CASE("SafetyMonitor: 短暂触发释放后不发布 LimitSettledEvent",
 
     std::this_thread::sleep_for(std::chrono::milliseconds(400));
     REQUIRE(settled_count == 0);
-    REQUIRE(unstable_count == 1);
     f.monitor.stop();
 }
 
 // ────────────────────────────────────────────────────────────────
-// 多次触发：只触发一次 LimitSettledEvent（消抖 pending 标志）
+// 多次触发：只触发一次 LimitSettledEvent（去抖 pending 标志）。
 // ────────────────────────────────────────────────────────────────
 TEST_CASE("SafetyMonitor: 短时间内多次触发只发一次 LimitSettledEvent",
           "[middleware][safety_monitor]") {
@@ -240,9 +249,9 @@ TEST_CASE("SafetyMonitor: 短暂 release 后立刻重触发不会再次急停",
     const auto frames_after_first = f.can->sent_frames.size();
     REQUIRE(frames_after_first > 0);
 
-    // 只短暂回高，不足以清除 wait_release。
+    // 只短暂回高，不足以满足 30ms release stable 门槛。
     f.left_pin->read_result = true;
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
     f.left_pin->read_result = false;
 
     if (f.left_pin->registered_cb) f.left_pin->simulate_edge();
