@@ -3,6 +3,7 @@
 #include <sched.h>
 
 #include "pv_cleaning_robot/app/error_manager.h"
+#include "pv_cleaning_robot/app/robot_application.h"
 #include "pv_cleaning_robot/app/recovery_executor.h"
 #include "pv_cleaning_robot/device/lock_motor.h"
 #include "pv_cleaning_robot/middleware/logger.h"
@@ -247,6 +248,41 @@ private:
                 << "    \"return_speed_rpm\": " << std::abs(kp.test_return_rpm) << ",\n"
                 << "    \"brush_rpm\": " << static_cast<int>(std::lround(std::abs(kp.brush_test_rpm))) << ",\n"
                 << "    \"heading_pid_en\": true,\n"
+                << "    \"pid\": {\n"
+                << "      \"uds_path\": \"" << kp.pid.uds_path << "\",\n"
+                << "      \"reconnect_interval_ms\": " << kp.pid.reconnect_interval_ms << ",\n"
+                << "      \"result_timeout_ms\": " << kp.pid.result_timeout_ms << ",\n"
+                << "      \"min_confidence\": " << kp.pid.min_confidence << ",\n"
+                << "      \"deadband_yaw_deg\": " << kp.pid.deadband_yaw_deg << ",\n"
+                << "      \"kp\": " << kp.pid.kp << ",\n"
+                << "      \"ki\": " << kp.pid.ki << ",\n"
+                << "      \"kd\": " << kp.pid.kd << ",\n"
+                << "      \"integral_limit\": " << kp.pid.integral_limit << ",\n"
+                << "      \"max_output\": " << kp.pid.max_output << ",\n"
+                << "      \"min_effective_output\": " << kp.pid.min_effective_output << ",\n"
+                << "      \"yaw_alpha\": " << kp.pid.yaw_alpha << ",\n"
+                << "      \"output_sign\": " << kp.pid.output_sign << ",\n"
+                << "      \"angle_source\": \"fused_uds_gyro\",\n"
+                << "      \"wheel_strategy\": \"all_wheels\",\n"
+                << "      \"slow_on_error\": false,\n"
+                << "      \"slow_base_rpm\": " << kp.correction_compare.slow_base_rpm << ",\n"
+                << "      \"yaw_slow_threshold_deg\": "
+                << kp.correction_compare.yaw_slow_threshold_deg << ",\n"
+                << "      \"fusion\": {\n"
+                << "        \"process_noise_angle\": "
+                << kp.correction_compare.fusion.process_noise_angle << ",\n"
+                << "        \"process_noise_bias\": "
+                << kp.correction_compare.fusion.process_noise_bias << ",\n"
+                << "        \"measurement_noise_uds\": "
+                << kp.correction_compare.fusion.measurement_noise_uds << ",\n"
+                << "        \"initial_angle_variance\": "
+                << kp.correction_compare.fusion.initial_angle_variance << ",\n"
+                << "        \"initial_bias_variance\": "
+                << kp.correction_compare.fusion.initial_bias_variance << ",\n"
+                << "        \"max_gyro_only_ms\": "
+                << kp.correction_compare.fusion.max_gyro_only_ms << "\n"
+                << "      }\n"
+                << "    },\n"
                 << "    \"min_battery_soc\": 30.0,\n"
                 << "    \"charge_stop_soc\": 95.0\n"
                 << "  }\n"
@@ -398,7 +434,7 @@ private:
 
     void construct_services() {
         motion = std::make_shared<robot::service::MotionService>(
-            walk_group, brush, imu, bus, make_motion_config(true));
+            walk_group, brush, imu, bus, robot::app::make_motion_config_from_config(*config));
         motion->set_runtime_config_query([this] { return config->active_runtime_config(); });
         motion->set_primary_dock_query(
             [this] { return config->active_runtime_config().primary_dock; });
@@ -413,7 +449,6 @@ private:
                 [this](float rpm) { return motion->command_lower_wheels_for_attitude_center(rpm); },
                 [this] { return motion->stop_attitude_center_motion(); },
             });
-        attitude_limit->start_monitoring();
         diagnostics = std::make_shared<robot::service::DiagnosticsCollector>(
             walk_group, brush, bms, imu, gps, gps_stuck);
         health = std::make_shared<robot::service::HealthService>(
@@ -476,6 +511,7 @@ private:
         safety->set_limit_settled_callback(
             [this](robot::domain::Endpoint endpoint) { controller->post_limit_settled(endpoint); });
         safety->start();
+        attitude_limit->start_monitoring();
     }
 
     void construct_threads() {
@@ -522,7 +558,7 @@ private:
 
         if (enable_error_handling) {
             recovery_executor = std::make_unique<robot::app::RecoveryExecutor>(
-                make_recovery_ports(walk_wd, gps_stuck_wd, bms_wd, brush_wd));
+                make_recovery_ports());
             error_handling = std::make_shared<robot::app::ErrorHandlingService>(
                 *error_manager,
                 robot::app::ErrorHandlingService::Ports{
@@ -534,12 +570,22 @@ private:
                                                    AttitudeLimitBoth
                                     ? robot::app::ErrorCode::AttitudeLimitBoth
                                     : robot::app::ErrorCode::AttitudeLimit;
+                            const auto snap = controller->snapshot();
+                            const std::string detail =
+                                code == robot::app::ErrorCode::AttitudeLimit &&
+                                        snap.current_segment_target &&
+                                        snap.current_segment_mode
+                                    ? std::string{"attitude_limit_key:target="} +
+                                          robot::domain::endpoint_config_string(
+                                              *snap.current_segment_target) +
+                                          ";mode=Cleaning"
+                                    : "attitude_limit_switch";
                             return robot::app::ErrorFact{
                                 code,
                                 robot::app::ComponentId{
                                     robot::app::ComponentKind::AttitudeLimitSwitch,
                                     static_cast<int>(event->side)},
-                                "attitude_limit_switch",
+                                detail,
                                 hw_steady_now_ms()};
                         }
                         return std::nullopt;
@@ -568,10 +614,7 @@ private:
         health_exec->add_runnable(health);
     }
 
-    robot::app::RecoveryExecutor::Ports make_recovery_ports(int walk_wd,
-                                                            int gps_stuck_wd,
-                                                            int bms_wd,
-                                                            int brush_wd) {
+    robot::app::RecoveryExecutor::Ports make_recovery_ports() {
         robot::app::RecoveryExecutor::Ports ports;
         ports.pause_gps_stuck = [this] { gps_stuck->set_monitoring_enabled(false); };
         ports.resume_gps_stuck = [this] { gps_stuck->set_monitoring_enabled(true); };
@@ -579,73 +622,23 @@ private:
             motion->emergency_stop();
             return true;
         };
-        ports.stop_walk_executor = [this, walk_wd] {
-            watchdog->set_thread_paused(walk_wd, true);
-            return walk_exec->stop_with_timeout(1000ms);
-        };
-        ports.restart_walk_driver = [this] {
-            walk_group->close();
-            if (walk_group->open() != robot::device::DeviceError::OK) return false;
-            return walk_group->set_feedback_mode_all(10u) == robot::device::DeviceError::OK;
-        };
-        ports.start_walk_executor = [this, walk_wd] {
-            if (!walk_exec->restart()) return false;
-            watchdog->heartbeat(walk_wd);
-            return watchdog->set_thread_paused(walk_wd, false);
-        };
-        ports.stop_brush = [this] { return brush->stop() == robot::device::DeviceError::OK; };
-        ports.stop_brush_executor = [this, brush_wd] {
-            watchdog->set_thread_paused(brush_wd, true);
-            return brush_exec->stop_with_timeout(1000ms);
-        };
-        ports.restart_brush_driver = [this] {
-            if (brush->restart() != robot::device::DeviceError::OK) return false;
-            std::this_thread::sleep_for(5s);
-            brush->close();
-            return brush->open();
-        };
-        ports.start_brush_executor = [this, brush_wd] {
-            if (!brush_exec->restart()) return false;
-            watchdog->heartbeat(brush_wd);
-            return watchdog->set_thread_paused(brush_wd, false);
-        };
-        ports.stop_bms_executor = [this, bms_wd] {
-            watchdog->set_thread_paused(bms_wd, true);
-            return bms_exec->stop_with_timeout(1000ms);
-        };
-        ports.restart_bms_driver = [this] {
-            bms->close();
-            return bms->open() == robot::device::DeviceError::OK;
-        };
-        ports.start_bms_executor = [this, bms_wd] {
-            if (!bms_exec->restart()) return false;
-            watchdog->heartbeat(bms_wd);
-            return watchdog->set_thread_paused(bms_wd, false);
-        };
-        ports.stop_gps_executor = [this, gps_stuck_wd] {
-            watchdog->set_thread_paused(gps_stuck_wd, true);
-            return gps_stuck_exec->stop_with_timeout(1000ms);
-        };
-        ports.restart_gps_driver = [this] {
-            gps->close();
-            return gps->open();
-        };
-        ports.start_gps_executor = [this, gps_stuck_wd] {
-            if (!gps_stuck_exec->restart()) return false;
-            watchdog->heartbeat(gps_stuck_wd);
-            return watchdog->set_thread_paused(gps_stuck_wd, false);
-        };
-        ports.stop_imu_executor = [] { return true; };
-        ports.restart_imu_driver = [this] {
-            imu->close();
-            if (!imu->open()) return false;
-            return imu->set_output_rate(100) == robot::device::DeviceError::OK;
-        };
-        ports.start_imu_executor = [] { return true; };
         ports.reverse_walk_motion = [this] {
             return motion->reverse_for_recovery(2s, 20ms, [] { return false; });
         };
-        ports.lower_attitude_center = [this] { return attitude_limit->lower_attitude_center(); };
+        ports.lower_attitude_center = [this] {
+            const auto result = attitude_limit->lower_attitude_center();
+            switch (result.outcome) {
+            case robot::service::AttitudeLimitService::CenterOutcome::Completed:
+                return robot::app::RecoveryStepResult{
+                    robot::app::RecoveryStepOutcome::Completed};
+            case robot::service::AttitudeLimitService::CenterOutcome::TimedOut:
+                return robot::app::RecoveryStepResult{robot::app::RecoveryStepOutcome::TimedOut};
+            case robot::service::AttitudeLimitService::CenterOutcome::InterruptedBySafetyOverride:
+                return robot::app::RecoveryStepResult{
+                    robot::app::RecoveryStepOutcome::InterruptedBySafetyOverride};
+            }
+            return robot::app::RecoveryStepResult{robot::app::RecoveryStepOutcome::TimedOut};
+        };
         return ports;
     }
 

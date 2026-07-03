@@ -43,6 +43,15 @@ static device::WalkMotorGroup make_hw_group(const std::shared_ptr<driver::LinuxC
                                   kp.termination_motor_id);
 }
 
+static void run_control_updates(device::WalkMotorGroup& grp, std::chrono::milliseconds duration) {
+    const auto deadline = std::chrono::steady_clock::now() + duration;
+    const auto period = std::chrono::milliseconds(kp.loop_period_ms);
+    while (std::chrono::steady_clock::now() < deadline) {
+        grp.update();
+        std::this_thread::sleep_for(period);
+    }
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // [hw_walk][open_close]
 // ────────────────────────────────────────────────────────────────────────────
@@ -131,10 +140,7 @@ TEST_CASE("WalkMotorGroup 前进（纯执行器路径）", "[hw_walk][fwd_no_pid
 
     // 前进 3s
     grp.set_speed_uniform(kp.test_speed_rpm);
-    for (int i = 0; i < 6; ++i) {  // 6 × 500ms = 3s
-        grp.update();
-        std::this_thread::sleep_for(500ms);
-    }
+    run_control_updates(grp, 3s);
 
     auto gd = grp.get_group_diagnostics();
     spdlog::info("[hw_walk][fwd_no_pid] ctrl_frames={} ctrl_errs={}",
@@ -146,11 +152,17 @@ TEST_CASE("WalkMotorGroup 前进（纯执行器路径）", "[hw_walk][fwd_no_pid
                      gd.wheel[w].online,
                      gd.wheel[w].speed_rpm);
 
-    // 所有轮在线且速度在预期范围内
+    // 所有轮在线且速度在预期范围内。set_speed_uniform(rpm) 会下发
+    // LT/RT=rpm, LB/RB=-rpm；下轮因安装方向相反，前进时反馈应为负值。
     for (int w = 0; w < device::WalkMotorGroup::kWheelCount; ++w) {
         CHECK(gd.wheel[w].online);
-        CHECK(gd.wheel[w].speed_rpm >= 10.0f);  // 低限：目标 20，允许负载下降至 10
-        CHECK(gd.wheel[w].speed_rpm <= 60.0f);  // 高限：20 + 100% 余量
+        if (w < 2) {
+            CHECK(gd.wheel[w].speed_rpm >= 10.0f);
+            CHECK(gd.wheel[w].speed_rpm <= 60.0f);
+        } else {
+            CHECK(gd.wheel[w].speed_rpm <= -10.0f);
+            CHECK(gd.wheel[w].speed_rpm >= -60.0f);
+        }
     }
     CHECK(gd.ctrl_err_count == 0u);
 
@@ -175,10 +187,7 @@ TEST_CASE("WalkMotorGroup 反转", "[hw_walk][rev_speed]") {
     std::this_thread::sleep_for(300ms);
 
     grp.set_speed_uniform(-kp.test_speed_rpm);
-    for (int i = 0; i < 4; ++i) {  // 4 × 500ms = 2s
-        grp.update();
-        std::this_thread::sleep_for(500ms);
-    }
+    run_control_updates(grp, 2s);
 
     auto gd = grp.get_group_diagnostics();
     for (int w = 0; w < device::WalkMotorGroup::kWheelCount; ++w) {
@@ -215,8 +224,7 @@ TEST_CASE("WalkMotorGroup 急停（emergency_override）", "[hw_walk][emergency_
 
     // 先建立运动
     grp.set_speed_uniform(kp.test_speed_rpm);
-    grp.update();
-    std::this_thread::sleep_for(500ms);
+    run_control_updates(grp, 500ms);
 
     // 急停：emergency_override 本身会发一帧 stop 帧（ctrl_frame_count+1），
     // frames_before 需在其之后抓取，以便验证后续 update() 不再发帧
@@ -330,8 +338,7 @@ TEST_CASE("WalkMotorGroup 通信超时自保护", "[hw_walk][comm_timeout_self_s
 
     // 短暂前进
     grp.set_speed_uniform(kp.test_speed_rpm);
-    grp.update();
-    std::this_thread::sleep_for(500ms);
+    run_control_updates(grp, 100ms);
     spdlog::info("[hw_walk][comm_timeout_self_stop] 电机运行中，即将关闭 CAN 总线...");
 
     // 关闭 CAN（停止发送心跳），等待超时
@@ -360,17 +367,15 @@ TEST_CASE("WalkMotorGroup 帧统计（纯执行器路径，10s）", "[hw_walk][f
     std::this_thread::sleep_for(300ms);
 
     grp.set_speed_uniform(kp.test_speed_rpm);
-    for (int i = 0; i < 10; ++i) {  // 10 × 500ms = 5s
-        grp.update();
-        std::this_thread::sleep_for(500ms);
-    }
+    const auto frames_before = grp.get_group_diagnostics().ctrl_frame_count;
+    run_control_updates(grp, 5s);
 
     auto gd = grp.get_group_diagnostics();
     spdlog::info("[hw_walk][frame_stats_no_pid] ctrl_frames={} ctrl_errs={}",
                  gd.ctrl_frame_count,
                  gd.ctrl_err_count);
 
-    CHECK(gd.ctrl_frame_count > 100u);  // 5s × ~20Hz = 100 帧
+    CHECK(gd.ctrl_frame_count >= frames_before + 90u);  // 5s × 20Hz，允许少量调度抖动
     CHECK(gd.ctrl_err_count == 0u);
 
     grp.set_speed_uniform(0.0f);

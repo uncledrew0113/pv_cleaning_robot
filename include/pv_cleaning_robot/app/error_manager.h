@@ -58,14 +58,8 @@ enum class ErrorAction {
 
 enum class RecoveryPlanId {
     None,
-    RecoverWalkMotorGroup,
-    RecoverBms,
-    RecoverBrushMotor,
-    RecoverGps,
-    RecoverImu,
-    RecoverWalkStall,
-    RecoverGpsStuckReverse,
     RecoverAttitudeCenter,
+    RecoverAttitudeCenterThenReverse,
 };
 
 struct ErrorDecision {
@@ -125,21 +119,22 @@ private:
         uint64_t last_seen_update_ms{0};
     };
 
-    // 恢复失败计数只按当前恢复目标连续累计；目标变化或恢复成功都会清零。
-    struct RecoveryFailureState {
-        bool active{false};
-        RecoveryPlanId plan{RecoveryPlanId::None};
-        ComponentId component{};
-        uint32_t consecutive_failures{0};
+    // 姿态恢复重复计数只关注“同一任务段 key 恢复后是否很快再次触发”。
+    // key 由 ErrorFact.detail 传入，v1 不引入 GPS 距离判断，避免依赖低精度位置。
+    struct AttitudeRecoveryState {
+        bool has_last_key{false};
+        std::string last_key;
+        uint64_t last_recovery_finished_ms{0};
+        uint32_t repeat_count{0};
     };
 
-    static RecoveryPlanId plan_for_component(ComponentKind kind) noexcept;
-    static bool requires_robot_recovering(RecoveryPlanId plan) noexcept;
     static bool same_component(ComponentId lhs, ComponentId rhs) noexcept;
     static bool same_error_key(const ErrorFact& lhs, const ErrorFact& rhs) noexcept;
     static bool is_motion_recovery_plan(RecoveryPlanId plan) noexcept;
+    static std::string attitude_limit_key(const ErrorFact& fact);
     bool should_suppress_locked(const ErrorFact& fact) const;
     ErrorDecision decide(const ErrorFact& fact);
+    ErrorDecision decide_attitude_limit(const ErrorFact& fact);
     ErrorDecision submit_error_locked(const ErrorFact& fact);
     void update_error_counter(ErrorCounterState& state,
                               uint32_t count,
@@ -160,10 +155,8 @@ private:
     StreamTimeoutState imu_timeout_state_;
     std::array<StreamTimeoutState, 4> walk_feedback_timeout_states_{};
     DurationFlagState brush_fault_state_;
-    std::vector<uint64_t> walk_stall_event_times_;
     bool gps_stuck_snapshot_active_{false};
-    std::vector<uint64_t> gps_stuck_event_times_;
-    RecoveryFailureState recovery_failure_state_;
+    AttitudeRecoveryState attitude_recovery_state_;
     std::optional<ErrorDecision> active_recovery_;
 };
 

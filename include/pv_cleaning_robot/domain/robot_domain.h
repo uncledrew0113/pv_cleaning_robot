@@ -354,6 +354,7 @@ namespace FaultCode {
 // 具体动作由 app::ErrorManager、RecoveryExecutor 和 RobotController 统一执行。
 static constexpr uint32_t kRobotStuck = 0x0002u;
 static constexpr uint32_t kCanCommunicationLost = 0x1001u;
+static constexpr uint32_t kGpsCommunicationLost = 0x1002u;
 static constexpr uint32_t kSegmentStartFailed = 0x1101u;
 static constexpr uint32_t kRecoveryFailed = 0x1102u;
 static constexpr uint32_t kTaskContextInconsistent = 0x1103u;
@@ -361,6 +362,14 @@ static constexpr uint32_t kLockMotorCloseFailed = 0x1104u;
 static constexpr uint32_t kLockMotorOpenFailed = 0x1105u;
 static constexpr uint32_t kUnexpectedLimitSide = 0x1003u;
 static constexpr uint32_t kConflictingLimitSides = 0x1004u;
+static constexpr uint32_t kBmsCommunicationLost = 0x1005u;
+static constexpr uint32_t kBrushMotorCommunicationLost = 0x1006u;
+static constexpr uint32_t kImuCommunicationLost = 0x1007u;
+static constexpr uint32_t kWalkMotorStall = 0x1008u;
+static constexpr uint32_t kBrushMotorFault = 0x1009u;
+static constexpr uint32_t kAttitudeLimitBoth = 0x100Au;
+static constexpr uint32_t kRepeatedAttitudeLimit = 0x100Bu;
+static constexpr uint32_t kGpsStuck = 0x100Cu;
 static constexpr uint32_t kSelfCheckFailed = 0x3001u;
 static constexpr uint32_t kTransientAttitudeError = 0x3007u;
 static constexpr uint32_t kStartRejectedBusy = 0x3003u;

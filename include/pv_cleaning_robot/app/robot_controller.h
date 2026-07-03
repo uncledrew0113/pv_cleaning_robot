@@ -34,6 +34,8 @@ struct RobotControllerSnapshot {
     uint32_t repeat_count{0};
     int completed_cycles{0};
     uint64_t cfg_ver{0};
+    std::optional<domain::Endpoint> current_segment_target;
+    std::optional<domain::SegmentMode> current_segment_mode;
 };
 
 class RobotController {
@@ -108,11 +110,15 @@ private:
                                                       const domain::LaneConfig& lane,
                                                       domain::PositionState position_state) const;
     CommandResult stop_locked();
-    bool start_current_segment_locked();
+    struct StartSegmentResult {
+        bool ok{false};
+        std::optional<domain::Endpoint> already_at_target;
+    };
+    StartSegmentResult start_current_segment_locked();
     void complete_self_check_unlocked(bool ok);
     void handle_limit_settled_unlocked(domain::Endpoint endpoint);
-    void handle_source_limit_repeat_locked(domain::Endpoint endpoint);
-    void handle_recovery_finished_locked(bool ok);
+    std::optional<domain::Endpoint> handle_source_limit_repeat_locked(domain::Endpoint endpoint);
+    std::optional<domain::Endpoint> handle_recovery_finished_locked(bool ok);
 
     mutable std::mutex mtx_;
     RobotState state_{RobotState::Idle};

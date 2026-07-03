@@ -56,11 +56,14 @@ robot::app::ErrorDecision make_recovery_decision(
     return decision;
 }
 
-robot::app::ErrorDecision make_fault_stopped_decision(robot::app::ErrorCode code) {
+robot::app::ErrorDecision make_fault_stopped_decision(
+    robot::app::ErrorCode code,
+    robot::app::ComponentKind component = robot::app::ComponentKind::WalkMotorGroup) {
     robot::app::ErrorDecision decision;
     decision.action = robot::app::ErrorAction::FaultStopped;
     decision.latch_fault = true;
     decision.root_error.code = code;
+    decision.root_error.component = robot::app::ComponentId{component, 0};
     return decision;
 }
 
@@ -330,13 +333,61 @@ TEST_CASE("RobotController FaultStopped error decision resets back to Idle",
         make_fault_stopped_decision(robot::app::ErrorCode::AttitudeLimitBoth));
 
     REQUIRE(controller.snapshot().state == "FaultStopped");
-    REQUIRE(controller.snapshot().fault == robot::domain::FaultCode::kConflictingLimitSides);
+    REQUIRE(controller.snapshot().fault == robot::domain::FaultCode::kAttitudeLimitBoth);
 
     const auto reset = controller.submit_command(
         RobotCommand{RobotCommandKind::FaultReset, CommandSource::Rpc, "reset-1"});
     REQUIRE(reset.accepted);
     REQUIRE(controller.snapshot().state == "Idle");
     REQUIRE_FALSE(controller.snapshot().fault.has_value());
+}
+
+TEST_CASE("RobotController maps ErrorManager faults to specific domain fault codes",
+          "[app][robot_controller]") {
+    struct Case {
+        robot::app::ErrorCode code;
+        robot::app::ComponentKind component;
+        uint32_t expected_fault;
+    };
+
+    const Case cases[] = {
+        {robot::app::ErrorCode::DriverCommError,
+         robot::app::ComponentKind::WalkMotorGroup,
+         robot::domain::FaultCode::kCanCommunicationLost},
+        {robot::app::ErrorCode::DriverCommError,
+         robot::app::ComponentKind::Gps,
+         robot::domain::FaultCode::kGpsCommunicationLost},
+        {robot::app::ErrorCode::DriverCommError,
+         robot::app::ComponentKind::Bms,
+         robot::domain::FaultCode::kBmsCommunicationLost},
+        {robot::app::ErrorCode::DriverCommError,
+         robot::app::ComponentKind::BrushMotor,
+         robot::domain::FaultCode::kBrushMotorCommunicationLost},
+        {robot::app::ErrorCode::DriverCommError,
+         robot::app::ComponentKind::Imu,
+         robot::domain::FaultCode::kImuCommunicationLost},
+        {robot::app::ErrorCode::WalkMotorStall,
+         robot::app::ComponentKind::WalkMotorGroup,
+         robot::domain::FaultCode::kWalkMotorStall},
+        {robot::app::ErrorCode::BrushMotorFault,
+         robot::app::ComponentKind::BrushMotor,
+         robot::domain::FaultCode::kBrushMotorFault},
+        {robot::app::ErrorCode::GpsStuck,
+         robot::app::ComponentKind::GpsStuckService,
+         robot::domain::FaultCode::kGpsStuck},
+        {robot::app::ErrorCode::AttitudeLimitBoth,
+         robot::app::ComponentKind::AttitudeLimitSwitch,
+         robot::domain::FaultCode::kAttitudeLimitBoth},
+    };
+
+    for (const auto& item : cases) {
+        RobotController controller;
+        controller.apply_error_decision(make_fault_stopped_decision(item.code, item.component));
+
+        INFO("error code index maps to expected domain fault");
+        REQUIRE(controller.snapshot().state == "FaultStopped");
+        CHECK(controller.snapshot().fault == item.expected_fault);
+    }
 }
 
 TEST_CASE("RobotController recoverable fault enters Recovering from ExecutingMission",
@@ -365,7 +416,7 @@ TEST_CASE("RobotController ignores recovery decision during self check",
     REQUIRE(controller.snapshot().state == "SelfChecking");
 
     controller.apply_error_decision(
-        make_recovery_decision(robot::app::RecoveryPlanId::RecoverBms));
+        make_recovery_decision(robot::app::RecoveryPlanId::RecoverAttitudeCenter));
 
     CHECK(controller.snapshot().state == "SelfChecking");
 }
@@ -400,7 +451,7 @@ TEST_CASE("RobotController keeps mission during recovery and resumes current seg
     REQUIRE(actions.start_segment_count == 1);
 
     controller.apply_error_decision(
-        make_recovery_decision(robot::app::RecoveryPlanId::RecoverBrushMotor));
+        make_recovery_decision(robot::app::RecoveryPlanId::RecoverAttitudeCenter));
     CHECK(controller.snapshot().state == "Recovering");
 
     controller.start();
@@ -424,6 +475,73 @@ TEST_CASE("RobotController starts motion after successful self check",
     controller.complete_self_check_for_test(true);
 
     REQUIRE(actions.start_segment_count == 1);
+}
+
+TEST_CASE("RobotController advances configured segment when target is already active before motion",
+          "[app][robot_controller]") {
+    RecordingRobotActions actions;
+    robot::domain::Endpoint started_target{robot::domain::Endpoint::B};
+    auto ports = actions.ports();
+    ports.start_segment = [&](const robot::domain::MissionSegment& segment) {
+        ++actions.start_segment_count;
+        started_target = segment.target;
+        return true;
+    };
+
+    RobotController controller(ports);
+    controller.set_position_state_query([] { return robot::domain::PositionState::AtB; });
+
+    REQUIRE(controller
+                .submit_command(RobotCommand{
+                    RobotCommandKind::StartConfiguredMission, CommandSource::Rpc, "cmd-1"})
+                .accepted);
+    controller.complete_self_check_for_test(true);
+
+    const auto snap = controller.snapshot();
+    REQUIRE(snap.state == "ExecutingMission");
+    REQUIRE(snap.current_segment_target.has_value());
+    CHECK(*snap.current_segment_target == robot::domain::Endpoint::A);
+    CHECK(started_target == robot::domain::Endpoint::A);
+    CHECK(actions.lock_close_count == 1);
+    CHECK(actions.start_segment_count == 1);
+    CHECK(actions.lock_open_count == 0);
+}
+
+TEST_CASE("RobotController completes directional dock mission when target is already active before motion",
+          "[app][robot_controller]") {
+    RecordingRobotActions actions;
+    RobotController controller(actions.ports());
+    controller.set_position_state_query([] { return robot::domain::PositionState::AtA; });
+
+    REQUIRE(controller
+                .submit_command(RobotCommand{
+                    RobotCommandKind::CleanTowardPrimaryDock, CommandSource::Rpc, "cmd-1"})
+                .accepted);
+    controller.complete_self_check_for_test(true);
+
+    REQUIRE(controller.snapshot().state == "Idle");
+    CHECK(actions.lock_close_count == 1);
+    CHECK(actions.start_segment_count == 0);
+    CHECK(actions.stop_count == 1);
+    CHECK(actions.lock_open_count == 1);
+}
+
+TEST_CASE("RobotController snapshot exposes current segment for attitude recovery key",
+          "[app][robot_controller]") {
+    RobotController controller;
+    controller.set_position_state_query([] { return robot::domain::PositionState::AtA; });
+    REQUIRE(controller
+                .submit_command(RobotCommand{
+                    RobotCommandKind::StartConfiguredMission, CommandSource::Rpc, "cmd-1"})
+                .accepted);
+
+    controller.complete_self_check_for_test(true);
+
+    const auto snap = controller.snapshot();
+    REQUIRE(snap.current_segment_target.has_value());
+    REQUIRE(snap.current_segment_mode.has_value());
+    CHECK(*snap.current_segment_target == robot::domain::Endpoint::B);
+    CHECK(*snap.current_segment_mode == robot::domain::SegmentMode::Cleaning);
 }
 
 TEST_CASE("RobotController closes lock motor before first mission segment",
@@ -480,6 +598,26 @@ TEST_CASE("RobotController opens lock motor when mission finishes at dock",
     REQUIRE(controller.snapshot().state == "Idle");
     CHECK(actions.stop_count == 1);
     CHECK(actions.lock_open_count == 1);
+}
+
+TEST_CASE("RobotController skips lock open when dock position confirmation fails",
+          "[app][robot_controller]") {
+    RecordingRobotActions actions;
+    RobotController controller(actions.ports());
+    controller.set_position_state_query([] { return robot::domain::PositionState::OnSegment; });
+
+    REQUIRE(controller
+                .submit_command(RobotCommand{
+                    RobotCommandKind::StartConfiguredMission, CommandSource::Rpc, "cmd-1"})
+                .accepted);
+    controller.complete_self_check_for_test(true);
+
+    controller.handle_limit_settled_for_test(robot::domain::Endpoint::B);
+    controller.handle_limit_settled_for_test(robot::domain::Endpoint::A);
+
+    REQUIRE(controller.snapshot().state == "Idle");
+    CHECK(actions.stop_count == 1);
+    CHECK(actions.lock_open_count == 0);
 }
 
 TEST_CASE("RobotController does not open lock motor when single-dock mission finishes away from dock",

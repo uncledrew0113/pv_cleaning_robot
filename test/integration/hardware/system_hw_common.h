@@ -62,12 +62,40 @@ const char* fault_code_name(uint32_t code) {
     switch (code) {
         case kCanCommunicationLost:
             return "CanCommunicationLost";
+        case kGpsCommunicationLost:
+            return "GpsCommunicationLost";
         case kSegmentStartFailed:
             return "SegmentStartFailed";
+        case kRecoveryFailed:
+            return "RecoveryFailed";
+        case kTaskContextInconsistent:
+            return "TaskContextInconsistent";
+        case kLockMotorCloseFailed:
+            return "LockMotorCloseFailed";
+        case kLockMotorOpenFailed:
+            return "LockMotorOpenFailed";
         case kUnexpectedLimitSide:
             return "UnexpectedLimitSide";
         case kConflictingLimitSides:
             return "ConflictingLimitSides";
+        case kBmsCommunicationLost:
+            return "BmsCommunicationLost";
+        case kBrushMotorCommunicationLost:
+            return "BrushMotorCommunicationLost";
+        case kImuCommunicationLost:
+            return "ImuCommunicationLost";
+        case kWalkMotorStall:
+            return "WalkMotorStall";
+        case kBrushMotorFault:
+            return "BrushMotorFault";
+        case kAttitudeLimitBoth:
+            return "AttitudeLimitBoth";
+        case kRepeatedAttitudeLimit:
+            return "RepeatedAttitudeLimit";
+        case kGpsStuck:
+            return "GpsStuck";
+        case kSelfCheckFailed:
+            return "SelfCheckFailed";
         default:
             return "Unknown";
     }
@@ -1008,6 +1036,16 @@ void log_attitude_status(const char* tag,
                  right.triggered);
 }
 
+void prepare_lower_attitude_motion(robot::device::WalkMotorGroup& group) {
+    if (group.is_override_active()) {
+        group.clear_override();
+        group.update();
+    }
+    REQUIRE(group.enable_all() == robot::device::DeviceError::OK);
+    REQUIRE(group.set_mode_all(robot::protocol::WalkMotorMode::SPEED) ==
+            robot::device::DeviceError::OK);
+}
+
 void command_lower_wheels(robot::device::WalkMotorGroup& group, float lower_rpm) {
     REQUIRE(group.set_speeds(0.0f, 0.0f, lower_rpm, lower_rpm) == robot::device::DeviceError::OK);
     group.update();
@@ -1181,20 +1219,31 @@ LowerAttitudeCenterOutcome run_lower_attitude_center_recovery(
     const char* tag,
     EndpointInterruptQuery endpoint_interrupt_query = {}) {
     REQUIRE(group.set_feedback_mode_all(10u) == robot::device::DeviceError::OK);
-    REQUIRE(group.enable_all() == robot::device::DeviceError::OK);
-    REQUIRE(group.set_mode_all(robot::protocol::WalkMotorMode::SPEED) ==
-            robot::device::DeviceError::OK);
+    prepare_lower_attitude_motion(group);
 
     constexpr float lower_rpm = 5.0f;
     constexpr int kStableSamplesRequired = 2;
-    constexpr auto kSearchTimeout = 30000ms;
-    constexpr auto kReleaseTimeout = 10000ms;
-    constexpr auto kOppositeTimeout = 30000ms;
+    constexpr auto kOverallTimeout = 30000ms;
+    constexpr auto kTriggerPause = 500ms;
+    const auto overall_deadline = std::chrono::steady_clock::now() + kOverallTimeout;
 
     spdlog::warn(
         "[{}][lower_attitude_center] 任意单侧触发即可回中；无触发时先向 A 搜索左下边界；"
         "双侧同时触发视为异常。LT/RT=0，仅驱动 LB/RB 低速回中",
         tag);
+
+    auto wait_until_overall_timeout = [&] {
+        command_lower_wheels(group, 0.0f);
+        while (!hw::HwExitGuard::instance().exit_requested() &&
+               std::chrono::steady_clock::now() < overall_deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(kp.loop_period_ms));
+        }
+    };
+    auto finish_timeout = [&](const char* reason) {
+        spdlog::warn("[{}][lower_attitude_center] timeout-style finish: {}", tag, reason);
+        wait_until_overall_timeout();
+        return LowerAttitudeCenterOutcome::Completed;
+    };
 
     auto check_endpoint_interrupt = [&]() -> std::optional<LowerAttitudeCenterOutcome> {
         if (!endpoint_interrupt_query) {
@@ -1208,16 +1257,16 @@ LowerAttitudeCenterOutcome run_lower_attitude_center_recovery(
         spdlog::warn("[{}][lower_attitude_center] interrupted by endpoint={}",
                      tag,
                      endpoint_to_config(*endpoint));
+        wait_until_overall_timeout();
         return *endpoint == robot::domain::Endpoint::A
                    ? LowerAttitudeCenterOutcome::InterruptedByEndpointA
                    : LowerAttitudeCenterOutcome::InterruptedByEndpointB;
     };
 
     auto initial_side = std::optional<robot::device::AttitudeLimitSide>{};
-    auto deadline = std::chrono::steady_clock::now() + kSearchTimeout;
     bool search_started = false;
     while (!hw::HwExitGuard::instance().exit_requested() &&
-           std::chrono::steady_clock::now() < deadline && !initial_side.has_value()) {
+           std::chrono::steady_clock::now() < overall_deadline && !initial_side.has_value()) {
         if (const auto outcome = check_endpoint_interrupt()) {
             return *outcome;
         }
@@ -1236,7 +1285,7 @@ LowerAttitudeCenterOutcome run_lower_attitude_center_recovery(
                     "timeout={}ms",
                     tag,
                     lower_rpm,
-                    std::chrono::duration_cast<std::chrono::milliseconds>(kSearchTimeout).count());
+                    std::chrono::duration_cast<std::chrono::milliseconds>(kOverallTimeout).count());
             }
             command_lower_wheels(group, -lower_rpm);
         }
@@ -1244,8 +1293,19 @@ LowerAttitudeCenterOutcome run_lower_attitude_center_recovery(
     }
 
     command_lower_wheels(group, 0.0f);
+    if (!initial_side.has_value()) {
+        REQUIRE_FALSE(hw::HwExitGuard::instance().exit_requested());
+        return finish_timeout("initial side not found");
+    }
+    spdlog::info("[{}][lower_attitude_center][initial_pause] pause={}ms before reverse",
+                 tag,
+                 std::chrono::duration_cast<std::chrono::milliseconds>(kTriggerPause).count());
+    if (std::chrono::steady_clock::now() < overall_deadline) {
+        const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+            overall_deadline - std::chrono::steady_clock::now());
+        std::this_thread::sleep_for(std::min(kTriggerPause, remaining));
+    }
     REQUIRE_FALSE(hw::HwExitGuard::instance().exit_requested());
-    REQUIRE(initial_side.has_value());
     log_attitude_status("[lower_attitude_center][initial_found]",
                         left_sw.read_status(),
                         right_sw.read_status());
@@ -1261,15 +1321,14 @@ LowerAttitudeCenterOutcome run_lower_attitude_center_recovery(
 
     int stable_release_samples = 0;
     auto release_at = std::chrono::steady_clock::time_point{};
-    deadline = std::chrono::steady_clock::now() + kReleaseTimeout;
     spdlog::info(
         "[{}][lower_attitude_center][release_start] side={} lower_rpm={:.2f} timeout={}ms",
         tag,
         attitude_side_name(plan.release_side),
         plan.initial_lower_rpm,
-        std::chrono::duration_cast<std::chrono::milliseconds>(kReleaseTimeout).count());
+        std::chrono::duration_cast<std::chrono::milliseconds>(kOverallTimeout).count());
     while (!hw::HwExitGuard::instance().exit_requested() &&
-           std::chrono::steady_clock::now() < deadline &&
+           std::chrono::steady_clock::now() < overall_deadline &&
            stable_release_samples < kStableSamplesRequired) {
         if (const auto outcome = check_endpoint_interrupt()) {
             return *outcome;
@@ -1289,7 +1348,9 @@ LowerAttitudeCenterOutcome run_lower_attitude_center_recovery(
     }
 
     REQUIRE_FALSE(hw::HwExitGuard::instance().exit_requested());
-    REQUIRE(release_at != std::chrono::steady_clock::time_point{});
+    if (release_at == std::chrono::steady_clock::time_point{}) {
+        return finish_timeout("release side not released");
+    }
     {
         const auto diag = group.get_group_diagnostics();
         spdlog::info(
@@ -1310,16 +1371,15 @@ LowerAttitudeCenterOutcome run_lower_attitude_center_recovery(
     }
 
     auto opposite_at = std::chrono::steady_clock::time_point{};
-    deadline = std::chrono::steady_clock::now() + kOppositeTimeout;
     spdlog::info(
         "[{}][lower_attitude_center][opposite_start] side={} lower_rpm={:.2f} "
         "timeout={}ms",
         tag,
         attitude_side_name(plan.opposite_side),
         plan.initial_lower_rpm,
-        std::chrono::duration_cast<std::chrono::milliseconds>(kOppositeTimeout).count());
+        std::chrono::duration_cast<std::chrono::milliseconds>(kOverallTimeout).count());
     while (!hw::HwExitGuard::instance().exit_requested() &&
-           std::chrono::steady_clock::now() < deadline &&
+           std::chrono::steady_clock::now() < overall_deadline &&
            opposite_at == std::chrono::steady_clock::time_point{}) {
         if (const auto outcome = check_endpoint_interrupt()) {
             return *outcome;
@@ -1334,7 +1394,9 @@ LowerAttitudeCenterOutcome run_lower_attitude_center_recovery(
     }
 
     REQUIRE_FALSE(hw::HwExitGuard::instance().exit_requested());
-    REQUIRE(opposite_at != std::chrono::steady_clock::time_point{});
+    if (opposite_at == std::chrono::steady_clock::time_point{}) {
+        return finish_timeout("opposite side not found");
+    }
     log_attitude_status("[lower_attitude_center][opposite_triggered]",
                         left_sw.read_status(),
                         right_sw.read_status());
@@ -1349,14 +1411,18 @@ LowerAttitudeCenterOutcome run_lower_attitude_center_recovery(
         return_duration.count(),
         plan.return_lower_rpm);
 
-    deadline = std::chrono::steady_clock::now() + return_duration;
+    const auto return_deadline = std::chrono::steady_clock::now() + return_duration;
     while (!hw::HwExitGuard::instance().exit_requested() &&
-           std::chrono::steady_clock::now() < deadline) {
+           std::chrono::steady_clock::now() < return_deadline &&
+           std::chrono::steady_clock::now() < overall_deadline) {
         if (const auto outcome = check_endpoint_interrupt()) {
             return *outcome;
         }
         command_lower_wheels(group, plan.return_lower_rpm);
         std::this_thread::sleep_for(std::chrono::milliseconds(kp.loop_period_ms));
+    }
+    if (std::chrono::steady_clock::now() >= overall_deadline) {
+        return finish_timeout("return motion not completed");
     }
 
     command_lower_wheels(group, 0.0f);

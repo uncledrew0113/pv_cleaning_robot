@@ -88,6 +88,73 @@ uint64_t steady_now_ms() {
                                      .count());
 }
 
+std::string attitude_limit_key_from_snapshot(
+    const robot::app::RobotControllerSnapshot& snapshot) {
+    if (!snapshot.current_segment_target || !snapshot.current_segment_mode) {
+        return "attitude_limit_key:unknown";
+    }
+    const char* mode =
+        *snapshot.current_segment_mode == robot::domain::SegmentMode::Cleaning ? "Cleaning"
+                                                                               : "Unknown";
+    return std::string{"attitude_limit_key:target="} +
+           robot::domain::endpoint_config_string(*snapshot.current_segment_target) +
+           ";mode=" + mode;
+}
+
+bool should_log_runtime_diagnostics(std::string_view state) {
+    return state == "ExecutingMission" || state == "Recovering" ||
+           state == "SettlingEndpoint";
+}
+
+const char* optional_endpoint_name(const std::optional<robot::domain::Endpoint>& endpoint) {
+    if (!endpoint.has_value()) {
+        return "none";
+    }
+    return robot::domain::endpoint_config_string(*endpoint);
+}
+
+void log_runtime_diagnostics(
+    const robot::app::RobotControllerSnapshot& controller_snapshot,
+    const robot::service::DiagnosticsCollector::Snapshot& diagnostics_snapshot) {
+    if (!should_log_runtime_diagnostics(controller_snapshot.state)) {
+        return;
+    }
+
+    const auto& walk = diagnostics_snapshot.walk_diagnostics;
+    const auto& brush = diagnostics_snapshot.brush_diagnostics;
+    const auto& bms = diagnostics_snapshot.bms_diagnostics;
+    spdlog::info(
+        "[runtime_diag] state={} target={} progress={}/{} "
+        "walk_target=[{:.1f},{:.1f},{:.1f},{:.1f}] "
+        "walk_rpm=[{:.1f},{:.1f},{:.1f},{:.1f}] "
+        "walk_a=[{:.2f},{:.2f},{:.2f},{:.2f}] "
+        "brush_rpm={} brush_a={:.2f} brush_fault={} "
+        "soc={:.1f} bms_a={:.2f} charging={} low_battery={}",
+        controller_snapshot.state,
+        optional_endpoint_name(controller_snapshot.current_segment_target),
+        controller_snapshot.completed_cycles,
+        controller_snapshot.repeat_count,
+        walk.wheel[0].target_value,
+        walk.wheel[1].target_value,
+        walk.wheel[2].target_value,
+        walk.wheel[3].target_value,
+        walk.wheel[0].speed_rpm,
+        walk.wheel[1].speed_rpm,
+        walk.wheel[2].speed_rpm,
+        walk.wheel[3].speed_rpm,
+        walk.wheel[0].torque_a,
+        walk.wheel[1].torque_a,
+        walk.wheel[2].torque_a,
+        walk.wheel[3].torque_a,
+        brush.actual_rpm,
+        brush.current_a,
+        brush.fault_code,
+        bms.soc_pct,
+        bms.current_a,
+        bms.charging,
+        bms.low_battery);
+}
+
 void publish_startup_position_status(const std::shared_ptr<spdlog::logger>& log,
                                      robot::domain::PositionState startup_position,
                                      bool configured_mission_allowed) {
@@ -617,20 +684,6 @@ bool start_runtime_threads(const std::shared_ptr<spdlog::logger>& log,
 robot::app::RecoveryExecutor::Ports make_recovery_ports(
     const std::shared_ptr<robot::service::GpsStuckService>& gps_stuck,
     const std::shared_ptr<robot::service::MotionService>& motion,
-    robot::app::WatchdogMgr& watchdog,
-    int walk_wd,
-    robot::middleware::ThreadExecutor& walk_exec,
-    const std::shared_ptr<robot::device::WalkMotorGroup>& walk_group,
-    const std::shared_ptr<robot::device::BrushMotor>& brush_motor,
-    int brush_wd,
-    robot::middleware::ThreadExecutor& brush_exec,
-    const std::shared_ptr<robot::device::BMS>& bms,
-    int bms_wd,
-    robot::middleware::ThreadExecutor& bms_exec,
-    const std::shared_ptr<robot::device::GpsDevice>& gps,
-    int gps_stuck_wd,
-    robot::middleware::ThreadExecutor& gps_stuck_exec,
-    const std::shared_ptr<robot::device::ImuDevice>& imu,
     const std::shared_ptr<robot::service::AttitudeLimitService>& attitude_limit) {
     robot::app::RecoveryExecutor::Ports recovery_ports;
     recovery_ports.pause_gps_stuck = [gps_stuck] { gps_stuck->set_monitoring_enabled(false); };
@@ -642,105 +695,23 @@ robot::app::RecoveryExecutor::Ports make_recovery_ports(
         motion->emergency_stop();
         return true;
     };
-    recovery_ports.stop_walk_executor = [&watchdog, walk_wd, &walk_exec] {
-        watchdog.set_thread_paused(walk_wd, true);
-        return walk_exec.stop_with_timeout(std::chrono::milliseconds(1000));
-    };
-    recovery_ports.restart_walk_driver = [walk_group] {
-        // CAN close/open 必须在 walk_ctrl 停止后执行，避免 update()/recv_loop 与驱动重启并发。
-        walk_group->close();
-        if (walk_group->open() != robot::device::DeviceError::OK) {
-            return false;
-        }
-        return walk_group->set_feedback_mode_all(10u) == robot::device::DeviceError::OK;
-    };
-    recovery_ports.start_walk_executor = [&watchdog, walk_wd, &walk_exec] {
-        if (!walk_exec.restart()) {
-            return false;
-        }
-        watchdog.heartbeat(walk_wd);
-        return watchdog.set_thread_paused(walk_wd, false);
-    };
-    recovery_ports.stop_brush = [brush_motor] {
-        return brush_motor->stop() == robot::device::DeviceError::OK;
-    };
-    recovery_ports.stop_brush_executor = [&watchdog, brush_wd, &brush_exec, brush_motor] {
-        // 滚刷 update() 会串行读取多项 ODrive 属性；请求协作退出后再等待线程收敛。
-        brush_motor->request_stop();
-        watchdog.set_thread_paused(brush_wd, true);
-        return brush_exec.stop_with_timeout(std::chrono::milliseconds(1000));
-    };
-    recovery_ports.restart_brush_driver = [brush_motor] {
-        // 滚刷 ODrive 故障恢复按设备要求先发送 sr 软复位，等待控制器重启完成，
-        // 再 close/open 串口，避免复位期间残留串口状态影响后续 update()。
-        brush_motor->clear_stop_request();
-        if (brush_motor->restart() != robot::device::DeviceError::OK) {
-            return false;
-        }
-        std::this_thread::sleep_for(std::chrono::seconds(5));
-        brush_motor->close();
-        return brush_motor->open();
-    };
-    recovery_ports.start_brush_executor = [&watchdog, brush_wd, &brush_exec] {
-        if (!brush_exec.restart()) {
-            return false;
-        }
-        watchdog.heartbeat(brush_wd);
-        return watchdog.set_thread_paused(brush_wd, false);
-    };
-    recovery_ports.stop_bms_executor = [&watchdog, bms_wd, &bms_exec, bms] {
-        // BMS 读事务可能处在唤醒等待或串口 read 超时内；先请求协作退出再停执行器。
-        bms->request_stop();
-        watchdog.set_thread_paused(bms_wd, true);
-        return bms_exec.stop_with_timeout(std::chrono::milliseconds(1000));
-    };
-    recovery_ports.restart_bms_driver = [bms] {
-        // BMS update() 会阻塞串口读写；先停 bms_exec，再 close/open 串口。
-        bms->close();
-        return bms->open() == robot::device::DeviceError::OK;
-    };
-    recovery_ports.start_bms_executor = [&watchdog, bms_wd, &bms_exec] {
-        if (!bms_exec.restart()) {
-            return false;
-        }
-        watchdog.heartbeat(bms_wd);
-        return watchdog.set_thread_paused(bms_wd, false);
-    };
-    recovery_ports.stop_gps_executor = [&watchdog, gps_stuck_wd, &gps_stuck_exec] {
-        watchdog.set_thread_paused(gps_stuck_wd, true);
-        return gps_stuck_exec.stop_with_timeout(std::chrono::milliseconds(1000));
-    };
-    recovery_ports.restart_gps_driver = [gps] {
-        gps->request_stop();
-        gps->close();
-        return gps->open();
-    };
-    recovery_ports.start_gps_executor = [&watchdog, gps_stuck_wd, &gps_stuck_exec] {
-        if (!gps_stuck_exec.restart()) {
-            return false;
-        }
-        watchdog.heartbeat(gps_stuck_wd);
-        return watchdog.set_thread_paused(gps_stuck_wd, false);
-    };
-    recovery_ports.stop_imu_executor = [] {
-        // IMU 自带读取线程，当前没有独立 ThreadExecutor；close() 会停止内部 read_loop。
-        return true;
-    };
-    recovery_ports.restart_imu_driver = [imu] {
-        imu->request_stop();
-        imu->close();
-        if (!imu->open()) {
-            return false;
-        }
-        return imu->set_output_rate(100) == robot::device::DeviceError::OK;
-    };
-    recovery_ports.start_imu_executor = [] { return true; };
     recovery_ports.reverse_walk_motion = [motion] {
         return motion->reverse_for_recovery(
             std::chrono::seconds(2), std::chrono::milliseconds(20), [] { return false; });
     };
     recovery_ports.lower_attitude_center = [attitude_limit] {
-        return attitude_limit->lower_attitude_center();
+        const auto result = attitude_limit->lower_attitude_center();
+        switch (result.outcome) {
+        case robot::service::AttitudeLimitService::CenterOutcome::Completed:
+            return robot::app::RecoveryStepResult{
+                robot::app::RecoveryStepOutcome::Completed};
+        case robot::service::AttitudeLimitService::CenterOutcome::TimedOut:
+            return robot::app::RecoveryStepResult{robot::app::RecoveryStepOutcome::TimedOut};
+        case robot::service::AttitudeLimitService::CenterOutcome::InterruptedBySafetyOverride:
+            return robot::app::RecoveryStepResult{
+                robot::app::RecoveryStepOutcome::InterruptedBySafetyOverride};
+        }
+        return robot::app::RecoveryStepResult{robot::app::RecoveryStepOutcome::TimedOut};
     };
     return recovery_ports;
 }
@@ -756,18 +727,22 @@ std::shared_ptr<robot::app::ErrorHandlingService> make_error_handling_service(
         *error_manager,
         robot::app::ErrorHandlingService::Ports{
             [controller] { return controller->snapshot().state; },
-            [attitude_limit]() -> std::optional<robot::app::ErrorFact> {
+            [attitude_limit, controller]() -> std::optional<robot::app::ErrorFact> {
                 if (const auto event = attitude_limit->consume_pending_event()) {
                     const auto code =
                         event->type ==
                                 robot::service::AttitudeLimitService::EventType::AttitudeLimitBoth
                             ? robot::app::ErrorCode::AttitudeLimitBoth
                             : robot::app::ErrorCode::AttitudeLimit;
+                    const auto detail =
+                        code == robot::app::ErrorCode::AttitudeLimit
+                            ? attitude_limit_key_from_snapshot(controller->snapshot())
+                            : "attitude_limit_switch";
                     return robot::app::ErrorFact{
                         code,
                         robot::app::ComponentId{robot::app::ComponentKind::AttitudeLimitSwitch,
                                                 static_cast<int>(event->side)},
-                        "attitude_limit_switch",
+                        detail,
                         steady_now_ms()};
                 }
                 return std::nullopt;
@@ -1175,23 +1150,8 @@ int RobotApplication::run(const std::atomic<bool>& running) {
     brush_exec.add_runnable(std::make_shared<robot::middleware::RunnableAdapter>(
         [&watchdog, brush_wd]() { watchdog.heartbeat(brush_wd); }));
 
-    robot::app::RecoveryExecutor recovery_executor(make_recovery_ports(gps_stuck,
-                                                                       motion,
-                                                                       watchdog,
-                                                                       walk_wd,
-                                                                       walk_exec,
-                                                                       walk_group,
-                                                                       brush_motor,
-                                                                       brush_wd,
-                                                                       brush_exec,
-                                                                       bms,
-                                                                       bms_wd,
-                                                                       bms_exec,
-                                                                       gps,
-                                                                       gps_stuck_wd,
-                                                                       gps_stuck_exec,
-                                                                       imu,
-                                                                       attitude_limit));
+    robot::app::RecoveryExecutor recovery_executor(
+        make_recovery_ports(gps_stuck, motion, attitude_limit));
     auto error_handling = make_error_handling_service(error_manager,
                                                       controller,
                                                       attitude_limit,
@@ -1214,6 +1174,10 @@ int RobotApplication::run(const std::atomic<bool>& running) {
     error_exec.add_runnable(error_handling);
     robot::middleware::ThreadExecutor cloud_exec(
         {"cloud", active_report_period, SCHED_OTHER, 0, 0x0F});
+    cloud_exec.add_runnable(std::make_shared<robot::middleware::RunnableAdapter>(
+        [controller, diagnostics_collector]() {
+            log_runtime_diagnostics(controller->snapshot(), diagnostics_collector->snapshot());
+        }));
     if (cloud_upload || local_log) {
         cloud_exec.add_runnable(reporter);
     }

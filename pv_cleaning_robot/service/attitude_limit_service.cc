@@ -4,6 +4,8 @@
 #include <thread>
 #include <utility>
 
+#include <spdlog/spdlog.h>
+
 namespace robot::service {
 
 AttitudeLimitService::AttitudeLimitService(
@@ -60,6 +62,7 @@ void AttitudeLimitService::handle_trigger(device::AttitudeLimitSide side) {
     if (centering_active_) {
         // 回中期间的单侧姿态限位是回中算法的测量信号，不再作为新错误提交。
         // 急停已经在本函数入口执行，回中流程随后通过 read_status() 继续推进或超时退出。
+        centering_triggered_side_ = side;
         return;
     }
     pending_event_ = Event{EventType::AttitudeLimit, side};
@@ -114,138 +117,222 @@ bool AttitudeLimitService::stop_lower_wheels() {
     return motion_ports_.stop_center_motion && motion_ports_.stop_center_motion();
 }
 
-bool AttitudeLimitService::lower_attitude_center() {
+AttitudeLimitService::CenterResult AttitudeLimitService::lower_attitude_center() {
     return lower_attitude_center(CenterConfig{});
 }
 
-bool AttitudeLimitService::lower_attitude_center(const CenterConfig& config) {
+AttitudeLimitService::CenterResult AttitudeLimitService::lower_attitude_center(
+    const CenterConfig& config) {
+    const auto tick = config.tick > std::chrono::milliseconds::zero()
+                          ? config.tick
+                          : std::chrono::milliseconds(20);
+    const auto started_at = std::chrono::steady_clock::now();
+    const auto deadline = started_at + config.overall_timeout;
+    auto timed_out = [&] { return std::chrono::steady_clock::now() >= deadline; };
+    auto wait_until_timeout = [&] {
+        while (!timed_out()) {
+            std::this_thread::sleep_for(tick);
+        }
+    };
+
+    auto finish_centering = [this]() {
+        std::lock_guard<std::mutex> lk(event_mtx_);
+        centering_active_ = false;
+        centering_triggered_side_.reset();
+    };
+    auto emergency_stop_after_timeout = [&] {
+        if (motion_ports_.emergency_stop) {
+            motion_ports_.emergency_stop();
+        }
+    };
+    auto timeout_after_problem = [&](const char* reason) {
+        spdlog::warn("[AttitudeLimitService] lower_attitude_center timed out: {}", reason);
+        stop_lower_wheels();
+        wait_until_timeout();
+        emergency_stop_after_timeout();
+        finish_centering();
+        return CenterResult{CenterOutcome::TimedOut};
+    };
+
     if (config.lower_rpm <= 0.0f || config.stable_samples_required <= 0 ||
-        config.tick <= std::chrono::milliseconds::zero()) {
-        return false;
+        config.overall_timeout <= std::chrono::milliseconds::zero()) {
+        return timeout_after_problem("invalid config");
     }
-    if (!left_ || !right_ || !motion_ports_.prepare_center_motion ||
-        !motion_ports_.prepare_center_motion()) {
-        return false;
+    if (!left_ || !right_ || !motion_ports_.prepare_center_motion) {
+        return timeout_after_problem("missing dependency");
+    }
+    if (!motion_ports_.prepare_center_motion()) {
+        return timeout_after_problem("prepare_center_motion failed");
     }
     {
         std::lock_guard<std::mutex> lk(event_mtx_);
         centering_active_ = true;
+        centering_triggered_side_.reset();
         pending_event_.reset();
     }
-    auto finish_centering = [this]() {
+    auto timeout_finish = [&](const char* reason) {
+        spdlog::warn("[AttitudeLimitService] lower_attitude_center timed out: {}", reason);
+        stop_lower_wheels();
+        wait_until_timeout();
+        emergency_stop_after_timeout();
+        finish_centering();
+        return CenterResult{CenterOutcome::TimedOut};
+    };
+    auto side_active = [](Status status, device::AttitudeLimitSide side) {
+        return side == device::AttitudeLimitSide::LEFT_LOWER ? status.left_active
+                                                             : status.right_active;
+    };
+    auto take_center_trigger = [this]() -> std::optional<device::AttitudeLimitSide> {
         std::lock_guard<std::mutex> lk(event_mtx_);
-        centering_active_ = false;
+        auto out = centering_triggered_side_;
+        centering_triggered_side_.reset();
+        return out;
+    };
+    auto prepare_after_expected_trigger = [&]() -> bool {
+        return motion_ports_.prepare_center_motion && motion_ports_.prepare_center_motion();
+    };
+    auto wait_for_expected_trigger =
+        [&](device::AttitudeLimitSide expected,
+            float lower_rpm,
+            const char* command_failed_reason,
+            const char* unexpected_trigger_reason) -> std::optional<std::chrono::steady_clock::time_point> {
+        while (!timed_out()) {
+            if (const auto triggered = take_center_trigger(); triggered.has_value()) {
+                if (*triggered != expected) {
+                    spdlog::warn(
+                        "[AttitudeLimitService] lower_attitude_center unexpected trigger side");
+                    return std::nullopt;
+                }
+                return std::chrono::steady_clock::now();
+            }
+
+            const auto status = read_status();
+            if (status.left_active && status.right_active) {
+                spdlog::warn(
+                    "[AttitudeLimitService] lower_attitude_center both attitude limits active");
+                return std::nullopt;
+            }
+            if (!command_lower_wheels(lower_rpm)) {
+                spdlog::warn("[AttitudeLimitService] lower_attitude_center {}",
+                             command_failed_reason);
+                return std::nullopt;
+            }
+            std::this_thread::sleep_for(tick);
+        }
+        spdlog::warn("[AttitudeLimitService] lower_attitude_center {}",
+                     unexpected_trigger_reason);
+        return std::nullopt;
     };
 
-    auto initial_side = std::optional<device::AttitudeLimitSide>{};
-    auto deadline = std::chrono::steady_clock::now() + config.search_timeout;
-    // 阶段 1：确认当前触发侧。若进入恢复时两侧都未触发，则先向默认方向低速搜索。
-    while (std::chrono::steady_clock::now() < deadline && !initial_side.has_value()) {
-        const auto status = read_status();
-        if (status.left_active && status.right_active) {
-            stop_lower_wheels();
-            finish_centering();
-            return false;
-        }
-        initial_side = active_side(status);
-        if (!initial_side.has_value() && !command_lower_wheels(-std::abs(config.lower_rpm))) {
-            stop_lower_wheels();
-            finish_centering();
-            return false;
-        }
-        std::this_thread::sleep_for(config.tick);
-    }
-    if (!initial_side.has_value()) {
-        stop_lower_wheels();
-        finish_centering();
-        return false;
-    }
-
-    const auto plan = make_center_plan(*initial_side, config.lower_rpm);
-    int stable_release_samples = 0;
     auto release_at = std::chrono::steady_clock::time_point{};
-    deadline = std::chrono::steady_clock::now() + config.release_timeout;
-    // 阶段 2：沿离开触发侧的方向运动，记录触发侧稳定释放的时间点。
-    while (std::chrono::steady_clock::now() < deadline &&
-           stable_release_samples < config.stable_samples_required) {
-        if (!command_lower_wheels(plan.initial_lower_rpm)) {
-            stop_lower_wheels();
-            finish_centering();
-            return false;
-        }
-        const auto status = read_status();
-        if (status.left_active && status.right_active) {
-            stop_lower_wheels();
-            finish_centering();
-            return false;
-        }
-        const bool released = plan.release_side == device::AttitudeLimitSide::LEFT_LOWER
-                                  ? !status.left_active
-                                  : !status.right_active;
-        if (released) {
-            ++stable_release_samples;
-            if (release_at == std::chrono::steady_clock::time_point{}) {
-                release_at = std::chrono::steady_clock::now();
-            }
-        } else {
-            stable_release_samples = 0;
-            release_at = {};
-        }
-        std::this_thread::sleep_for(config.tick);
-    }
-    if (release_at == std::chrono::steady_clock::time_point{}) {
-        stop_lower_wheels();
-        finish_centering();
-        return false;
+    auto opposite_at = std::chrono::steady_clock::time_point{};
+    auto return_lower_rpm = 0.0f;
+    const auto initial_status = read_status();
+    if (initial_status.left_active && initial_status.right_active) {
+        return timeout_finish("both attitude limits active");
     }
 
-    auto opposite_at = std::chrono::steady_clock::time_point{};
-    deadline = std::chrono::steady_clock::now() + config.opposite_timeout;
-    // 阶段 3：继续同向运动直到对侧触发，release_at -> opposite_at 的时间代表全行程宽度。
-    while (std::chrono::steady_clock::now() < deadline &&
-           opposite_at == std::chrono::steady_clock::time_point{}) {
-        if (!command_lower_wheels(plan.initial_lower_rpm)) {
-            stop_lower_wheels();
-            finish_centering();
-            return false;
+    const auto initial_side = active_side(initial_status);
+    if (initial_side.has_value()) {
+        const auto plan = make_center_plan(*initial_side, config.lower_rpm);
+        int stable_release_samples = 0;
+        // 初始已有一侧触发：先向对侧运动，记录触发侧稳定释放的时间点。
+        while (!timed_out() && stable_release_samples < config.stable_samples_required) {
+            if (!command_lower_wheels(plan.initial_lower_rpm)) {
+                return timeout_finish("command release failed");
+            }
+            const auto status = read_status();
+            if (status.left_active && status.right_active) {
+                return timeout_finish("both attitude limits active");
+            }
+            const bool released = !side_active(status, plan.release_side);
+            if (released) {
+                ++stable_release_samples;
+                if (release_at == std::chrono::steady_clock::time_point{}) {
+                    release_at = std::chrono::steady_clock::now();
+                }
+            } else {
+                stable_release_samples = 0;
+                release_at = {};
+            }
+            std::this_thread::sleep_for(tick);
         }
-        const auto status = read_status();
-        if (status.left_active && status.right_active) {
-            stop_lower_wheels();
-            finish_centering();
-            return false;
+        if (release_at == std::chrono::steady_clock::time_point{}) {
+            return timeout_finish("release side not released");
         }
-        const bool opposite_active = plan.opposite_side == device::AttitudeLimitSide::LEFT_LOWER
-                                         ? status.left_active
-                                         : status.right_active;
-        if (opposite_active) {
-            opposite_at = std::chrono::steady_clock::now();
-            break;
+
+        const auto triggered_at = wait_for_expected_trigger(plan.opposite_side,
+                                                            plan.initial_lower_rpm,
+                                                            "command opposite search failed",
+                                                            "opposite side not found");
+        if (!triggered_at.has_value()) {
+            return timeout_finish("opposite side not found");
         }
-        std::this_thread::sleep_for(config.tick);
+        opposite_at = *triggered_at;
+        return_lower_rpm = plan.return_lower_rpm;
+    } else {
+        constexpr auto default_side = device::AttitudeLimitSide::RIGHT_LOWER;
+        constexpr auto opposite_side = device::AttitudeLimitSide::LEFT_LOWER;
+        const float default_lower_rpm = -std::abs(config.lower_rpm);
+        const float reverse_lower_rpm = std::abs(config.lower_rpm);
+
+        const auto first_at = wait_for_expected_trigger(default_side,
+                                                        default_lower_rpm,
+                                                        "command default search failed",
+                                                        "default side not found");
+        if (!first_at.has_value()) {
+            return timeout_finish("default side not found");
+        }
+        release_at = *first_at;
+        if (timed_out()) {
+            return timeout_finish("default side found after timeout");
+        }
+        if (!prepare_after_expected_trigger()) {
+            return timeout_finish("prepare after default trigger failed");
+        }
+
+        const auto second_at = wait_for_expected_trigger(opposite_side,
+                                                         reverse_lower_rpm,
+                                                         "command reverse search failed",
+                                                         "opposite side not found");
+        if (!second_at.has_value()) {
+            return timeout_finish("opposite side not found");
+        }
+        opposite_at = *second_at;
+        return_lower_rpm = default_lower_rpm;
     }
-    if (opposite_at == std::chrono::steady_clock::time_point{}) {
-        stop_lower_wheels();
-        finish_centering();
-        return false;
+
+    if (timed_out()) {
+        return timeout_finish("opposite side found after timeout");
+    }
+    if (!prepare_after_expected_trigger()) {
+        return timeout_finish("prepare after opposite trigger failed");
     }
 
     const auto return_duration =
         std::chrono::duration_cast<std::chrono::milliseconds>((opposite_at - release_at) / 2);
-    deadline = std::chrono::steady_clock::now() + return_duration;
+    const auto return_deadline = std::chrono::steady_clock::now() + return_duration;
     // 阶段 4：反向运行半程时间，回到两侧限位之间的中间位置。
-    while (std::chrono::steady_clock::now() < deadline) {
-        if (!command_lower_wheels(plan.return_lower_rpm)) {
-            stop_lower_wheels();
-            finish_centering();
-            return false;
+    while (!timed_out() && std::chrono::steady_clock::now() < return_deadline) {
+        if (!command_lower_wheels(return_lower_rpm)) {
+            return timeout_finish("command return failed");
         }
-        std::this_thread::sleep_for(config.tick);
+        std::this_thread::sleep_for(tick);
+    }
+    if (timed_out()) {
+        return timeout_finish("return motion not completed");
     }
 
     const bool stopped = stop_lower_wheels();
+    if (!stopped) {
+        spdlog::warn("[AttitudeLimitService] lower_attitude_center timed out: stop failed");
+        wait_until_timeout();
+        emergency_stop_after_timeout();
+        finish_centering();
+        return CenterResult{CenterOutcome::TimedOut};
+    }
     finish_centering();
-    return stopped;
+    return CenterResult{CenterOutcome::Completed};
 }
 
 }  // namespace robot::service

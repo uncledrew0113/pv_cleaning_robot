@@ -157,7 +157,6 @@ add_executable(hw_tests
   integration/hardware/walk_motor_group_hw_test.cc
   integration/hardware/system_hw_motion_tests.cc
   integration/hardware/system_hw_diagnostics_tests.cc
-  integration/hardware/system_hw_recovery_tests.cc
   integration/hardware/system_hw_main_flow_tests.cc
   integration/hardware/system_hw_attitude_tests.cc
   integration/hardware/hw_exit_guard.cc

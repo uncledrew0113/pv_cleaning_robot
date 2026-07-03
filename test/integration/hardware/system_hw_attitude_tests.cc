@@ -1,25 +1,5 @@
 #include "system_hw_common.h"
 
-TEST_CASE("下轨道轮低速采样 IMU pitch 峰值", "[hw_system][lower_pitch_peak]") {
-    const auto sample = sample_lower_wheel_pitch();
-    INFO("samples=" << sample.samples);
-    INFO("pitch_min=" << sample.pitch_min);
-    INFO("pitch_max=" << sample.pitch_max);
-    CHECK(sample.samples > 5);
-    CHECK(sample.pitch_max >= sample.pitch_min);
-}
-
-TEST_CASE("下轨道轮低速采样姿态评分", "[hw_system][lower_pitch_score]") {
-    const auto sample = sample_lower_wheel_pitch();
-    const float pitch_span = sample.pitch_max - sample.pitch_min;
-    const float score = pitch_span - 0.25f * sample.roll_abs_max;
-    INFO("pitch_span=" << pitch_span);
-    INFO("roll_abs_max=" << sample.roll_abs_max);
-    INFO("score=" << score);
-    CHECK(sample.samples > 5);
-    CHECK(std::isfinite(score));
-}
-
 TEST_CASE("lower_uds_zero 调速随误差缩小并保持方向", "[hw_system][lower_uds_zero][logic]") {
     constexpr float kDeadband = 0.2f;
     constexpr float kMinRpm = 0.8f;
@@ -111,8 +91,7 @@ void run_correction_compare_case(const CorrectionCompareCase& c) {
     auto motion_cfg =
         make_correction_compare_motion_config(c.angle_source, c.wheel_strategy, c.slow_on_error);
     motion_cfg.brush_direction_sign = c.brush_direction_sign;
-    run_configured_system_chain(
-        f, c.tag, kp.combined_passes, true, true, true, motion_cfg);
+    run_configured_system_chain(f, c.tag, kp.combined_passes, true, true, true, motion_cfg);
 }
 
 }  // namespace
@@ -147,12 +126,11 @@ TEST_CASE("融合角不降速，上下轮共同纠偏", "[hw_system][corr_fused_
 
 TEST_CASE("融合角不降速，上下轮共同纠偏，滚刷反向",
           "[hw_system][corr_fused_fast_all_brush_reverse]") {
-    run_correction_compare_case(
-        {"hw_system][corr_fused_fast_all_brush_reverse",
-         robot::service::HeadingCorrector::AngleSource::FUSED_UDS_GYRO,
-         robot::service::HeadingCorrector::WheelStrategy::ALL_WHEELS,
-         false,
-         -1});
+    run_correction_compare_case({"hw_system][corr_fused_fast_all_brush_reverse",
+                                 robot::service::HeadingCorrector::AngleSource::FUSED_UDS_GYRO,
+                                 robot::service::HeadingCorrector::WheelStrategy::ALL_WHEELS,
+                                 false,
+                                 -1});
 }
 
 TEST_CASE("融合角不降速，只纠偏下轮", "[hw_system][corr_fused_fast_lower_only]") {

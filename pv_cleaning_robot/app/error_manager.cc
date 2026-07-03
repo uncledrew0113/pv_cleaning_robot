@@ -13,43 +13,12 @@ constexpr uint32_t kConsecutiveErrorCounterLimit = 10;
 // 数据流 3 秒没有新帧，认为对应通信链路或数据源已停滞。
 constexpr uint64_t kStreamTimeoutMs = 3000;
 
-// 行走电机堵转必须连续保持 5 秒，才进入恢复，避免瞬时负载冲击误报。
-constexpr uint64_t kWalkStallDurationMs = 5000;
+// 行走电机堵转必须连续保持 2.5 秒才停机，避免瞬时负载冲击误报。
+constexpr uint64_t kWalkStallDurationMs = 2500;
 
-// 行走电机 60 秒内 3 次有效堵转，说明现场恢复无效，直接升级为故障停机。
-constexpr uint64_t kWalkStallWindowMs = 60000;
-constexpr size_t kWalkStallFaultLimit = 3;
-
-// GPS 卡滞 60 秒内出现 3 次，说明恢复无效，直接升级为故障停机。
-constexpr uint64_t kGpsStuckWindowMs = 60000;
-constexpr size_t kGpsStuckFaultLimit = 3;
-
-// 同一个恢复动作连续失败 3 次后停机；前两次允许自动重试。
-constexpr uint32_t kRecoveryFailureLimit = 3;
+// 姿态回中后 10 秒内同 key 再次触发，视为同一区域仍未通过。
+constexpr uint64_t kAttitudeRepeatGapMs = 8000;
 }  // namespace
-
-RecoveryPlanId ErrorManager::plan_for_component(ComponentKind kind) noexcept {
-    switch (kind) {
-    case ComponentKind::WalkMotorGroup:
-        return RecoveryPlanId::RecoverWalkMotorGroup;
-    case ComponentKind::BrushMotor:
-        return RecoveryPlanId::RecoverBrushMotor;
-    case ComponentKind::Bms:
-        return RecoveryPlanId::RecoverBms;
-    case ComponentKind::Gps:
-    case ComponentKind::GpsStuckService:
-        return RecoveryPlanId::RecoverGps;
-    case ComponentKind::Imu:
-        return RecoveryPlanId::RecoverImu;
-    case ComponentKind::AttitudeLimitSwitch:
-        return RecoveryPlanId::None;
-    }
-    return RecoveryPlanId::None;
-}
-
-bool ErrorManager::requires_robot_recovering(RecoveryPlanId plan) noexcept {
-    return plan != RecoveryPlanId::None;
-}
 
 bool ErrorManager::same_component(ComponentId lhs, ComponentId rhs) noexcept {
     return lhs.kind == rhs.kind && lhs.index == rhs.index;
@@ -60,9 +29,15 @@ bool ErrorManager::same_error_key(const ErrorFact& lhs, const ErrorFact& rhs) no
 }
 
 bool ErrorManager::is_motion_recovery_plan(RecoveryPlanId plan) noexcept {
-    return plan == RecoveryPlanId::RecoverWalkStall ||
-           plan == RecoveryPlanId::RecoverGpsStuckReverse ||
-           plan == RecoveryPlanId::RecoverAttitudeCenter;
+    return plan == RecoveryPlanId::RecoverAttitudeCenter ||
+           plan == RecoveryPlanId::RecoverAttitudeCenterThenReverse;
+}
+
+std::string ErrorManager::attitude_limit_key(const ErrorFact& fact) {
+    if (fact.detail.empty()) {
+        return "attitude_limit_key:unknown";
+    }
+    return fact.detail;
 }
 
 bool ErrorManager::should_suppress_locked(const ErrorFact& fact) const {
@@ -70,7 +45,6 @@ bool ErrorManager::should_suppress_locked(const ErrorFact& fact) const {
         return false;
     }
 
-    const auto active_plan = active_recovery_->plan;
     const auto active_component = active_recovery_->component;
 
     // 所有恢复动作都会暂停 GpsStuck；恢复期间出现的卡滞属于预期子错误。
@@ -78,18 +52,12 @@ bool ErrorManager::should_suppress_locked(const ErrorFact& fact) const {
         return true;
     }
 
-    // 设备恢复期间，同组件通信/设备错误只记录为同根因持续存在，不启动第二个恢复。
+    // 恢复期间同组件错误只记录为同根因持续存在，不启动第二个恢复动作。
     if (same_component(fact.component, active_component)) {
         if (fact.code == ErrorCode::DriverCommError ||
             fact.code == ErrorCode::BrushMotorFault) {
             return true;
         }
-    }
-
-    // GPS 恢复包含 gps_stuck_exec 停启，因此 GPS 卡滞和 GPS 通信都应被压制。
-    if (active_plan == RecoveryPlanId::RecoverGps &&
-        fact.component.kind == ComponentKind::Gps) {
-        return true;
     }
 
     return false;
@@ -108,57 +76,57 @@ ErrorDecision ErrorManager::decide(const ErrorFact& fact) {
         return decision;
     case ErrorCode::DriverCommError:
     case ErrorCode::BrushMotorFault:
-        decision.plan = plan_for_component(fact.component.kind);
-        decision.action = decision.plan == RecoveryPlanId::None ? ErrorAction::WarnOnly
-                                                                : ErrorAction::StartRecovery;
-        decision.requires_robot_recovering = requires_robot_recovering(decision.plan);
+        decision.action = ErrorAction::FaultStopped;
+        decision.latch_fault = true;
         return decision;
     case ErrorCode::WalkMotorStall:
-        walk_stall_event_times_.push_back(fact.timestamp_ms);
-        walk_stall_event_times_.erase(
-            std::remove_if(walk_stall_event_times_.begin(),
-                           walk_stall_event_times_.end(),
-                           [fact](uint64_t ts) {
-                               return fact.timestamp_ms >= ts &&
-                                      fact.timestamp_ms - ts > kWalkStallWindowMs;
-                           }),
-            walk_stall_event_times_.end());
-        if (walk_stall_event_times_.size() >= kWalkStallFaultLimit) {
-            decision.action = ErrorAction::FaultStopped;
-            decision.latch_fault = true;
-            return decision;
-        }
-        decision.action = ErrorAction::StartRecovery;
-        decision.plan = RecoveryPlanId::RecoverWalkStall;
-        decision.requires_robot_recovering = true;
+        decision.action = ErrorAction::FaultStopped;
+        decision.latch_fault = true;
         return decision;
     case ErrorCode::GpsStuck:
-        gps_stuck_event_times_.push_back(fact.timestamp_ms);
-        gps_stuck_event_times_.erase(
-            std::remove_if(gps_stuck_event_times_.begin(),
-                           gps_stuck_event_times_.end(),
-                           [fact](uint64_t ts) {
-                               return fact.timestamp_ms >= ts &&
-                                      fact.timestamp_ms - ts > kGpsStuckWindowMs;
-                           }),
-            gps_stuck_event_times_.end());
-        if (gps_stuck_event_times_.size() >= kGpsStuckFaultLimit) {
-            decision.action = ErrorAction::FaultStopped;
-            decision.latch_fault = true;
-            return decision;
-        }
-        decision.action = ErrorAction::StartRecovery;
-        decision.plan = RecoveryPlanId::RecoverGpsStuckReverse;
-        decision.requires_robot_recovering = true;
+        decision.action = ErrorAction::FaultStopped;
+        decision.latch_fault = true;
         return decision;
     case ErrorCode::AttitudeLimit:
-        decision.action = ErrorAction::StartRecovery;
-        decision.plan = RecoveryPlanId::RecoverAttitudeCenter;
-        decision.requires_robot_recovering = true;
-        return decision;
+        return decide_attitude_limit(fact);
     }
 
     decision.action = ErrorAction::WarnOnly;
+    return decision;
+}
+
+ErrorDecision ErrorManager::decide_attitude_limit(const ErrorFact& fact) {
+    ErrorDecision decision;
+    decision.component = fact.component;
+    decision.root_error = fact;
+
+    const auto key = attitude_limit_key(fact);
+    const bool repeated_after_recent_recovery =
+        attitude_recovery_state_.has_last_key &&
+        attitude_recovery_state_.last_key == key &&
+        fact.timestamp_ms >= attitude_recovery_state_.last_recovery_finished_ms &&
+        fact.timestamp_ms - attitude_recovery_state_.last_recovery_finished_ms <
+            kAttitudeRepeatGapMs;
+
+    if (!repeated_after_recent_recovery) {
+        attitude_recovery_state_.has_last_key = true;
+        attitude_recovery_state_.last_key = key;
+        attitude_recovery_state_.repeat_count = 1;
+    } else {
+        ++attitude_recovery_state_.repeat_count;
+    }
+
+    if (attitude_recovery_state_.repeat_count >= 4) {
+        decision.action = ErrorAction::FaultStopped;
+        decision.latch_fault = true;
+        return decision;
+    }
+
+    decision.action = ErrorAction::StartRecovery;
+    decision.requires_robot_recovering = true;
+    decision.plan = attitude_recovery_state_.repeat_count == 3
+                        ? RecoveryPlanId::RecoverAttitudeCenterThenReverse
+                        : RecoveryPlanId::RecoverAttitudeCenter;
     return decision;
 }
 
@@ -374,46 +342,17 @@ void ErrorManager::mark_recovery_started(const ErrorDecision& decision) {
 ErrorDecision ErrorManager::mark_recovery_finished(const RecoveryResultFact& result) {
     std::lock_guard<std::mutex> lk(mtx_);
     if (is_motion_recovery_plan(result.decision.plan)) {
+        if (result.decision.root_error.code == ErrorCode::AttitudeLimit) {
+            attitude_recovery_state_.has_last_key = true;
+            attitude_recovery_state_.last_key = attitude_limit_key(result.decision.root_error);
+            attitude_recovery_state_.last_recovery_finished_ms = result.timestamp_ms;
+        }
         active_recovery_.reset();
         return ErrorDecision{};
     }
 
-    if (result.ok) {
-        recovery_failure_state_ = RecoveryFailureState{};
-        active_recovery_.reset();
-        return ErrorDecision{};
-    }
-
-    const bool same_target = recovery_failure_state_.active &&
-                             recovery_failure_state_.plan == result.decision.plan &&
-                             same_component(recovery_failure_state_.component,
-                                            result.decision.component);
-
-    if (!same_target) {
-        recovery_failure_state_.active = true;
-        recovery_failure_state_.plan = result.decision.plan;
-        recovery_failure_state_.component = result.decision.component;
-        recovery_failure_state_.consecutive_failures = 0;
-    }
-    ++recovery_failure_state_.consecutive_failures;
-
-    if (recovery_failure_state_.consecutive_failures >= kRecoveryFailureLimit) {
-        ErrorFact fact{ErrorCode::RecoveryFailed,
-                       result.decision.component,
-                       result.reason,
-                       result.timestamp_ms};
-        active_recovery_.reset();
-        return submit_error_locked(fact);
-    }
-
-    // 前两次失败继续执行同一个恢复计划；放入队列让主循环按统一路径重试。
-    auto retry = result.decision;
-    retry.action = ErrorAction::StartRecovery;
-    retry.root_error.detail = result.reason;
-    retry.root_error.timestamp_ms = result.timestamp_ms;
-    pending_decisions_.push_back(retry);
-    active_recovery_ = retry;
-    return retry;
+    active_recovery_.reset();
+    return ErrorDecision{};
 }
 
 std::vector<ErrorDecision> ErrorManager::drain_decisions() {
@@ -431,9 +370,8 @@ bool ErrorHandlingService::is_task_running_state(const std::string& state) {
 }
 
 bool ErrorHandlingService::is_motion_recovery_plan(RecoveryPlanId plan) {
-    return plan == RecoveryPlanId::RecoverWalkStall ||
-           plan == RecoveryPlanId::RecoverGpsStuckReverse ||
-           plan == RecoveryPlanId::RecoverAttitudeCenter;
+    return plan == RecoveryPlanId::RecoverAttitudeCenter ||
+           plan == RecoveryPlanId::RecoverAttitudeCenterThenReverse;
 }
 
 bool ErrorHandlingService::recovery_plan_allowed(const std::string& state,
@@ -461,15 +399,8 @@ int ErrorHandlingService::decision_priority(const ErrorDecision& decision) noexc
     }
 
     switch (decision.plan) {
-    case RecoveryPlanId::RecoverWalkMotorGroup:
-    case RecoveryPlanId::RecoverBrushMotor:
-    case RecoveryPlanId::RecoverBms:
-    case RecoveryPlanId::RecoverGps:
-    case RecoveryPlanId::RecoverImu:
-        return 80;
-    case RecoveryPlanId::RecoverWalkStall:
-    case RecoveryPlanId::RecoverGpsStuckReverse:
     case RecoveryPlanId::RecoverAttitudeCenter:
+    case RecoveryPlanId::RecoverAttitudeCenterThenReverse:
         return 60;
     case RecoveryPlanId::None:
         return 0;
@@ -526,8 +457,8 @@ void ErrorHandlingService::update() {
 
     const std::string decision_state = ports_.current_state ? ports_.current_state() : state;
     if (!recovery_plan_allowed(decision_state, decision.plan)) {
-        // v1 只在明确允许的状态执行恢复：设备恢复允许 Idle 和 ExecutingMission；
-        // 运动恢复只允许 ExecutingMission。其余状态丢弃本轮恢复，持续错误会在后续诊断中再提交。
+        // v1 只允许任务运行态执行姿态恢复；其余状态丢弃本轮恢复，
+        // 持续错误会在后续诊断中按统一策略再次提交。
         return;
     }
     if (ports_.apply_error_decision) {

@@ -267,7 +267,8 @@ TEST_CASE("MotionService recovery reverse uses opposite cleaning direction and t
     f.can->sent_frames.clear();
 
     bool observed_reverse_command = false;
-    CHECK_FALSE(f.motion.reverse_for_recovery(50ms, 1ms, [&] {
+    const auto started = std::chrono::steady_clock::now();
+    CHECK(f.motion.reverse_for_recovery(50ms, 1ms, [&] {
         const auto diag = f.group->get_group_diagnostics();
         observed_reverse_command =
             diag.wheel[0].target_value == Approx(-210.0f) &&
@@ -276,8 +277,27 @@ TEST_CASE("MotionService recovery reverse uses opposite cleaning direction and t
             diag.wheel[3].target_value == Approx(210.0f);
         return true;
     }));
+    const auto elapsed = std::chrono::steady_clock::now() - started;
 
     REQUIRE(observed_reverse_command);
+    CHECK(elapsed >= 45ms);
+    const auto diag = f.group->get_group_diagnostics();
+    REQUIRE(diag.wheel[0].target_value == Approx(0.0f));
+    REQUIRE(diag.wheel[1].target_value == Approx(0.0f));
+    REQUIRE(diag.wheel[2].target_value == Approx(0.0f));
+    REQUIRE(diag.wheel[3].target_value == Approx(0.0f));
+}
+
+TEST_CASE("MotionService recovery reverse setup failure waits duration and returns success",
+          "[service][motion]") {
+    MotionFixture f;
+    f.can->send_result = false;
+
+    const auto started = std::chrono::steady_clock::now();
+    CHECK(f.motion.reverse_for_recovery(50ms, 1ms, [] { return false; }));
+    const auto elapsed = std::chrono::steady_clock::now() - started;
+
+    CHECK(elapsed >= 45ms);
     const auto diag = f.group->get_group_diagnostics();
     REQUIRE(diag.wheel[0].target_value == Approx(0.0f));
     REQUIRE(diag.wheel[1].target_value == Approx(0.0f));
@@ -306,7 +326,7 @@ TEST_CASE("MotionService attitude center motion commands only lower wheels",
     REQUIRE(stopped.wheel[3].target_value == Approx(0.0f));
 }
 
-TEST_CASE("MotionService attitude center command can resume after safety override",
+TEST_CASE("MotionService attitude center command does not clear safety override",
           "[service][motion]") {
     MotionFixture f;
 
@@ -323,8 +343,8 @@ TEST_CASE("MotionService attitude center command can resume after safety overrid
 
     const auto expected =
         robot::protocol::WalkMotorCanCodec::encode_group_speed(1u, 0.0f, 0.0f, -3.0f, -3.0f);
-    CHECK_FALSE(f.group->is_override_active());
-    CHECK(contains_frame(f.can->sent_frames, expected));
+    CHECK(f.group->is_override_active());
+    CHECK_FALSE(contains_frame(f.can->sent_frames, expected));
 }
 
 TEST_CASE("MotionService reports segment start failure on CAN send error", "[service][motion]") {

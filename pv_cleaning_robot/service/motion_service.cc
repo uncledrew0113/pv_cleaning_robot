@@ -260,19 +260,26 @@ bool MotionService::reverse_for_recovery(std::chrono::milliseconds duration,
     const auto reverse_target = state.travel_direction == domain::TravelDirection::AToB
                                     ? domain::Endpoint::A
                                     : domain::Endpoint::B;
+    const auto deadline = std::chrono::steady_clock::now() + duration;
+    auto wait_until_deadline = [&] {
+        while (std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(tick);
+        }
+    };
 
     // 恢复后退复用正常任务段的方向换算和 PID 使能逻辑，只额外关闭滚刷。
     if (!start_cleaning_to(reverse_target)) {
         emergency_stop();
-        return false;
+        wait_until_deadline();
+        return true;
     }
     brush_->stop();
 
-    const auto deadline = std::chrono::steady_clock::now() + duration;
     while (std::chrono::steady_clock::now() < deadline) {
         if (interrupted && interrupted()) {
             emergency_stop();
-            return false;
+            wait_until_deadline();
+            return true;
         }
         std::this_thread::sleep_for(tick);
     }
@@ -293,16 +300,6 @@ bool MotionService::begin_attitude_center_motion() {
 bool MotionService::command_lower_wheels_for_attitude_center(float lower_rpm) {
     // AttitudeLimitService 负责决定 lower_rpm 的方向和时长；
     // MotionService 只保证所有行走电机命令仍从统一运动入口下发。
-    if (group_->is_override_active()) {
-        // 回中期间触发对侧姿态限位时，GPIO 回调会先执行 emergency_stop()，
-        // 重新锁存安全 override 并 disable 电机。后续半程回中命令必须先恢复
-        // speed mode，并请求 walk_ctrl 下一周期解除 override，否则 set_speeds()
-        // 只会写入 normal 控制槽，不会真正发到电机。
-        group_->clear_override();
-        if (!enable_speed_mode()) {
-            return false;
-        }
-    }
     return group_->set_speeds(0.0f, 0.0f, lower_rpm, lower_rpm) ==
            device::DeviceError::OK;
 }

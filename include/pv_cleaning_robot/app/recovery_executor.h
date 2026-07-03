@@ -18,6 +18,16 @@ struct RecoveryResult {
     std::string reason;
 };
 
+enum class RecoveryStepOutcome {
+    Completed,
+    TimedOut,
+    InterruptedBySafetyOverride,
+};
+
+struct RecoveryStepResult {
+    RecoveryStepOutcome outcome{RecoveryStepOutcome::TimedOut};
+};
+
 /// @brief 执行 ErrorManager 选定的恢复流程。
 ///
 /// RecoveryExecutor 属于应用层，只编排恢复流程，不决定错误优先级、不切换状态机，
@@ -33,29 +43,8 @@ public:
         std::function<void()> resume_gps_stuck;
 
         std::function<bool()> stop_walk;
-        std::function<bool()> stop_walk_executor;
-        std::function<bool()> restart_walk_driver;
-        std::function<bool()> start_walk_executor;
-
-        std::function<bool()> stop_brush;
-        std::function<bool()> stop_brush_executor;
-        std::function<bool()> restart_brush_driver;
-        std::function<bool()> start_brush_executor;
-
-        std::function<bool()> stop_bms_executor;
-        std::function<bool()> restart_bms_driver;
-        std::function<bool()> start_bms_executor;
-
-        std::function<bool()> stop_gps_executor;
-        std::function<bool()> restart_gps_driver;
-        std::function<bool()> start_gps_executor;
-
-        std::function<bool()> stop_imu_executor;
-        std::function<bool()> restart_imu_driver;
-        std::function<bool()> start_imu_executor;
-
         std::function<bool()> reverse_walk_motion;
-        std::function<bool()> lower_attitude_center;
+        std::function<RecoveryStepResult()> lower_attitude_center;
     };
 
     explicit RecoveryExecutor(Ports ports);
@@ -68,10 +57,8 @@ private:
         std::function<bool()>* fn;
     };
 
-    RecoveryResult run_steps(std::initializer_list<Step> steps);
-    RecoveryResult run_with_gps_stuck_paused(std::initializer_list<Step> steps);
-    RecoveryResult recover_reverse_motion();
     RecoveryResult recover_attitude_center();
+    RecoveryResult recover_attitude_center_then_reverse();
     RecoveryResult fail_if_missing(bool present, const char* name) const;
     RecoveryResult fail_step(const char* name) const;
 

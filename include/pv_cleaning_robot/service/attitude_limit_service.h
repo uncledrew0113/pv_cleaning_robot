@@ -18,7 +18,7 @@ namespace robot::service {
 ///   - GPIO 触发时先立即调用急停端口，再记录事件，保证安全动作不等待主循环；
 ///   - 回中流程只编排限位开关判定和时序，实际电机命令通过 MotionPorts 交给 MotionService。
 class AttitudeLimitService {
-public:
+   public:
     enum class EventType {
         AttitudeLimit,
         AttitudeLimitBoth,
@@ -35,12 +35,22 @@ public:
     };
 
     struct CenterConfig {
-        float lower_rpm{5.0f};  ///< 下轮回中速度绝对值；方向由触发侧决定。
+        float lower_rpm{10.0f};  ///< 下轮回中速度绝对值；方向由触发侧决定。
         int stable_samples_required{2};  ///< 释放侧连续稳定样本数，避免电平抖动影响时间点。
-        std::chrono::milliseconds search_timeout{std::chrono::seconds(30)};  ///< 搜索初始触发侧超时。
-        std::chrono::milliseconds release_timeout{std::chrono::seconds(10)};  ///< 从触发侧退出的超时。
-        std::chrono::milliseconds opposite_timeout{std::chrono::seconds(30)};  ///< 搜索对侧触发超时。
-        std::chrono::milliseconds tick{std::chrono::milliseconds(20)};  ///< 回中轮询和命令刷新周期。
+        std::chrono::milliseconds overall_timeout{
+            std::chrono::seconds(30)};  ///< 回中策略整体超时。
+        std::chrono::milliseconds tick{
+            std::chrono::milliseconds(20)};  ///< 回中轮询和命令刷新周期。
+    };
+
+    enum class CenterOutcome {
+        Completed,
+        TimedOut,
+        InterruptedBySafetyOverride,
+    };
+
+    struct CenterResult {
+        CenterOutcome outcome{CenterOutcome::TimedOut};
     };
 
     struct MotionPorts {
@@ -68,10 +78,10 @@ public:
     ///
     /// 本流程使用轮询读取 GPIO 当前电平，不依赖中断精确时间戳；在 RK3576 GPIO 无可靠
     /// 中断能力的现场环境下，20ms tick 足够用于机械回中。
-    bool lower_attitude_center();
-    bool lower_attitude_center(const CenterConfig& config);
+    CenterResult lower_attitude_center();
+    CenterResult lower_attitude_center(const CenterConfig& config);
 
-private:
+   private:
     struct CenterPlan {
         device::AttitudeLimitSide release_side{device::AttitudeLimitSide::LEFT_LOWER};
         device::AttitudeLimitSide opposite_side{device::AttitudeLimitSide::RIGHT_LOWER};
@@ -92,6 +102,7 @@ private:
 
     mutable std::mutex event_mtx_;
     std::optional<Event> pending_event_;
+    std::optional<device::AttitudeLimitSide> centering_triggered_side_;
     bool centering_active_{false};
 };
 

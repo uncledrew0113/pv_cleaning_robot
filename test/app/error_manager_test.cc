@@ -15,31 +15,36 @@ ErrorFact fact(ErrorCode code, ComponentKind kind, uint64_t ts = 1000) {
 
 }  // namespace
 
-TEST_CASE("ErrorManager maps component driver errors to device recovery",
+TEST_CASE("ErrorManager maps component driver errors to FaultStopped",
           "[app][error_manager]") {
     ErrorManager manager;
 
     auto walk = manager.submit_error(
         fact(ErrorCode::DriverCommError, ComponentKind::WalkMotorGroup));
-    CHECK(walk.action == ErrorAction::StartRecovery);
-    CHECK(walk.plan == RecoveryPlanId::RecoverWalkMotorGroup);
+    CHECK(walk.action == ErrorAction::FaultStopped);
+    CHECK(walk.latch_fault);
+    CHECK(walk.plan == RecoveryPlanId::None);
 
     auto brush = manager.submit_error(
         fact(ErrorCode::DriverCommError, ComponentKind::BrushMotor));
-    CHECK(brush.action == ErrorAction::StartRecovery);
-    CHECK(brush.plan == RecoveryPlanId::RecoverBrushMotor);
+    CHECK(brush.action == ErrorAction::FaultStopped);
+    CHECK(brush.latch_fault);
+    CHECK(brush.plan == RecoveryPlanId::None);
 }
 
-TEST_CASE("ErrorManager maps watchdog thread names to recovery decisions",
+TEST_CASE("ErrorManager maps watchdog thread names to FaultStopped decisions",
           "[app][error_manager]") {
     ErrorManager manager;
 
     auto walk = manager.submit_watchdog_timeout("walk_ctrl", 1000);
-    CHECK(walk.plan == RecoveryPlanId::RecoverWalkMotorGroup);
-    CHECK(walk.requires_robot_recovering);
+    CHECK(walk.action == ErrorAction::FaultStopped);
+    CHECK(walk.latch_fault);
+    CHECK(walk.component.kind == ComponentKind::WalkMotorGroup);
 
     auto brush = manager.submit_watchdog_timeout("brush", 2000);
-    CHECK(brush.plan == RecoveryPlanId::RecoverBrushMotor);
+    CHECK(brush.action == ErrorAction::FaultStopped);
+    CHECK(brush.latch_fault);
+    CHECK(brush.component.kind == ComponentKind::BrushMotor);
 }
 
 TEST_CASE("ErrorManager maps attitude limit conflict to FaultStopped",
@@ -65,7 +70,8 @@ TEST_CASE("ErrorManager reports BMS comm error after update_count stalls for 3 s
 
     auto decisions = manager.drain_decisions();
     REQUIRE(decisions.size() == 1);
-    CHECK(decisions[0].plan == RecoveryPlanId::RecoverBms);
+    CHECK(decisions[0].action == ErrorAction::FaultStopped);
+    CHECK(decisions[0].root_error.component.kind == ComponentKind::Bms);
 }
 
 TEST_CASE("ErrorManager reports brush motor fault when brush fault code is nonzero",
@@ -79,7 +85,8 @@ TEST_CASE("ErrorManager reports brush motor fault when brush fault code is nonze
     auto decisions = manager.drain_decisions();
     REQUIRE(decisions.size() == 1);
     CHECK(decisions[0].root_error.code == ErrorCode::BrushMotorFault);
-    CHECK(decisions[0].plan == RecoveryPlanId::RecoverBrushMotor);
+    CHECK(decisions[0].action == ErrorAction::FaultStopped);
+    CHECK(decisions[0].plan == RecoveryPlanId::None);
 }
 
 TEST_CASE("ErrorManager reports brush comm error after 10 consecutive error increments",
@@ -99,7 +106,8 @@ TEST_CASE("ErrorManager reports brush comm error after 10 consecutive error incr
 
     auto decisions = manager.drain_decisions();
     REQUIRE(decisions.size() == 1);
-    CHECK(decisions[0].plan == RecoveryPlanId::RecoverBrushMotor);
+    CHECK(decisions[0].action == ErrorAction::FaultStopped);
+    CHECK(decisions[0].root_error.component.kind == ComponentKind::BrushMotor);
 }
 
 TEST_CASE("ErrorManager reports GPS comm error after sentence_count stalls for 3 seconds",
@@ -116,7 +124,8 @@ TEST_CASE("ErrorManager reports GPS comm error after sentence_count stalls for 3
 
     auto decisions = manager.drain_decisions();
     REQUIRE(decisions.size() == 1);
-    CHECK(decisions[0].plan == RecoveryPlanId::RecoverGps);
+    CHECK(decisions[0].action == ErrorAction::FaultStopped);
+    CHECK(decisions[0].root_error.component.kind == ComponentKind::Gps);
 }
 
 TEST_CASE("ErrorManager does not report GPS comm error when 1Hz data keeps updating",
@@ -148,7 +157,8 @@ TEST_CASE("ErrorManager reports IMU comm error after frame_count stalls for 3 se
 
     auto decisions = manager.drain_decisions();
     REQUIRE(decisions.size() == 1);
-    CHECK(decisions[0].plan == RecoveryPlanId::RecoverImu);
+    CHECK(decisions[0].action == ErrorAction::FaultStopped);
+    CHECK(decisions[0].root_error.component.kind == ComponentKind::Imu);
 }
 
 TEST_CASE("ErrorManager reports walk feedback comm error after feedback stalls for 3 seconds",
@@ -166,7 +176,8 @@ TEST_CASE("ErrorManager reports walk feedback comm error after feedback stalls f
 
     auto decisions = manager.drain_decisions();
     REQUIRE(decisions.size() == 1);
-    CHECK(decisions[0].plan == RecoveryPlanId::RecoverWalkMotorGroup);
+    CHECK(decisions[0].action == ErrorAction::FaultStopped);
+    CHECK(decisions[0].root_error.component.kind == ComponentKind::WalkMotorGroup);
 }
 
 TEST_CASE("ErrorManager reports one stalled walk feedback even when other wheels update",
@@ -199,92 +210,67 @@ TEST_CASE("ErrorManager reports one stalled walk feedback even when other wheels
     REQUIRE(decisions.size() == 1);
     CHECK(decisions[0].root_error.component.kind == ComponentKind::WalkMotorGroup);
     CHECK(decisions[0].root_error.component.index == 0);
-    CHECK(decisions[0].plan == RecoveryPlanId::RecoverWalkMotorGroup);
+    CHECK(decisions[0].action == ErrorAction::FaultStopped);
+    CHECK(decisions[0].plan == RecoveryPlanId::None);
 
     manager.update(snap, 4500);
     CHECK(manager.drain_decisions().empty());
 }
 
-TEST_CASE("ErrorManager reports walk stall after 5 seconds continuous stall",
+TEST_CASE("ErrorManager faults after 2.5 seconds continuous walk stall",
           "[app][error_manager]") {
     ErrorManager manager;
     DiagnosticsSnapshot snap{};
     snap.walk_stall_active = true;
 
     manager.update(snap, 1000);
-    manager.update(snap, 5999);
+    manager.update(snap, 3499);
     CHECK(manager.drain_decisions().empty());
-    manager.update(snap, 6000);
+    manager.update(snap, 3500);
 
     auto decisions = manager.drain_decisions();
     REQUIRE(decisions.size() == 1);
-    CHECK(decisions[0].plan == RecoveryPlanId::RecoverWalkStall);
+    CHECK(decisions[0].action == ErrorAction::FaultStopped);
+    CHECK(decisions[0].root_error.code == ErrorCode::WalkMotorStall);
 }
 
-TEST_CASE("ErrorManager faults after 3 walk stall recovery events in 1 minute",
+TEST_CASE("ErrorManager walk stall does not need repeated recovery events",
           "[app][error_manager]") {
     ErrorManager manager;
     DiagnosticsSnapshot snap{};
     snap.walk_stall_active = true;
 
-    for (uint64_t ts : {1000ull, 20000ull, 59000ull}) {
-        manager.update(snap, ts);
-        manager.update(snap, ts + 5000);
+    manager.update(snap, 1000);
+    manager.update(snap, 3500);
 
-        auto decisions = manager.drain_decisions();
-        REQUIRE(decisions.size() == 1);
-        if (ts != 59000ull) {
-            CHECK(decisions[0].action == ErrorAction::StartRecovery);
-            CHECK(decisions[0].plan == RecoveryPlanId::RecoverWalkStall);
-        } else {
-            CHECK(decisions[0].action == ErrorAction::FaultStopped);
-        }
-
-        // 每次堵转消失后才允许下一次上升沿重新计数。
-        snap.walk_stall_active = false;
-        manager.update(snap, ts + 6000);
-        CHECK(manager.drain_decisions().empty());
-        snap.walk_stall_active = true;
-    }
+    auto decisions = manager.drain_decisions();
+    REQUIRE(decisions.size() == 1);
+    CHECK(decisions[0].action == ErrorAction::FaultStopped);
+    CHECK(decisions[0].plan == RecoveryPlanId::None);
 }
 
-TEST_CASE("ErrorManager faults after 3 GPS stuck events in 1 minute",
+TEST_CASE("ErrorManager maps GPS stuck directly to FaultStopped",
           "[app][error_manager]") {
     ErrorManager manager;
 
-    for (uint64_t ts : {1000ull, 20000ull, 59000ull}) {
-        auto decision = manager.submit_error(
-            ErrorFact{ErrorCode::GpsStuck,
-                      ComponentId{ComponentKind::GpsStuckService, 0},
-                      "stuck",
-                      ts});
+    auto decision = manager.submit_error(ErrorFact{ErrorCode::GpsStuck,
+                                                   ComponentId{ComponentKind::GpsStuckService, 0},
+                                                   "stuck",
+                                                   1000});
 
-        if (ts != 59000ull) {
-            CHECK(decision.action == ErrorAction::StartRecovery);
-        } else {
-            CHECK(decision.action == ErrorAction::FaultStopped);
-        }
-        manager.drain_decisions();
-    }
+    CHECK(decision.action == ErrorAction::FaultStopped);
+    CHECK(decision.latch_fault);
+    CHECK(decision.plan == RecoveryPlanId::None);
 }
 
-TEST_CASE("ErrorManager faults only after 3 consecutive recovery failures",
+TEST_CASE("ErrorManager maps recovery failure fact to FaultStopped",
           "[app][error_manager]") {
     ErrorManager manager;
     auto decision = manager.submit_error(
-        fact(ErrorCode::DriverCommError, ComponentKind::WalkMotorGroup));
+        fact(ErrorCode::RecoveryFailed, ComponentKind::AttitudeLimitSwitch));
 
-    for (uint64_t attempt = 1; attempt <= 3; ++attempt) {
-        auto result = manager.mark_recovery_finished(
-            RecoveryResultFact{decision, false, "restart failed", 1000 + attempt});
-
-        if (attempt < 3) {
-            CHECK(result.action == ErrorAction::StartRecovery);
-            CHECK(result.plan == RecoveryPlanId::RecoverWalkMotorGroup);
-        } else {
-            CHECK(result.action == ErrorAction::FaultStopped);
-        }
-    }
+    CHECK(decision.action == ErrorAction::FaultStopped);
+    CHECK(decision.latch_fault);
 }
 
 TEST_CASE("ErrorManager deduplicates repeated stream timeout for the same component",
@@ -297,7 +283,8 @@ TEST_CASE("ErrorManager deduplicates repeated stream timeout for the same compon
     manager.update(snap, 4000);
     auto decisions = manager.drain_decisions();
     REQUIRE(decisions.size() == 1);
-    CHECK(decisions[0].plan == RecoveryPlanId::RecoverGps);
+    CHECK(decisions[0].action == ErrorAction::FaultStopped);
+    CHECK(decisions[0].root_error.component.kind == ComponentKind::Gps);
 
     manager.update(snap, 4100);
     CHECK(manager.drain_decisions().empty());
@@ -309,14 +296,15 @@ TEST_CASE("ErrorManager deduplicates repeated stream timeout for the same compon
     manager.update(snap, 7200);
     decisions = manager.drain_decisions();
     REQUIRE(decisions.size() == 1);
-    CHECK(decisions[0].plan == RecoveryPlanId::RecoverGps);
+    CHECK(decisions[0].action == ErrorAction::FaultStopped);
+    CHECK(decisions[0].root_error.component.kind == ComponentKind::Gps);
 }
 
-TEST_CASE("ErrorManager suppresses expected child errors while recovery is active",
+TEST_CASE("ErrorManager suppresses GPS stuck while attitude recovery is active",
           "[app][error_manager]") {
     ErrorManager manager;
     auto decision = manager.submit_error(
-        fact(ErrorCode::DriverCommError, ComponentKind::Gps));
+        fact(ErrorCode::AttitudeLimit, ComponentKind::AttitudeLimitSwitch));
     manager.drain_decisions();
     manager.mark_recovery_started(decision);
 
@@ -324,25 +312,15 @@ TEST_CASE("ErrorManager suppresses expected child errors while recovery is activ
         fact(ErrorCode::GpsStuck, ComponentKind::GpsStuckService, 2000));
     CHECK(gps_stuck.action == ErrorAction::Ignore);
 
-    DiagnosticsSnapshot snap{};
-    snap.gps.enabled = true;
-    snap.gps.last_update_ms = 1000;
-    manager.update(snap, 5000);
-    CHECK(manager.drain_decisions().empty());
-
     manager.mark_recovery_finished(RecoveryResultFact{decision, true, "", 6000});
-    manager.update(snap, 7000);
-    auto decisions = manager.drain_decisions();
-    REQUIRE(decisions.size() == 1);
-    CHECK(decisions[0].plan == RecoveryPlanId::RecoverGps);
 }
 
 TEST_CASE("ErrorManager does not fault on failed motion recovery result",
           "[app][error_manager]") {
     ErrorManager manager;
     auto decision = manager.submit_error(
-        fact(ErrorCode::WalkMotorStall, ComponentKind::WalkMotorGroup));
-    REQUIRE(decision.plan == RecoveryPlanId::RecoverWalkStall);
+        fact(ErrorCode::AttitudeLimit, ComponentKind::AttitudeLimitSwitch));
+    REQUIRE(decision.plan == RecoveryPlanId::RecoverAttitudeCenter);
     manager.drain_decisions();
 
     for (uint64_t attempt = 1; attempt <= 3; ++attempt) {
@@ -353,11 +331,109 @@ TEST_CASE("ErrorManager does not fault on failed motion recovery result",
     }
 }
 
-TEST_CASE("ErrorHandlingService executes device recovery while idle",
+TEST_CASE("ErrorManager escalates repeated attitude limit after recovery within 10 seconds",
+          "[app][error_manager]") {
+    ErrorManager manager;
+    const auto attitude = [](uint64_t ts) {
+        return ErrorFact{ErrorCode::AttitudeLimit,
+                         ComponentId{ComponentKind::AttitudeLimitSwitch, 0},
+                         "attitude_limit_key:target=A;mode=Cleaning",
+                         ts};
+    };
+
+    auto first = manager.submit_error(attitude(1000));
+    CHECK(first.action == ErrorAction::StartRecovery);
+    CHECK(first.plan == RecoveryPlanId::RecoverAttitudeCenter);
+    manager.drain_decisions();
+    manager.mark_recovery_started(first);
+    manager.mark_recovery_finished(RecoveryResultFact{first, true, "", 5000});
+
+    auto second = manager.submit_error(attitude(14999));
+    CHECK(second.action == ErrorAction::StartRecovery);
+    CHECK(second.plan == RecoveryPlanId::RecoverAttitudeCenter);
+    manager.drain_decisions();
+    manager.mark_recovery_started(second);
+    manager.mark_recovery_finished(RecoveryResultFact{second, true, "", 16000});
+
+    auto third = manager.submit_error(attitude(25999));
+    CHECK(third.action == ErrorAction::StartRecovery);
+    CHECK(third.plan == RecoveryPlanId::RecoverAttitudeCenterThenReverse);
+    manager.drain_decisions();
+    manager.mark_recovery_started(third);
+    manager.mark_recovery_finished(RecoveryResultFact{third, true, "", 26000});
+
+    auto fourth = manager.submit_error(attitude(35999));
+    CHECK(fourth.action == ErrorAction::FaultStopped);
+    CHECK(fourth.latch_fault);
+    CHECK(fourth.plan == RecoveryPlanId::None);
+}
+
+TEST_CASE("ErrorManager attitude repeat gap starts after recovery timeout finishes",
+          "[app][error_manager]") {
+    ErrorManager manager;
+    const auto attitude = [](uint64_t ts) {
+        return ErrorFact{ErrorCode::AttitudeLimit,
+                         ComponentId{ComponentKind::AttitudeLimitSwitch, 0},
+                         "attitude_limit_key:target=A;mode=Cleaning",
+                         ts};
+    };
+
+    auto first = manager.submit_error(attitude(1000));
+    REQUIRE(first.action == ErrorAction::StartRecovery);
+    REQUIRE(first.plan == RecoveryPlanId::RecoverAttitudeCenter);
+    manager.drain_decisions();
+    manager.mark_recovery_started(first);
+    manager.mark_recovery_finished(RecoveryResultFact{first, true, "center timed out", 31000});
+
+    auto second = manager.submit_error(attitude(40999));
+    CHECK(second.action == ErrorAction::StartRecovery);
+    CHECK(second.plan == RecoveryPlanId::RecoverAttitudeCenter);
+    manager.drain_decisions();
+    manager.mark_recovery_started(second);
+    manager.mark_recovery_finished(RecoveryResultFact{second, true, "", 41000});
+
+    auto third = manager.submit_error(attitude(50999));
+    CHECK(third.action == ErrorAction::StartRecovery);
+    CHECK(third.plan == RecoveryPlanId::RecoverAttitudeCenterThenReverse);
+}
+
+TEST_CASE("ErrorManager resets attitude repeat count when key changes or gap reaches 10 seconds",
+          "[app][error_manager]") {
+    ErrorManager manager;
+    const auto attitude = [](const char* key, uint64_t ts) {
+        return ErrorFact{ErrorCode::AttitudeLimit,
+                         ComponentId{ComponentKind::AttitudeLimitSwitch, 0},
+                         key,
+                         ts};
+    };
+
+    auto first = manager.submit_error(
+        attitude("attitude_limit_key:target=A;mode=Cleaning", 1000));
+    CHECK(first.plan == RecoveryPlanId::RecoverAttitudeCenter);
+    manager.drain_decisions();
+    manager.mark_recovery_started(first);
+    manager.mark_recovery_finished(RecoveryResultFact{first, true, "", 5000});
+
+    auto after_gap = manager.submit_error(
+        attitude("attitude_limit_key:target=A;mode=Cleaning", 15000));
+    CHECK(after_gap.action == ErrorAction::StartRecovery);
+    CHECK(after_gap.plan == RecoveryPlanId::RecoverAttitudeCenter);
+    manager.drain_decisions();
+    manager.mark_recovery_started(after_gap);
+    manager.mark_recovery_finished(RecoveryResultFact{after_gap, true, "", 16000});
+
+    auto changed_key = manager.submit_error(
+        attitude("attitude_limit_key:target=B;mode=Cleaning", 17000));
+    CHECK(changed_key.action == ErrorAction::StartRecovery);
+    CHECK(changed_key.plan == RecoveryPlanId::RecoverAttitudeCenter);
+}
+
+TEST_CASE("ErrorHandlingService applies driver fault while idle without recovery",
           "[app][error_manager]") {
     ErrorManager manager;
     std::optional<ErrorFact> pending =
         fact(ErrorCode::DriverCommError, ComponentKind::Bms);
+    int applied = 0;
     int recoveries = 0;
 
     ErrorHandlingService service(
@@ -371,7 +447,10 @@ TEST_CASE("ErrorHandlingService executes device recovery while idle",
             },
             [] { return DiagnosticsSnapshot{}; },
             [](bool) {},
-            [](const ErrorDecision&) {},
+            [&](const ErrorDecision& decision) {
+                ++applied;
+                CHECK(decision.action == ErrorAction::FaultStopped);
+            },
             [&](const ErrorDecision& decision) {
                 ++recoveries;
                 return RecoveryResultFact{decision, true, "", 1000};
@@ -381,7 +460,8 @@ TEST_CASE("ErrorHandlingService executes device recovery while idle",
         });
 
     service.update();
-    CHECK(recoveries == 1);
+    CHECK(applied == 1);
+    CHECK(recoveries == 0);
 }
 
 TEST_CASE("ErrorHandlingService skips motion recovery outside executing mission",
@@ -415,7 +495,7 @@ TEST_CASE("ErrorHandlingService skips motion recovery outside executing mission"
     CHECK(recoveries == 0);
 }
 
-TEST_CASE("ErrorHandlingService skips all recovery during self check",
+TEST_CASE("ErrorHandlingService applies hard driver fault during self check",
           "[app][error_manager]") {
     ErrorManager manager;
     manager.submit_error(fact(ErrorCode::DriverCommError, ComponentKind::Bms, 1000));
@@ -440,11 +520,11 @@ TEST_CASE("ErrorHandlingService skips all recovery during self check",
 
     service.update();
 
-    CHECK(applied == 0);
+    CHECK(applied == 1);
     CHECK(recoveries == 0);
 }
 
-TEST_CASE("ErrorHandlingService skips all recovery while charging", "[app][error_manager]") {
+TEST_CASE("ErrorHandlingService applies hard driver fault while charging", "[app][error_manager]") {
     ErrorManager manager;
     manager.submit_error(fact(ErrorCode::DriverCommError, ComponentKind::Bms, 1000));
     int applied = 0;
@@ -468,7 +548,7 @@ TEST_CASE("ErrorHandlingService skips all recovery while charging", "[app][error
 
     service.update();
 
-    CHECK(applied == 0);
+    CHECK(applied == 1);
     CHECK(recoveries == 0);
 }
 

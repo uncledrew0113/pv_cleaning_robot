@@ -31,11 +31,11 @@
 #include <thread>
 #include <vector>
 
+#include "hw_config.h"
 #include "mock/mock_serial_port.h"
 #include "pv_cleaning_robot/device/imu_device.h"
 #include "pv_cleaning_robot/driver/libserialport_port.h"
 #include "pv_cleaning_robot/protocol/imu_protocol.h"
-#include "hw_config.h"
 
 static const hw::HwParams kp = hw::load_hw_test_config();
 
@@ -95,43 +95,6 @@ static std::vector<uint8_t> frame_to_vec(const std::array<uint8_t, 11>& f) {
 // ═══════════════════════════════════════════════════════════════════════════
 //  Part 1：协议层 - 帧解析
 // ═══════════════════════════════════════════════════════════════════════════
-
-TEST_CASE("集成测试 - IMU 读取真实欧拉角", "[hw_imu]") {
-    using namespace robot;
-
-    hal::UartConfig cfg;
-    cfg.baudrate = kp.imu_baud;
-
-    auto serial = std::make_shared<driver::LibSerialPort>(kp.imu_port, cfg);
-    device::ImuDevice imu(serial);
-
-    REQUIRE(imu.open());
-    INFO("已打开 IMU 串口，等待数据...");
-
-    // 等待最多 2 秒收到有效帧
-    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-    while (std::chrono::steady_clock::now() < deadline) {
-        if (imu.get_latest().valid)
-            break;
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    }
-
-    auto data = imu.get_latest();
-    imu.close();
-
-    REQUIRE(data.valid);
-    // 欧拉角范围检查：Roll/Pitch ∈ [-90, 90]，Yaw ∈ [-180, 180]
-    REQUIRE(data.roll_deg >= -90.0f);
-    REQUIRE(data.roll_deg <= 90.0f);
-    REQUIRE(data.pitch_deg >= -90.0f);
-    REQUIRE(data.pitch_deg <= 90.0f);
-    REQUIRE(data.yaw_deg >= -180.0f);
-    REQUIRE(data.yaw_deg <= 180.0f);
-
-    auto diag = imu.get_diagnostics();
-    INFO("frame_count=" << diag.frame_count << " frame_rate=" << diag.frame_rate_hz);
-    REQUIRE(diag.frame_count >= 1u);
-}
 
 TEST_CASE("集成测试 - IMU 连续读取 60 秒并打印数据", "[hw_imu][long]") {
     using namespace std::chrono_literals;

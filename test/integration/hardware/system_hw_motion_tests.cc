@@ -136,7 +136,7 @@ TEST_CASE("P0 故障链路急停并由云端复位回 Idle", "[hw_system][p0_fau
 
     CHECK(f.controller->snapshot().state == "FaultStopped");
     CHECK(f.controller->snapshot().fault ==
-          static_cast<uint32_t>(robot::app::ErrorCode::AttitudeLimitBoth));
+          robot::domain::FaultCode::kAttitudeLimitBoth);
     const auto reset = f.controller->submit_command(
         robot::domain::RobotCommand{robot::domain::RobotCommandKind::FaultReset,
                                     robot::domain::CommandSource::Rpc,
