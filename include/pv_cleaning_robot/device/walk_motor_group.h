@@ -1,3 +1,10 @@
+/**
+ * @file walk_motor_group.h
+ * @brief 四轮行走电机组设备接口。
+ *
+ * 本模块封装 M1502E_111 四轮电机在单 CAN 总线上的批量控制、反馈接收、通信超时配置和
+ * 锁存式急停覆盖。上层只通过组接口下发同步运动命令，避免逐轮控制造成时间偏斜。
+ */
 #pragma once
 #include <array>
 #include <atomic>
@@ -31,12 +38,8 @@ namespace robot::device {
 ///   - emergency_override() 立即发送停车或反转帧，并锁存抑制 normal 心跳，
 ///     直到 clear_override() 被 update() 确认应用。
 ///
-/// 使用步骤：
-///   1. 构造时传入共享 CAN 总线实例和 id_base（默认 1）
-///   2. open() → set_mode_all(SPEED) → set_speeds(...)
-///   3. 周期调用 update() 维持当前 normal 控制帧心跳
 class WalkMotorGroup {
-   public:
+public:
     static constexpr int kWheelCount = 4;
 
     enum class ControlMode : uint8_t {
@@ -89,14 +92,14 @@ class WalkMotorGroup {
                             uint8_t termination_motor_id = 2u);
     ~WalkMotorGroup();
 
-    // ── 生命周期 ──────────────────────────────────────────────────────────
+    // 生命周期。
     /// 打开 CAN 总线，设置 4 路接收过滤器并启动单一后台接收线程；
     /// 若 comm_timeout_ms > 0，同时向每台电机写入通信超时。
     DeviceError open();
     /// 先安全停机，再停接收线程，最后关闭 CAN。
     void close();
 
-    // ── 模式控制 ──────────────────────────────────────────────────────────
+    // 模式控制。
     /// 向全部4台电机发出单mode帧（0x105 批量 1 帧）
     DeviceError set_mode_all(protocol::WalkMotorMode mode);
     /// 每轮指定不同模式（0x105 批量 1 帧）
@@ -119,7 +122,7 @@ class WalkMotorGroup {
     /// 固件版本查询广播（0x10B）
     DeviceError query_firmware();
 
-    // ── 同步批量给定 ─────────────────────────────────────────────────────
+    // 同步批量给定。
     /// 速度环给定：更新当前 normal 速度控制槽（-210 ~ +210 RPM）。
     DeviceError set_speeds(float lt, float rt, float lb, float rb);
     DeviceError set_speeds(const SpeedCmd& cmd);
@@ -134,7 +137,7 @@ class WalkMotorGroup {
     /// 位置环给定：更新当前 normal 位置控制槽（0 ~ 360°，絶对位置）
     DeviceError set_positions(float lt_deg, float rt_deg, float lb_deg, float rb_deg);
 
-    // ── 边缘紧急覆盖（优先级最高，立即生效）────────────────────────────
+    // 边缘紧急覆盖，优先级最高并立即生效。
     /// 立即发送停止或反转帧，并抑制 normal 心跳直到 clear_override() + update() 生效。
     /// @param reverse_rpm  反转速度（>0 表示反转，0 表示原地停止）
     DeviceError emergency_override(float reverse_rpm = 0.0f);
@@ -146,18 +149,18 @@ class WalkMotorGroup {
     /// 每当 clear_override() 在 update() 中真正生效一次，generation 加 1。
     uint32_t override_clear_generation() const;
 
-    // ── 状态读取（线程安全，无 I/O）────────────────────────────────────
+    // 状态读取，线程安全且不执行 I/O。
     WalkMotor::Status get_wheel_status(Wheel w) const;
     WalkMotor::Diagnostics get_wheel_diagnostics(Wheel w) const;
     GroupStatus get_group_status() const;
     GroupDiagnostics get_group_diagnostics() const;
 
-    // ── 周期心跳（建议由控制线程调用，50 ms）─────────────────────────
+    // 周期心跳，建议由 50 ms 控制线程调用。
     /// 心跳推进：更新 online 状态；在 Normal 模式重发当前 normal 控制帧。
     void update();
 
-   private:
-    // ── Normal / Override 控制状态 ──────────────────────────────────────
+private:
+    // Normal / Override 控制状态。
     // 普通控制采用“最新槽位”语义：set_* 更新当前 normal 控制帧，update() 仅重发最后一条。
     hal::CanFrame normal_ctrl_frame_{};
     bool has_normal_ctrl_frame_{false};
@@ -181,11 +184,10 @@ class WalkMotorGroup {
     std::array<WalkMotor::Diagnostics, kWheelCount> diag_{};
     std::array<std::chrono::steady_clock::time_point, kWheelCount> last_fb_time_{};
 
-    // 带统计的发帧计数
+    // 带统计的发帧计数。
     uint32_t ctrl_frame_count_{0};
     uint32_t ctrl_err_count_{0};
 
-    // ── 边缘紧急覆盖 ──────────────────────────────────────────────────
     // clear_override() 请求标志；在下一次 update() 中真正把状态从 override 切回 normal。
     bool clear_override_pending_{false};
     /// CAN TX 串行化锁：确保 emergency_override() 的安全覆盖帧与 update() 的 normal 心跳

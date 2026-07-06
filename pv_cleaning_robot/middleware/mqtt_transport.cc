@@ -1,3 +1,10 @@
+/**
+ * @file mqtt_transport.cc
+ * @brief MQTT 网络传输实现。
+ *
+ * 本文件封装 Paho MQTT 客户端连接、发布、订阅和消息回调分发。连接失败通过返回值和日志暴露，
+ * 由 NetworkManager 或上层服务决定重试策略。
+ */
 #include "pv_cleaning_robot/middleware/mqtt_transport.h"
 #include <mqtt/async_client.h>
 #include <mqtt/connect_options.h>
@@ -47,7 +54,7 @@ std::string granted_qos_to_string(const mqtt::token_ptr& token)
 
 }  // namespace
 
-// ── 消息到达回调 ──────────────────────────────────────────────────────────
+// 消息到达回调。
 class MqttCallback : public virtual mqtt::callback {
 public:
     explicit MqttCallback(MqttTransport* owner) : owner_(owner) {}
@@ -120,7 +127,7 @@ private:
     MqttTransport* owner_;
 };
 
-// ── MqttTransport 实现 ────────────────────────────────────────────────────
+// MqttTransport 实现。
 
 MqttTransport::MqttTransport(Config cfg)
     : cfg_(std::move(cfg))

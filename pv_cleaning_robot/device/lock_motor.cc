@@ -1,3 +1,10 @@
+/**
+ * @file lock_motor.cc
+ * @brief 锁止电机 GPIO 输出控制实现。
+ *
+ * 本文件通过两个 DO 脉冲控制开锁和关锁。由于设备没有机械反馈，本实现只把 GPIO 申请或
+ * 写入失败作为失败返回，不判断锁止机构是否真正到位。
+ */
 #include "pv_cleaning_robot/device/lock_motor.h"
 
 #include <chrono>

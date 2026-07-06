@@ -3,6 +3,12 @@
 #include <cstdio>
 #include <cstdlib>
 
+/**
+ * @file odrive_ascii_protocol.cc
+ * @brief ODrive ASCII 协议辅助实现。
+ *
+ * 本文件提供滚刷驱动命令构造和响应解析所需的字符串处理函数。
+ */
 #include "pv_cleaning_robot/protocol/odrive_ascii_protocol.h"
 
 namespace robot::protocol {

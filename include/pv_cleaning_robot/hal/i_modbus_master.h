@@ -4,6 +4,12 @@
  * 设备层通过该接口读写寄存器；具体串口生命周期和超时策略由 driver 实现负责。
  * close/open 前应先停止对应 update 线程，避免事务执行中重建串口句柄。
  */
+/**
+ * @file i_modbus_master.h
+ * @brief Modbus RTU 主站 HAL 抽象接口。
+ *
+ * 本接口定义寄存器读写、超时设置和错误状态查询，供设备层隔离 libmodbus 实现细节。
+ */
 #pragma once
 #include <cstdint>
 

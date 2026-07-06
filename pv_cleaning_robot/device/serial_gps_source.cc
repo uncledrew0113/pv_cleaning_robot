@@ -1,3 +1,10 @@
+/**
+ * @file serial_gps_source.cc
+ * @brief 串口 NMEA GPS 数据源实现。
+ *
+ * 本文件维护串口读取线程，按行解析 NMEA 报文并通过回调更新 GpsDevice 缓存。解析异常只
+ * 计为单句无效，不能让后台线程退出，以免 GPS 数据流长期停滞。
+ */
 #include "pv_cleaning_robot/device/gps_source.h"
 
 #include "pv_cleaning_robot/hal/i_serial_port.h"

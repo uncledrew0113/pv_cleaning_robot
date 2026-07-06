@@ -1,3 +1,10 @@
+/**
+ * @file brush_motor.h
+ * @brief 滚刷电机设备接口。
+ *
+ * 本模块通过 ODrive ASCII 串口协议控制滚刷转速、停止、清错和复位。周期 update() 负责读取
+ * 驱动状态；状态和诊断接口只返回缓存，不阻塞运动控制线程。
+ */
 #pragma once
 
 #include <atomic>
@@ -11,8 +18,9 @@
 
 namespace robot::device {
 
+/// @brief 滚刷电机设备封装。
 class BrushMotor {
-   public:
+public:
     /// 运行态快照。所有字段来自最近一次成功 update() 或控制命令缓存，不触发串口 I/O。
     struct Status {
         int actual_rpm{0};
@@ -59,7 +67,7 @@ class BrushMotor {
     /// 周期读取 ODrive 状态；应由独立 brush_exec 调度，避免阻塞运动控制线程。
     void update();
 
-   private:
+private:
     DeviceError write_ascii_locked(const char* line, size_t len);
     DeviceError request_ascii_locked(const char* line,
                                      size_t len,

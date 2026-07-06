@@ -1,3 +1,10 @@
+/**
+ * @file walk_motor_can_codec.h
+ * @brief M1502E_111 行走电机 CAN 协议编解码接口。
+ *
+ * 本文件定义行走电机标准帧 CAN ID、模式/故障枚举、状态结构和批量控制帧编解码函数。
+ * 协议常量来自电机通信协议，不应作为现场配置项。
+ */
 #pragma once
 #include "pv_cleaning_robot/hal/i_can_bus.h"
 #include <array>
@@ -6,7 +13,7 @@
 
 namespace robot::protocol {
 
-// ── CAN ID 常量（M1502E_111，标准帧，500 Kbps）──────────────────────────────
+// CAN ID 常量（M1502E_111，标准帧，500 Kbps）。
 /// 控制帧 ID（主控 → 电机）
 static constexpr uint32_t kWalkMotorCtrlIdGroup1  = 0x032u;  ///< 设定值，电机 1~4
 static constexpr uint32_t kWalkMotorCtrlIdGroup2  = 0x033u;  ///< 设定值，电机 5~8
@@ -25,7 +32,6 @@ static constexpr uint32_t kWalkMotorTermRespBase        = 0x390u;  ///< +motor_i
 static constexpr uint32_t kWalkMotorCommTimeoutRespBase = 0x2C8u;  ///< +motor_id（通信超时应答）
 static constexpr uint32_t kWalkMotorFwRespBase          = 0x32Cu;  ///< +motor_id（固件版本应答）
 
-// ── 枚举 ────────────────────────────────────────────────────────────────────
 /// 电机运行模式（0x105 帧 DATA 字段值）
 enum class WalkMotorMode : uint8_t {
     OPEN_LOOP = 0x00,  ///< 电压开环
@@ -68,7 +74,6 @@ enum class WalkMotorQueryTarget : uint8_t {
     MODE     = 0x06,
 };
 
-// ── 数据结构 ─────────────────────────────────────────────────────────────────
 /// 电机状态反馈（来自 0x96+motor_id 帧，默认 100 Hz 主动推送）
 struct WalkMotorStatus {
     float          speed_rpm;     ///< 实测转速（-210 ~ +210 RPM，分辨率 0.01 RPM）
@@ -97,7 +102,6 @@ struct WalkMotorFirmwareInfo {
     uint8_t day;
 };
 
-// ── 编解码器 ─────────────────────────────────────────────────────────────────
 /// M1502E_111 行走电机 CAN 帧编解码器
 ///
 /// 每个实例对应一台电机（motor_id 1~8）。
@@ -124,7 +128,7 @@ public:
     /// 状态反馈帧 CAN ID（0x96 + motor_id，即 0x97~0x9E）
     uint32_t status_can_id() const { return kWalkMotorStatusBase + motor_id_; }
 
-    // ── 发送帧编码 ──────────────────────────────────────────────────────────
+    // 发送帧编码。
 
     /// 速度环给定（-210 ~ +210 RPM）
     hal::CanFrame encode_speed(float rpm) const;
@@ -166,7 +170,7 @@ public:
     /// 读取通信超时（0x10A，DATA[2]=0x00 读模式）
     hal::CanFrame encode_read_comm_timeout() const;
 
-    // ── 8电机批量编码（static）──────────────────────────────────────────────
+    // 8 电机批量编码。
     /// 批量设置全部8台电机运行模式（0x105）— DATA[0~7] = motor 1~8 的模式值
     static hal::CanFrame encode_set_mode_batch(const std::array<WalkMotorMode, 8>& modes);
 
@@ -177,7 +181,7 @@ public:
     /// 批量设置全部8台电机 CAN 终端电阻（0x109）— DATA[0~7]=0/1 对应 motor 1~8
     static hal::CanFrame encode_set_termination_batch(const std::array<bool, 8>& enables);
 
-    // ── 4电机组同步批量编码（static）────────────────────────────────────────
+    // 4 电机组同步批量编码。
     /// 一帧同时设定同组4台电机的速度给定
     ///   id_base=1 → CAN ID 0x32，管控 motor 1~4
     ///   id_base=5 → CAN ID 0x33，管控 motor 5~8
@@ -201,7 +205,7 @@ public:
                                                float deg0, float deg1,
                                                float deg2, float deg3);
 
-    // ── 接收帧解码 ──────────────────────────────────────────────────────────
+    // 接收帧解码。
 
     /// 解析状态反馈帧（frame.id == 0x96 + motor_id），否则返回 nullopt
     std::optional<WalkMotorStatus>          decode_status(const hal::CanFrame& frame) const;

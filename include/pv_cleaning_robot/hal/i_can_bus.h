@@ -4,6 +4,12 @@
  * 设备层通过该接口访问 SocketCAN 或其他 CAN 实现。close()/recover() 前应先停止相关
  * 收发线程，避免句柄重建与实时控制路径并发。
  */
+/**
+ * @file i_can_bus.h
+ * @brief CAN 总线 HAL 抽象接口。
+ *
+ * 本接口屏蔽 SocketCAN 具体实现，供设备层发送和接收 CAN 标准帧，并暴露 Bus-Off 等总线状态。
+ */
 #pragma once
 #include <cstddef>
 #include <cstdint>

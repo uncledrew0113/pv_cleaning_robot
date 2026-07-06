@@ -1,3 +1,10 @@
+/**
+ * @file config_service.h
+ * @brief 运行配置和固定配置加载接口。
+ *
+ * ConfigService 负责加载 runtime/fixed 两份 JSON 配置，提供类型化读取、运行配置提升和
+ * 持久化写回。固定配置用于现场硬件参数，运行配置用于任务参数和云端更新。
+ */
 #pragma once
 
 #include <mutex>

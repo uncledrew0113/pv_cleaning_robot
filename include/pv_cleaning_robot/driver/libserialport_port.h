@@ -1,5 +1,6 @@
-/*
- * libserialport 串口驱动接口。
+/**
+ * @file libserialport_port.h
+ * @brief libserialport 串口驱动接口。
  *
  * 本实现通过读写锁保护 close() 与 read/write 并发边界。上层恢复流程仍应先停止
  * 对应 update 线程，再执行 close/open，避免设备协议事务被中途打断。
@@ -21,7 +22,7 @@ namespace robot::driver {
 ///
 /// 支持 UART 设备和硬件自动切换方向的 RS485 设备。
 class LibSerialPort final : public hal::ISerialPort {
-   public:
+public:
     /// @param port_name 串口设备路径，如 "/dev/ttyS1"
     /// @param baudrate  波特率，如 921600
     /// @param cfg       帧格式（省略则使用默认 8N1）
@@ -43,7 +44,7 @@ class LibSerialPort final : public hal::ISerialPort {
         return last_error_.load();
     }
 
-   private:
+private:
     std::string port_name_;
     hal::UartConfig config_;
     sp_port* port_{nullptr};

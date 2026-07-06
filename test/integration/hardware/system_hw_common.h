@@ -1,3 +1,10 @@
+/**
+ * @file system_hw_common.h
+ * @brief 真实硬件系统级集成测试公共夹具。
+ *
+ * 本文件搭建与主程序一致的核心硬件、服务和状态机组合，用于验证真实机器人上的运动、限位、
+ * 诊断和恢复链路。测试会实际驱动电机和 GPIO，运行前必须确认设备处于安全测试环境。
+ */
 #include <algorithm>
 #include <atomic>
 #include <catch2/catch.hpp>
@@ -586,8 +593,8 @@ class SystemHwFixture : public hw::IGracefulShutdown {
     }
 
     robot::app::CommandResult start_configured_assuming_primary_dock() {
-        // 保持旧 system_hw_test.cc 行为：启动配置任务时不读取当前真实限位，
-        // 而是按测试配置假定机器人从 primary_dock 语义出发。
+        // 系统级测试按配置假定机器人从 primary_dock 语义出发，避免测试夹具启动时读取
+        // 真实主限位导致用例间相互影响。
         position_state = position_at(kp.primary_dock);
         auto result = controller->submit_command(
             robot::domain::RobotCommand{robot::domain::RobotCommandKind::StartConfiguredMission,

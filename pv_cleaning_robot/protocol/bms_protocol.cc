@@ -1,10 +1,16 @@
+/**
+ * @file bms_protocol.cc
+ * @brief 嘉佰达 BMS 通用协议 V4 编解码实现。
+ *
+ * 本文件实现 BMS UART 帧校验、读写请求编码、基本信息/单体电压/版本解码和流式帧解析。
+ */
 #include "pv_cleaning_robot/protocol/bms_protocol.h"
 
 #include <algorithm>
 
 namespace robot::protocol {
 
-// == 协议帧常量 ================================================================
+// 协议帧常量。
 static constexpr uint8_t kStart      = 0xDD;
 static constexpr uint8_t kStop       = 0x77;
 static constexpr uint8_t kStatusRead = 0xA5;
@@ -15,15 +21,11 @@ static constexpr uint8_t kCmdCellVolt  = 0x04;
 static constexpr uint8_t kCmdVersion   = 0x05;
 static constexpr uint8_t kCmdMosCtrl   = 0xE1;
 
-// == 内部辅助 ==================================================================
-
 /// 从大端字节对读取 uint16
 static inline uint16_t be16(const uint8_t* p)
 {
     return static_cast<uint16_t>(static_cast<uint16_t>(p[0]) << 8u | p[1]);
 }
-
-// == 校验和 ====================================================================
 
 uint16_t BmsProtocol::calc_checksum(uint8_t cmd, uint8_t len, const uint8_t* data)
 {
@@ -34,8 +36,6 @@ uint16_t BmsProtocol::calc_checksum(uint8_t cmd, uint8_t len, const uint8_t* dat
         sum = static_cast<uint16_t>(sum + data[i]);
     return static_cast<uint16_t>(~sum + 1u);
 }
-
-// == 编码：主机 -> BMS =========================================================
 
 /// 构造读请求帧（7 字节）：DD A5 [cmd] 00 [chk_H] [chk_L] 77
 /// 读请求数据段为空，校验和只覆盖 cmd + len(=0)
@@ -77,7 +77,7 @@ std::array<uint8_t, 9> BmsProtocol::encode_mos_control(uint8_t mos_state)
             kStop};
 }
 
-// == 解码：BMS -> 主机 =========================================================
+// 解码：BMS -> 主机。
 
 std::optional<BmsBasicInfo>
 BmsProtocol::decode_basic_info(const uint8_t* data, uint8_t len)
@@ -162,7 +162,7 @@ BmsProtocol::decode_version(const uint8_t* data, uint8_t len)
     return std::string(reinterpret_cast<const char*>(data), len);
 }
 
-// == 流式帧解析器 ==============================================================
+// 流式帧解析器。
 
 void BmsProtocol::reset()
 {

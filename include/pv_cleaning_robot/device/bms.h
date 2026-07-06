@@ -1,3 +1,10 @@
+/**
+ * @file bms.h
+ * @brief 嘉佰达 BMS 设备接口。
+ *
+ * 本模块基于嘉佰达通用协议 V4 通过 UART 读取电池状态、保护标志和单体电压，并提供 MOS
+ * 控制命令。周期 update() 执行串口 I/O；所有 get_* 接口只读取缓存，便于诊断和上报线程调用。
+ */
 #pragma once
 #include <chrono>
 #include <atomic>
@@ -19,8 +26,8 @@ namespace robot::device {
  * 所有 get_*() 方法无阻塞 I/O，可在任意线程安全调用。
  */
 class BMS {
-   public:
-    // == 保护标志透传（直接复用 protocol 层常量）===============================
+public:
+    // 保护标志透传，直接复用 protocol 层常量。
     using ProtFlag = uint16_t;
     static constexpr ProtFlag PROT_CELL_OVERVOLT = protocol::kBmsProtCellOverVolt;
     static constexpr ProtFlag PROT_CELL_UNDERVOLT = protocol::kBmsProtCellUnderVolt;
@@ -35,13 +42,11 @@ class BMS {
     static constexpr ProtFlag PROT_SHORT_CIRCUIT = protocol::kBmsProtShortCircuit;
     static constexpr ProtFlag PROT_MOS_SOFT_LOCK = protocol::kBmsProtMosSoftLock;
 
-    // == MOS 控制命令值（透传 protocol 层常量）==================================
+    // MOS 控制命令值，直接复用 protocol 层常量。
     static constexpr uint8_t MOS_RELEASE_ALL = protocol::kBmosMosReleaseAll;
     static constexpr uint8_t MOS_CHARGE_CLOSE = protocol::kBmosMosChargeClose;
     static constexpr uint8_t MOS_DISCHARGE_CLOSE = protocol::kBmosMosDischargeClose;
     static constexpr uint8_t MOS_BOTH_CLOSE = protocol::kBmosMosBothClose;
-
-    // == 数据结构 ===============================================================
 
     /// 常驻生产数据（service 层及业务逻辑使用）
     struct BatteryData {
@@ -51,7 +56,7 @@ class BMS {
         float temperature_c;   ///< 所有 NTC 探头最高温度（℃）
         uint16_t alarm_flags;  ///< 保护/告警标志位（见 PROT_* 常量）
         bool charging;         ///< true=充电中
-        bool fully_charged;    ///< SOC≥阈值 且 |I|<0.5A 持续 3 秒
+        bool fully_charged;    ///< SOC≥充满阈值
         bool low_battery;      ///< SOC≤低电量阈值
         bool valid;            ///< 至少完成一次成功读取
     };
@@ -68,22 +73,22 @@ class BMS {
         float cell_voltage_min_v;                 ///< 最低单体电压（V）
         protocol::BmsCellVoltages cell_voltages;  ///< 各节电压（mV）
         std::string hw_version;  ///< 硬件版本字符串（0x05 读取）
-        // -- 通用计数 ---------------------------------------------------------
+        // 通用计数。
         uint32_t update_count;  ///< 成功 update() 次数
         uint32_t error_count;   ///< 通信错误（超时/校验失败）次数
     };
-
-    // == 构造 / 析构 ============================================================
 
     /// 嘉佰达通用协议 V4（UART / RS485）
     /// @param serial    已配置 9600-8-N-1 的串口实例（调用前无需 open）
     /// @param full_soc  视为充满的 SOC 阈值，默认 95%
     /// @param low_soc   低电量 SOC 阈值，默认 15%
-    BMS(std::shared_ptr<hal::ISerialPort> serial, float full_soc = 95.0f, float low_soc = 15.0f);
+    /// @param charging_current_threshold_a 视为充电中的最小正向电流，默认 0.05A
+    BMS(std::shared_ptr<hal::ISerialPort> serial,
+        float full_soc = 95.0f,
+        float low_soc = 15.0f,
+        float charging_current_threshold_a = 0.05f);
 
     ~BMS();
-
-    // == 生命周期 ===============================================================
 
     /// 打开通信接口（打开串口并读取硬件版本）
     DeviceError open();
@@ -97,12 +102,8 @@ class BMS {
     /// 清除协作停止标志；open()/恢复重启后允许重新执行通信事务。
     void clear_stop_request();
 
-    // == 周期更新（由外部 ~500ms 定时器调用）====================================
-
     /// 发送 0x03 请求读取基本信息；每 4 次额外发送 0x04 读取单体电压
     void update();
-
-    // == 数据访问（无 I/O，线程安全）============================================
 
     BatteryData get_data() const;
     Diagnostics get_diagnostics() const;
@@ -111,13 +112,11 @@ class BMS {
     bool is_low_battery() const;
     bool has_alarm() const;  ///< 任意保护标志位置位
 
-    // == 控制命令 ===============================================================
-
     /// 发送 MOS 控制命令（0xE1）：mos_state 见 MOS_* 常量
     DeviceError mos_control(uint8_t mos_state);
 
-   private:
-    // -- UART 通信路径 -------------------------------------------------------
+private:
+    // UART 通信路径。
     // 发送 req 帧后阻塞等待完整应答帧（含校验）；超时或校验失败返回 false 并累计通信错误。
     bool transact(const uint8_t* req, size_t req_len, int timeout_ms = 300);
     bool stop_requested() const;
@@ -125,20 +124,18 @@ class BMS {
     bool read_basic_info_uart();     // 命令 0x03
     bool read_cell_voltages_uart();  // 命令 0x04
 
-    // -- 成员变量 --------------------------------------------------------------
+    // 成员变量。
     std::shared_ptr<hal::ISerialPort> serial_;
     protocol::BmsProtocol parser_;
 
     float full_soc_;
     float low_soc_;
+    float charging_current_threshold_a_;
 
     mutable std::mutex mtx_;
     std::mutex uart_tx_mtx_;
     std::atomic<bool> stop_requested_{false};
     Diagnostics diag_{};
-
-    int full_charge_count_{0};
-    static constexpr int kFullChargeConfirm = 6;  // 6×500ms≈3s
 
     int update_cycle_{0};  // 每 4 次 update() 读一次单体电压（降低总线占用）
 

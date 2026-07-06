@@ -1,3 +1,10 @@
+/**
+ * @file robot_controller.h
+ * @brief 机器人任务状态机接口。
+ *
+ * RobotController 负责接受调度/RPC/本地命令，维护任务状态、限位切段、恢复返回和故障锁存。
+ * 硬件动作通过 ActionPorts 注入，并在状态机锁外执行，避免硬件 IO 阻塞状态查询和事件处理。
+ */
 #pragma once
 
 #include <condition_variable>
@@ -13,6 +20,7 @@
 
 namespace robot::app {
 
+/// @brief 机器人主任务状态。
 enum class RobotState {
     Idle,
     SelfChecking,
@@ -23,11 +31,13 @@ enum class RobotState {
     FaultStopped,
 };
 
+/// @brief 命令提交结果。
 struct CommandResult {
     bool accepted{false};
     std::string reason;
 };
 
+/// @brief 状态机只读快照，用于上报和测试断言。
 struct RobotControllerSnapshot {
     std::string state{"Idle"};
     std::optional<uint32_t> fault;
@@ -38,6 +48,12 @@ struct RobotControllerSnapshot {
     std::optional<domain::SegmentMode> current_segment_mode;
 };
 
+/**
+ * @brief 机器人任务状态机。
+ *
+ * 状态机运行在内部工作线程中，所有外部事件先进入队列再串行处理。状态更新受 mtx_ 保护；
+ * 电机、锁止和急停等外部动作通过端口回调在锁外执行。
+ */
 class RobotController {
 public:
     struct ActionPorts {

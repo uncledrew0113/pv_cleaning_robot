@@ -1,3 +1,9 @@
+/**
+ * @file hw_exit_guard.h
+ * @brief 真实硬件测试退出保护接口。
+ *
+ * 本模块在测试进程异常退出时尽量执行硬件停止动作，降低实机测试中电机持续运行风险。
+ */
 #pragma once
 
 #include <atomic>

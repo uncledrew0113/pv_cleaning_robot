@@ -1,7 +1,8 @@
-/*
- * Linux SocketCAN 驱动接口。
+/**
+ * @file linux_can_socket.h
+ * @brief Linux SocketCAN 驱动接口。
  *
- * 本类封装 CAN socket 打开、过滤器、收发、bus-off 检测和恢复。调用方必须保证
+ * 本类封装 CAN socket 打开、过滤器、收发、Bus-Off 检测和恢复。调用方必须保证
  * close()/recover() 前相关收发线程已经停止，避免文件描述符被内核复用后出现并发误用。
  */
 #pragma once
@@ -22,7 +23,7 @@ namespace robot::driver {
 ///   - `close()` 调用方**必须**保证所有 `send()` / `recv()` 线程已退出后再调用，
 ///     否则存在 FD 窜号或野指针风险
 class LinuxCanSocket final : public hal::ICanBus {
-   public:
+public:
     /// @param interface CAN 接口名，如 "can0"
     explicit LinuxCanSocket(std::string interface);
     ~LinuxCanSocket() override;
@@ -48,10 +49,9 @@ class LinuxCanSocket final : public hal::ICanBus {
         return tx_drop_count_.load(std::memory_order_relaxed);
     }
 
-   private:
+private:
     std::string interface_;
     std::atomic<int> cancel_fd_{-1};
-    // ── 线程安全合约 ──────────────────────────────────────────────────────────
     // socket_fd_ 使用 atomic<int> 避免并发读写的 C++ UB。
     // 但 close() 与 send()/recv() 之间的 TOCTOU（FD 窜号）由调用方保证：
     //   调用方必须在所有 send()/recv() 线程 join 后再调用 close()。

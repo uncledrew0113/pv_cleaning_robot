@@ -1,3 +1,10 @@
+/**
+ * @file thread_executor.cc
+ * @brief 周期任务线程执行器实现。
+ *
+ * 本文件实现周期调度、实时优先级、CPU 亲和性和任务循环节拍控制。任务执行异常记录日志，
+ * 线程存活性由 WatchdogMgr 在上层监控。
+ */
 #include "pv_cleaning_robot/middleware/thread_executor.h"
 #include <pthread.h>
 #include <sched.h>
@@ -207,7 +214,7 @@ void ThreadExecutor::loop()
         stopped_ = false;
     }
 
-    // ── 线程自身完成 RT 提权 + CPU 绑定 ──
+    // 线程启动后立即设置调度策略和 CPU 亲和性，避免周期任务长期运行在错误调度参数下。
     // 必须在线程内部设置：从外部设置存在启动竞争窗口，高负载时新线程可能已运行多次
     // update() 才被提权。
     if (config_.sched_policy == SCHED_FIFO || config_.sched_policy == SCHED_RR) {

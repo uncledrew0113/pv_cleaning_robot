@@ -1,3 +1,9 @@
+/**
+ * @file logger.cc
+ * @brief 进程日志初始化实现。
+ *
+ * 本文件集中创建 spdlog sink、日志目录和默认 logger，供应用启动早期统一使用。
+ */
 #include "pv_cleaning_robot/middleware/logger.h"
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/rotating_file_sink.h>

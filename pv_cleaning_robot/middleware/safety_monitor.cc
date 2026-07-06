@@ -1,3 +1,10 @@
+/**
+ * @file safety_monitor.cc
+ * @brief 主限位安全监控器实现。
+ *
+ * 本文件实现主限位触发后的 GPIO 首响急停、去抖确认、释放重装和备用轮询。急停路径运行在
+ * GPIO 回调线程中；监控线程只负责发布稳定到位事件。
+ */
 #include <pthread.h>
 #include <sched.h>
 #include <spdlog/spdlog.h>
@@ -6,6 +13,10 @@
 #include "pv_cleaning_robot/middleware/safety_monitor.h"
 
 namespace {
+constexpr int kSafetyMonitorPriority = 94;
+constexpr int kSafetyMonitorCpu = 4;
+constexpr int kSafetyMonitorPollMs = 5;
+
 robot::domain::Endpoint to_endpoint(robot::device::LimitSide side) {
     return side == robot::device::LimitSide::LEFT ? robot::domain::Endpoint::A
                                                   : robot::domain::Endpoint::B;
@@ -18,8 +29,6 @@ inline uint64_t now_ms() {
                                      .count());
 }
 
-constexpr uint64_t kLimitSettleStableMs = 30u;
-constexpr uint64_t kReleaseStableMs = 30u;
 }  // namespace
 
 namespace robot::middleware {
@@ -28,10 +37,22 @@ SafetyMonitor::SafetyMonitor(std::function<void()> emergency_stop,
                              std::shared_ptr<device::LimitSwitch> left_switch,
                              std::shared_ptr<device::LimitSwitch> right_switch,
                              EventBus& event_bus)
+    : SafetyMonitor(std::move(emergency_stop),
+                    std::move(left_switch),
+                    std::move(right_switch),
+                    event_bus,
+                    Config{}) {}
+
+SafetyMonitor::SafetyMonitor(std::function<void()> emergency_stop,
+                             std::shared_ptr<device::LimitSwitch> left_switch,
+                             std::shared_ptr<device::LimitSwitch> right_switch,
+                             EventBus& event_bus,
+                             Config config)
     : emergency_stop_(std::move(emergency_stop))
     , left_switch_(std::move(left_switch))
     , right_switch_(std::move(right_switch))
-    , event_bus_(event_bus) {}
+    , event_bus_(event_bus)
+    , config_(config) {}
 
 SafetyMonitor::~SafetyMonitor() {
     stop();
@@ -78,14 +99,11 @@ void SafetyMonitor::set_limit_settled_callback(std::function<void(domain::Endpoi
 }
 
 void SafetyMonitor::on_limit_trigger(domain::Endpoint endpoint) {
-    // ============================================================
     // 安全优先关键路径：此函数在 GPIO 监控线程中被调用。
     // 目标：从触发到急停指令发出不超过 50 ms。
-    //
     // 两端完全对称：立即安全停机 + 清除触发标志 + 置 pending 时间戳。
     // 稳定到位确认和状态机通知由 monitor_loop 负责。
     // pending 时间戳本身就是去重门闩：同一侧在 settled 前抑制重复触发。
-    // ============================================================
     std::atomic<uint64_t>& pending_ts =
         endpoint == domain::Endpoint::A ? pending_left_ts_ : pending_right_ts_;
     std::atomic<bool>& wait_release =
@@ -108,20 +126,21 @@ void SafetyMonitor::on_limit_trigger(domain::Endpoint endpoint) {
 }
 
 void SafetyMonitor::monitor_loop() {
-    // ── 线程自身完成 RT 提权 + CPU 绑定 ──
     // 线程创建后立即设置调度参数，避免安全监控循环长期运行在普通调度策略下。
     {
         sched_param sp{};
-        sp.sched_priority = 94;
+        sp.sched_priority = kSafetyMonitorPriority;
         int rc = pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp);
         if (rc != 0) {
             spdlog::warn("[SafetyMonitor] RT priority elevation failed: {}", strerror(rc));
         }
         cpu_set_t cpuset;
         CPU_ZERO(&cpuset);
-        CPU_SET(4, &cpuset);
+        CPU_SET(kSafetyMonitorCpu, &cpuset);
         if (pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset) != 0) {
-            spdlog::warn("[SafetyMonitor] CPU 4 affinity set failed: {}", strerror(errno));
+            spdlog::warn("[SafetyMonitor] CPU {} affinity set failed: {}",
+                         kSafetyMonitorCpu,
+                         strerror(errno));
         }
         pthread_setname_np(pthread_self(), "safety_mon");
     }
@@ -138,7 +157,7 @@ void SafetyMonitor::monitor_loop() {
             ts_atom.store(0, std::memory_order_release);
             return;
         }
-        if (now_ms() - t >= kLimitSettleStableMs) {
+        if (now_ms() - t >= config_.limit_settle_stable_ms) {
             ts_atom.store(0, std::memory_order_release);  // 清除 pending，防止同一次触发重复发布。
             event_bus_.publish(LimitSettledEvent{endpoint});
             if (limit_settled_cb_) {
@@ -165,7 +184,7 @@ void SafetyMonitor::monitor_loop() {
             release_ts.store(now, std::memory_order_release);
             return;
         }
-        if (now - candidate_ts >= kReleaseStableMs) {
+        if (now - candidate_ts >= config_.limit_release_stable_ms) {
             sw->clear_trigger();
             wait_release.store(false, std::memory_order_release);
             release_ts.store(0, std::memory_order_release);
@@ -176,11 +195,10 @@ void SafetyMonitor::monitor_loop() {
         check_release(left_wait_release_, left_release_ts_, left_switch_);
         check_release(right_wait_release_, right_release_ts_, right_switch_);
 
-        // ── 非阻塞并行去抖检查（前后端独立计时）──────────────────────
         check_settled(pending_left_ts_, domain::Endpoint::A, left_switch_);
         check_settled(pending_right_ts_, domain::Endpoint::B, right_switch_);
 
-        // ── 备用轮询路径：防止 GPIO 边沿回调丢失 ────────────────────
+        // 备用轮询路径：防止 GPIO 边沿回调丢失。
         // 注意：on_limit_trigger() 内部已调用 clear_trigger()，
         // 因此重复触发被抑制，无需额外去重计数器。
         if (left_switch_->is_triggered() && pending_left_ts_.load(std::memory_order_acquire) == 0) {
@@ -192,7 +210,7 @@ void SafetyMonitor::monitor_loop() {
         }
         // 5 ms 轮询；低于 GPIO 监控线程优先级，避免兜底路径反向压制首响急停。
         struct timespec poll_ts {
-            0, 5 * 1000 * 1000
+            0, kSafetyMonitorPollMs * 1000 * 1000
         };
         nanosleep(&poll_ts, nullptr);
     }

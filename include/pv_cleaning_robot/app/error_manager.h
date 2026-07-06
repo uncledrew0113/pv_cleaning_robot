@@ -1,3 +1,11 @@
+/**
+ * @file error_manager.h
+ * @brief 应用层错误仲裁和恢复调度接口。
+ *
+ * 本文件定义标准错误事实、错误决策、恢复计划和错误处理周期服务。ErrorManager
+ * 只基于诊断快照和外部上报事件做确定性仲裁，不直接访问硬件；ErrorHandlingService
+ * 负责把仲裁结果交给状态机和恢复执行器，避免恢复动作与错误判定耦合。
+ */
 #pragma once
 
 #include <cstdint>
@@ -13,6 +21,7 @@
 
 namespace robot::app {
 
+/// @brief 应用层统一错误码，用于屏蔽设备层不同错误来源。
 enum class ErrorCode {
     DriverCommError,
     WalkMotorStall,
@@ -23,6 +32,7 @@ enum class ErrorCode {
     RecoveryFailed,
 };
 
+/// @brief 错误所属组件类别，用于映射故障码和恢复策略。
 enum class ComponentKind {
     WalkMotorGroup,
     BrushMotor,
@@ -33,6 +43,7 @@ enum class ComponentKind {
     AttitudeLimitSwitch,
 };
 
+/// @brief 组件实例标识；index 用于区分同类多实例设备。
 struct ComponentId {
     ComponentKind kind{ComponentKind::WalkMotorGroup};
     int index{0};
@@ -49,6 +60,7 @@ struct ErrorFact {
     uint64_t timestamp_ms{0};
 };
 
+/// @brief ErrorManager 对单个错误事实给出的处理动作。
 enum class ErrorAction {
     Ignore,
     WarnOnly,
@@ -56,12 +68,14 @@ enum class ErrorAction {
     FaultStopped,
 };
 
+/// @brief 可由恢复执行器执行的恢复策略标识。
 enum class RecoveryPlanId {
     None,
     RecoverAttitudeCenter,
     RecoverAttitudeCenterThenReverse,
 };
 
+/// @brief 错误仲裁结果，供状态机和恢复执行器消费。
 struct ErrorDecision {
     ErrorAction action{ErrorAction::Ignore};
     RecoveryPlanId plan{RecoveryPlanId::None};
@@ -71,6 +85,7 @@ struct ErrorDecision {
     ErrorFact root_error{};
 };
 
+/// @brief 恢复执行器返回给 ErrorManager 的执行结果事实。
 struct RecoveryResultFact {
     ErrorDecision decision{};
     bool ok{false};
@@ -78,8 +93,26 @@ struct RecoveryResultFact {
     uint64_t timestamp_ms{0};
 };
 
+/**
+ * @brief 错误仲裁核心。
+ *
+ * 该类维护连续错误计数、数据流超时状态和姿态限位恢复重复计数。所有状态受内部互斥锁保护；
+ * 调用方可以从不同周期任务提交事件，但硬件 IO 和状态机切换必须在类外完成。
+ */
 class ErrorManager {
 public:
+    struct Config {
+        uint32_t consecutive_error_limit{10};
+        uint64_t stream_timeout_ms{3000};
+        uint64_t walk_stall_duration_ms{2500};
+        uint64_t attitude_repeat_gap_ms{8000};
+        uint32_t attitude_reverse_attempt_count{3};
+        uint32_t attitude_fault_count{4};
+    };
+
+    ErrorManager();
+    explicit ErrorManager(Config config);
+
     /// @brief 主动提交一个已发现的错误事实，并立即返回确定性处理决策。
     ErrorDecision submit_error(const ErrorFact& fact);
 
@@ -120,7 +153,7 @@ private:
     };
 
     // 姿态恢复重复计数只关注“同一任务段 key 恢复后是否很快再次触发”。
-    // key 由 ErrorFact.detail 传入，v1 不引入 GPS 距离判断，避免依赖低精度位置。
+    // key 由 ErrorFact.detail 传入；不使用 GPS 距离，避免低精度位置影响恢复判定。
     struct AttitudeRecoveryState {
         bool has_last_key{false};
         std::string last_key;
@@ -158,12 +191,13 @@ private:
     bool gps_stuck_snapshot_active_{false};
     AttitudeRecoveryState attitude_recovery_state_;
     std::optional<ErrorDecision> active_recovery_;
+    Config config_{};
 };
 
 /// @brief 错误处理调度服务：封装“采集错误、仲裁、执行恢复、通知状态机”的周期循环。
 ///
-/// 该类和 ErrorManager 放在同一文件中，避免把 v1 错误处理拆成过多模块。它只通过 Ports
-/// 访问外部对象，不直接持有设备、服务或控制器指针，便于组合根组装和单元测试。
+/// 该类只通过 Ports 访问外部对象，不直接持有设备、服务或控制器指针，便于组合根组装
+/// 和单元测试。恢复执行发生在周期服务内，状态切换仍由 RobotController 决定。
 class ErrorHandlingService : public middleware::IRunnable {
 public:
     struct Ports {

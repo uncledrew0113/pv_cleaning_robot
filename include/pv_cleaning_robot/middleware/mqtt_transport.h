@@ -1,3 +1,10 @@
+/**
+ * @file mqtt_transport.h
+ * @brief MQTT 网络传输接口。
+ *
+ * MqttTransport 封装 MQTT 连接、发布、订阅和回调分发，供 CloudService 与 NetworkManager 使用。
+ * TLS 校验策略和 broker 参数由配置提供。
+ */
 #pragma once
 #include "pv_cleaning_robot/middleware/i_network_transport.h"
 #include <atomic>

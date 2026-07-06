@@ -1,3 +1,10 @@
+/**
+ * @file i_network_transport.h
+ * @brief 网络传输抽象接口。
+ *
+ * 本接口统一 MQTT 与 LoRaWAN 等传输实现，供 CloudService 和 NetworkManager 以相同方式发布、
+ * 订阅和连接。
+ */
 #pragma once
 #include <atomic>
 #include <functional>

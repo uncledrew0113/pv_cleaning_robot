@@ -1,3 +1,10 @@
+/**
+ * @file walk_motor_group.cc
+ * @brief 四轮行走电机组设备实现。
+ *
+ * 本文件实现行走电机组的 CAN 批量命令、后台反馈接收、在线状态判定和锁存式急停覆盖。
+ * 发送路径通过锁串行化，确保急停覆盖帧不会与 normal 心跳交错。
+ */
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -10,7 +17,12 @@
 
 namespace robot::device {
 
-// ── 工具函数 ─────────────────────────────────────────────────────────────────
+namespace {
+constexpr int kGroupRecvPriority = 82;
+constexpr int kGroupRecvCpu = 5;
+constexpr int kCanRecvTimeoutMs = 50;
+constexpr int kBusOffBackoffMs = 200;
+}  // namespace
 
 static float clamp_rpm(float v) {
     return std::max(-210.0f, std::min(210.0f, v));
@@ -31,8 +43,6 @@ static hal::CanFrame make_group_termination_frame(uint8_t motor_id) {
     return protocol::WalkMotorCanCodec::encode_set_termination_batch(enables);
 }
 
-// ── 构造 / 析构 ─────────────────────────────────────────────────────────────
-
 WalkMotorGroup::WalkMotorGroup(std::shared_ptr<hal::ICanBus> can,
                                uint8_t id_base,
                                uint16_t comm_timeout_ms,
@@ -45,7 +55,7 @@ WalkMotorGroup::WalkMotorGroup(std::shared_ptr<hal::ICanBus> can,
     , termination_init_enabled_(termination_init_enabled)
     , termination_init_retry_count_(termination_init_retry_count)
     , termination_motor_id_(termination_motor_id)
-    // 4个 codec 实例分别对应 motor_id = id_base, id_base+1, id_base+2, id_base+3
+    // 4 个 codec 实例分别对应 motor_id = id_base, id_base+1, id_base+2, id_base+3。
     , codecs_{protocol::WalkMotorCanCodec(static_cast<uint8_t>(id_base + 0u)),
               protocol::WalkMotorCanCodec(static_cast<uint8_t>(id_base + 1u)),
               protocol::WalkMotorCanCodec(static_cast<uint8_t>(id_base + 2u)),
@@ -54,8 +64,6 @@ WalkMotorGroup::WalkMotorGroup(std::shared_ptr<hal::ICanBus> can,
 WalkMotorGroup::~WalkMotorGroup() {
     close();
 }
-
-// ── 生命周期 ─────────────────────────────────────────────────────────────────
 
 DeviceError WalkMotorGroup::open() {
     if (id_base_ != 1u && id_base_ != 5u) {
@@ -73,7 +81,7 @@ DeviceError WalkMotorGroup::open() {
     if (!can_->open())
         return DeviceError::NOT_OPEN;
 
-    // 设置4路精确接收过滤器（每台电机 0x96 + motor_id，11-bit 精确匹配）
+    // 设置 4 路精确接收过滤器（每台电机 0x96 + motor_id，11-bit 精确匹配）。
     hal::CanFilter filters[kWheelCount];
     for (int i = 0; i < kWheelCount; ++i) {
         filters[i] = {codecs_[i].status_can_id(), 0x7FFu};
@@ -189,8 +197,6 @@ void WalkMotorGroup::close() {
         can_->close();
 }
 
-// ── 内部发帧 ─────────────────────────────────────────────────────────────────
-
 DeviceError WalkMotorGroup::send_ctrl(const hal::CanFrame& frame) {
     // 通用发帧（无 override 检查）：供配置命令路径调用
     // （enable_all / set_mode_all / set_feedback_mode_all 等）。
@@ -213,8 +219,6 @@ DeviceError WalkMotorGroup::send_ctrl(const hal::CanFrame& frame) {
     ++ctrl_err_count_;
     return DeviceError::COMM_TIMEOUT;
 }
-
-// ── 模式控制 ─────────────────────────────────────────────────────────────────
 
 DeviceError WalkMotorGroup::set_mode_all(protocol::WalkMotorMode mode) {
     if (!can_->is_open())
@@ -248,8 +252,6 @@ DeviceError WalkMotorGroup::enable_all() {
 DeviceError WalkMotorGroup::disable_all() {
     return set_mode_all(protocol::WalkMotorMode::DISABLE);
 }
-
-// ── 同步批量给定 ─────────────────────────────────────────────────────────────
 
 DeviceError WalkMotorGroup::set_speeds(float lt, float rt, float lb, float rb) {
     if (closing_.load(std::memory_order_acquire) || !can_->is_open())
@@ -359,8 +361,6 @@ DeviceError WalkMotorGroup::query_firmware() {
     return send_ctrl(protocol::WalkMotorCanCodec::encode_query_firmware());
 }
 
-// ── 边缘紧急覆盖 ──────────────────────────────────────────────────────────────
-
 DeviceError WalkMotorGroup::emergency_override(float reverse_rpm) {
     if (closing_.load(std::memory_order_acquire) || !can_->is_open())
         return DeviceError::NOT_OPEN;
@@ -421,8 +421,6 @@ uint32_t WalkMotorGroup::override_clear_generation() const {
     return override_clear_generation_;
 }
 
-// ── 状态读取 ─────────────────────────────────────────────────────────────────
-
 WalkMotor::Status WalkMotorGroup::get_wheel_status(Wheel w) const {
     std::lock_guard<hal::PiMutex> lk(mtx_);
     return static_cast<WalkMotor::Status>(diag_[static_cast<int>(w)]);
@@ -451,8 +449,6 @@ WalkMotorGroup::GroupDiagnostics WalkMotorGroup::get_group_diagnostics() const {
     return gd;
 }
 
-// ── 周期心跳 ─────────────────────────────────────────────────────────────────
-
 void WalkMotorGroup::update() {
     if (closing_.load(std::memory_order_acquire))
         return;
@@ -460,7 +456,7 @@ void WalkMotorGroup::update() {
         return;
     auto now = std::chrono::steady_clock::now();
 
-    // ── 1. 更新各轮 online 状态 ──
+    // 更新各轮 online 状态。
     // 日志推迟到锁外：spdlog::warn 可能触发堆分配和 spdlog 内部锁，
     // 在 SCHED_FIFO-80 线程内调用会引入不可预知抖动。
     uint8_t offline_mask = 0u;  // bit i = motor i 本轮刚掉线
@@ -478,7 +474,7 @@ void WalkMotorGroup::update() {
             }
         }
     }
-    // 锁外打印：不在 RT 临界路径上
+    // 锁外打印，避免在 RT 临界路径内进入日志系统。
     for (int i = 0; i < kWheelCount; ++i) {
         if (offline_mask & (1u << i))
             spdlog::warn("[WalkMotorGroup] motor {} offline", id_base_ + i);
@@ -528,37 +524,37 @@ void WalkMotorGroup::update() {
     }
 }
 
-// ── 后台接收线程 ─────────────────────────────────────────────────────────────
-
 void WalkMotorGroup::recv_loop() {
-    // ── 线程自身完成 RT 提权 + CPU 绑定（SCHED_FIFO 82，CPU 5）──
+    // 接收线程使用 SCHED_FIFO 82 并绑定 CPU 5。
     // 设计为略高于 walk_ctrl(80)：优先消化新帧，降低控制拍读取陈旧状态概率。
     {
         sched_param sp{};
-        sp.sched_priority = 82;
+        sp.sched_priority = kGroupRecvPriority;
         int rc = pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp);
         if (rc != 0) {
             spdlog::warn("[WalkMotorGroup] RT priority elevation failed: {}", strerror(rc));
         }
         cpu_set_t cpuset;
         CPU_ZERO(&cpuset);
-        CPU_SET(5, &cpuset);
+        CPU_SET(kGroupRecvCpu, &cpuset);
         if (pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset) != 0) {
-            spdlog::warn("[WalkMotorGroup] CPU 5 affinity set failed: {}", strerror(errno));
+            spdlog::warn(
+                "[WalkMotorGroup] CPU {} affinity set failed: {}", kGroupRecvCpu, strerror(errno));
         }
         pthread_setname_np(pthread_self(), "group_recv");
     }
     hal::CanFrame frame;
     while (running_.load()) {
-        if (!can_->recv(frame, 50)) {
+        if (!can_->recv(frame, kCanRecvTimeoutMs)) {
             if (can_->is_bus_off()) {
-                spdlog::error("[WalkMotorGroup] Bus-Off detected, backing off 200ms");
-                std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                spdlog::error("[WalkMotorGroup] Bus-Off detected, backing off {}ms",
+                              kBusOffBackoffMs);
+                std::this_thread::sleep_for(std::chrono::milliseconds(kBusOffBackoffMs));
             }
             continue;
         }
 
-        // ── 检查是否为状态反馈帧（0x96+motor_id）──
+        // 检查是否为状态反馈帧（0x96 + motor_id）。
         for (int i = 0; i < kWheelCount; ++i) {
             auto maybe = codecs_[i].decode_status(frame);
             if (!maybe)

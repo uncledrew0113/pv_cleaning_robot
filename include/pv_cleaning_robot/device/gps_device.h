@@ -1,3 +1,10 @@
+/**
+ * @file gps_device.h
+ * @brief GPS 设备统一门面接口。
+ *
+ * 本模块统一串口 NMEA 与 gpsd 数据源，对上层提供线程安全的定位缓存和诊断计数。
+ * 配置命令仅适用于串口 NMEA 数据源，数据源线程/阻塞 I/O 由 request_stop()/close() 协作退出。
+ */
 #pragma once
 #include "pv_cleaning_robot/device/device_error.h"
 #include "pv_cleaning_robot/device/gps_source.h"
@@ -8,7 +15,8 @@
 
 namespace robot::device {
 
-/// @brief GPS 定位设备统一门面
+/// @brief GPS 定位设备统一门面。
+///
 /// 对上层暴露线程安全缓存访问，对下层可接串口 NMEA 或 gpsd TCP 数据源。
 class GpsDevice {
 public:
@@ -25,13 +33,13 @@ public:
     static std::shared_ptr<GpsDevice> create_gpsd(const GpsdSourceConfig& cfg);
     ~GpsDevice();
 
-    // ── 生命周期 ──────────────────────────────────────────────
+    // 生命周期。
     bool open();
     /// 请求 GPS 数据源后台线程/阻塞 I/O 尽快退出；不替代 close/open 生命周期管理。
     void request_stop();
     void close();
 
-    // ── 配置命令（向 GPS 模组发送 NMEA 配置句子）────────────
+    // 配置命令：向串口 GPS 模组发送 NMEA 配置句子。
     /// 设置 NMEA 输出频率（1/5/10 Hz），部分模组支持
     DeviceError set_output_rate(int hz);
 
@@ -41,7 +49,7 @@ public:
     /// 冷启动（清除所有辅助数据）
     DeviceError cold_restart();
 
-    // ── 数据访问（缓存，无 I/O，线程安全）────────────────────
+    // 数据访问：缓存读取，无 I/O，线程安全。
     GpsData     get_latest()     const;
     Diagnostics get_diagnostics() const;
 

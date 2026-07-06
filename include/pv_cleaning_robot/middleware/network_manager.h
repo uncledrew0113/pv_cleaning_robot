@@ -1,3 +1,9 @@
+/**
+ * @file network_manager.h
+ * @brief 多网络通道管理接口。
+ *
+ * NetworkManager 根据配置选择 MQTT、LoRaWAN 或双通道并行，并向上层提供统一发布订阅入口。
+ */
 #pragma once
 #include "pv_cleaning_robot/middleware/i_network_transport.h"
 #include <atomic>

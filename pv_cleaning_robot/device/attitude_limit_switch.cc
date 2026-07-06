@@ -1,3 +1,10 @@
+/**
+ * @file attitude_limit_switch.cc
+ * @brief 姿态限位接近传感器设备实现。
+ *
+ * 本文件只负责 GPIO 配置、低有效触发记录和回调转发。安全急停、错误提交和回中恢复由
+ * AttitudeLimitService 完成。
+ */
 #include "pv_cleaning_robot/device/attitude_limit_switch.h"
 
 #include <mutex>

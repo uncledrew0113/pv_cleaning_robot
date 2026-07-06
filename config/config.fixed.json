@@ -9,13 +9,14 @@
     "walk_motor": {
       "motor_id": 1,
       "comm_timeout_ms": 500,
+      "feedback_period_ms": 10,
       "termination_init_enabled": true,
       "termination_init_retry_count": 3,
       "termination_motor_id": 2
     }
   },
   "serial": {
-    "imu": { "port": "/dev/ttyS1", "baudrate": 9600 },
+    "imu": { "port": "/dev/ttyS1", "baudrate": 9600, "output_rate_hz": 100 },
     "brush": {
       "port": "/dev/ttyACM0",
       "baudrate": 115200,
@@ -46,7 +47,53 @@
       "pulse_ms": 200,
       "settle_ms": 8000
     },
-    "use_irq": false
+    "use_irq": false,
+    "input_debounce_ms": 2
+  },
+  "gps_stuck": {
+    "min_fix_quality": 2,
+    "min_satellites_used": 6,
+    "max_hdop": 1.2,
+    "max_pdop": 2.5,
+    "moving_speed_mps": 0.03,
+    "moving_speed_confirm_samples": 2,
+    "stuck_timeout_ms": 8000,
+    "sample_stale_timeout_ms": 3000
+  },
+  "recovery": {
+    "attitude_center": {
+      "lower_rpm": 10.0,
+      "stable_samples_required": 2,
+      "timeout_ms": 30000,
+      "tick_ms": 20
+    },
+    "reverse": {
+      "duration_ms": 2000,
+      "tick_ms": 20
+    }
+  },
+  "error_manager": {
+    "period_ms": 100,
+    "consecutive_error_limit": 10,
+    "stream_timeout_ms": 3000,
+    "walk_stall_duration_ms": 2500,
+    "attitude_repeat_gap_ms": 8000,
+    "attitude_reverse_attempt_count": 3,
+    "attitude_fault_count": 4
+  },
+  "safety": {
+    "limit_settle_stable_ms": 30,
+    "limit_release_stable_ms": 30
+  },
+  "bms": {
+    "poll_interval_ms": 500,
+    "charging_current_threshold_a": 0.05
+  },
+  "brush": {
+    "poll_interval_ms": 500
+  },
+  "installation": {
+    "brush_direction_sign": 1
   },
   "network": {
     "transport_mode": "mqtt_only",
@@ -80,8 +127,11 @@
     "mode": "development",
     "cloud_upload": true,
     "local_log": true,
+    "collect_interval_ms": 50,
     "publish_interval_active_ms": 1000,
     "publish_interval_idle_ms": 300000,
+    "local_log_interval_active_ms": 50,
+    "local_log_interval_idle_ms": 300000,
     "local_log_path": "data/pv_robot/logs/telemetry.jsonl",
     "local_log_max_bytes": 10485760,
     "local_log_max_files": 5

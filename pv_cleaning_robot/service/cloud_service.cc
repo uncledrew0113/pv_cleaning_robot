@@ -1,3 +1,10 @@
+/**
+ * @file cloud_service.cc
+ * @brief 云端 MQTT/ThingsBoard 通信服务实现。
+ *
+ * 本文件封装遥测、属性、RPC topic 的发布订阅和响应发送。协议 topic 字符串属于 ThingsBoard
+ * 固定约定，不作为现场配置项。
+ */
 #include "pv_cleaning_robot/service/cloud_service.h"
 
 #include <atomic>

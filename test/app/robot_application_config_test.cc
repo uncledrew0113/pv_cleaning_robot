@@ -44,7 +44,11 @@ TEST_CASE("RobotApplication motion config matches fused fast all correction prof
     }
   }
 })",
-                                        R"({})");
+                                        R"({
+  "installation": {
+    "brush_direction_sign": -1
+  }
+})");
 
     robot::service::ConfigService cfg(paths.runtime_path.string(), paths.fixed_path.string());
     REQUIRE(cfg.load());
@@ -54,6 +58,7 @@ TEST_CASE("RobotApplication motion config matches fused fast all correction prof
     CHECK(motion_cfg.clean_speed_rpm == Approx(20.0f));
     CHECK(motion_cfg.return_speed_rpm == Approx(20.0f));
     CHECK(motion_cfg.brush_rpm == 1000);
+    CHECK(motion_cfg.brush_direction_sign == -1);
     CHECK(motion_cfg.heading_pid_en);
     CHECK(motion_cfg.control_dt_s == Approx(0.05f));
     CHECK(motion_cfg.pid.kp == Approx(5.0f));

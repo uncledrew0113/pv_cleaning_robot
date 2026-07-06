@@ -1,3 +1,10 @@
+/**
+ * @file health_service.h
+ * @brief 健康状态和诊断上报服务接口。
+ *
+ * HealthService 基于 DiagnosticsCollector 快照生成云端遥测或本地 JSONL 记录。上报模式决定字段
+ * 粒度，不改变底层诊断采集频率。
+ */
 #pragma once
 #include "pv_cleaning_robot/device/walk_motor_group.h"
 #include "pv_cleaning_robot/device/brush_motor.h"

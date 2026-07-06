@@ -1,3 +1,10 @@
+/**
+ * @file attitude_limit_service.cc
+ * @brief 姿态限位监测与下轮回中恢复实现。
+ *
+ * 本文件实现姿态限位 GPIO 回调、事件缓存和下轮回中策略。回中策略使用整体超时保护，
+ * 单侧姿态限位触发作为测量信号，双侧姿态限位仍提交错误事件。
+ */
 #include "pv_cleaning_robot/service/attitude_limit_service.h"
 
 #include <cmath>

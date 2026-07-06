@@ -1,3 +1,10 @@
+/**
+ * @file imu_device.cc
+ * @brief WIT Motion IMU 设备实现。
+ *
+ * 本文件实现 IMU 串口读取线程、协议帧解析、缓存诊断和配置写寄存器命令。配置期间暂停后台
+ * 流式读取，避免 ACK 与实时姿态帧竞争串口响应。
+ */
 #include <algorithm>
 #include <chrono>
 #include <cstring>
@@ -10,6 +17,13 @@
 #include "pv_cleaning_robot/device/imu_device.h"
 
 namespace robot::device {
+
+namespace {
+constexpr int kImuReadPriority = 68;
+constexpr int kImuReadCpu = 6;
+constexpr int kImuConfigSleepMs = 10;
+constexpr int kImuSerialReadTimeoutMs = 20;
+}  // namespace
 
 ImuDevice::ImuDevice(std::shared_ptr<hal::ISerialPort> serial) : serial_(std::move(serial)) {}
 
@@ -90,19 +104,20 @@ ImuDevice::Diagnostics ImuDevice::get_diagnostics() const {
 }
 
 void ImuDevice::read_loop() {
-    // ── 线程自身完成 RT 提权 + CPU 绑定 ──
+    // 读取线程启动后立即设置实时优先级和 CPU 绑定，降低姿态数据采集抖动。
     {
         sched_param sp{};
-        sp.sched_priority = 68;
+        sp.sched_priority = kImuReadPriority;
         int rc = pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp);
         if (rc != 0) {
             spdlog::warn("[ImuDevice] RT priority elevation failed: {}", strerror(rc));
         }
         cpu_set_t cpuset;
         CPU_ZERO(&cpuset);
-        CPU_SET(6, &cpuset);
+        CPU_SET(kImuReadCpu, &cpuset);
         if (pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset) != 0) {
-            spdlog::warn("[ImuDevice] CPU 6 affinity set failed: {}", strerror(errno));
+            spdlog::warn(
+                "[ImuDevice] CPU {} affinity set failed: {}", kImuReadCpu, strerror(errno));
         }
         pthread_setname_np(pthread_self(), "imu_read");
     }
@@ -112,10 +127,10 @@ void ImuDevice::read_loop() {
 
     while (running_.load()) {
         if (is_configuring_.load(std::memory_order_acquire)) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            std::this_thread::sleep_for(std::chrono::milliseconds(kImuConfigSleepMs));
             continue;
         }
-        int n = serial_->read(byte_buf, sizeof(byte_buf), 20);
+        int n = serial_->read(byte_buf, sizeof(byte_buf), kImuSerialReadTimeoutMs);
         if (n > 0) {
             for (int i = 0; i < n; ++i) {
                 parser_.push_byte(byte_buf[i]);
@@ -123,7 +138,7 @@ void ImuDevice::read_loop() {
                     auto& frame = parser_.take_frame();
                     if (frame.valid) {
                         std::lock_guard<hal::PiMutex> lk(mtx_);
-                        // 拷贝协议层数据到设备层结构
+                        // 拷贝协议层数据到设备层缓存。
                         std::copy(std::begin(frame.accel),
                                   std::end(frame.accel),
                                   std::begin(diag_.accel));

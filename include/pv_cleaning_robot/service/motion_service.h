@@ -1,3 +1,10 @@
+/**
+ * @file motion_service.h
+ * @brief 机器人运动控制服务接口。
+ *
+ * MotionService 将任务段、姿态回中和恢复动作转换为行走电机、滚刷和 IMU 相关控制命令。
+ * 安全急停和恢复入口通过明确接口暴露，状态机只调用服务边界，不直接拼装电机协议。
+ */
 #pragma once
 #include <atomic>
 #include <chrono>

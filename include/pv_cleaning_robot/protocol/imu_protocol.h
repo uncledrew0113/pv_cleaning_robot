@@ -3,6 +3,12 @@
  *
  * 本文件只处理字节流解析和固定配置帧编码，不访问串口、不创建线程，也不决定设备恢复策略。
  */
+/**
+ * @file imu_protocol.h
+ * @brief WIT Motion IMU 协议编解码接口。
+ *
+ * 本文件负责 IMU 流式帧解析和配置命令编码。寄存器地址和命令码来自设备协议，属于协议常量。
+ */
 #pragma once
 #include <array>
 #include <cstddef>
@@ -58,7 +64,7 @@ class ImuProtocol {
     /// 清除缓冲区并重置解析状态。
     void reset();
 
-    // ── 配置命令编码（发送给 IMU 模组）──────────────────────────────────
+    // 配置命令编码，发送给 IMU 模组。
     // 所有写寄存器命令均为固定 5 字节：0xFF 0xAA [reg] [data_lo] [data_hi]
     using Cmd = std::array<uint8_t, 5>;
 

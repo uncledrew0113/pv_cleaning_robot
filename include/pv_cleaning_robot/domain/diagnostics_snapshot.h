@@ -1,3 +1,9 @@
+/**
+ * @file diagnostics_snapshot.h
+ * @brief 应用错误管理使用的诊断快照类型。
+ *
+ * 本文件定义设备数据流健康状态、行走电机堵转、滚刷故障和 GPS 卡滞等错误管理输入事实。
+ */
 #pragma once
 
 #include <array>

@@ -1,3 +1,10 @@
+/**
+ * @file data_cache.cc
+ * @brief 离线遥测数据缓存实现。
+ *
+ * 本文件使用 JSONL 文件追加缓存待发送数据，并通过确认 ID 删除已发送记录。容量压缩时保留最新
+ * 记录，防止网络长期不可用导致文件无限增长。
+ */
 #include "pv_cleaning_robot/middleware/data_cache.h"
 
 #include <algorithm>

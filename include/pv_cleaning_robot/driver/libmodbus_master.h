@@ -1,3 +1,10 @@
+/**
+ * @file libmodbus_master.h
+ * @brief libmodbus Modbus RTU 主站驱动接口。
+ *
+ * 本驱动封装同一 RTU 总线上的事务串行化、超时设置、错误码转换和断线重连。调用方负责
+ * 在设备层定义寄存器地址和业务协议语义。
+ */
 #pragma once
 #include <atomic>
 #include <mutex>
@@ -11,10 +18,11 @@ typedef struct _modbus modbus_t;
 
 namespace robot::driver {
 
-/// @brief libmodbus Modbus RTU 主站实现
-/// 内部完整处理：帧构建 → CRC16 → 发送 → 等待 → 校验 → 解包
+/// @brief libmodbus Modbus RTU 主站实现。
+///
+/// 内部通过互斥锁保证单总线事务串行执行，并将 libmodbus/errno 错误转换为 HAL 错误码。
 class LibModbusMaster final : public hal::IModbusMaster {
-   public:
+public:
     explicit LibModbusMaster(std::string port_name, hal::ModbusConfig config = hal::ModbusConfig{});
     ~LibModbusMaster() override;
 
@@ -32,23 +40,23 @@ class LibModbusMaster final : public hal::IModbusMaster {
         return last_error_.load();
     }
 
-   private:
+private:
     std::string port_name_;
     hal::ModbusConfig config_;
     modbus_t* ctx_{nullptr};
-    // is_open() 无锁读取，用 atomic 避免数据竞争
+    // is_open() 无锁读取，用 atomic 避免数据竞争。
     std::atomic<bool> connected_{false};
 
-    // 保证同一总线上事务的串行化和并发安全
+    // 保证同一总线上事务的串行化和并发安全。
     mutable std::mutex bus_mutex_;
     std::atomic<hal::ModbusResult> last_error_{hal::ModbusResult::OK};
 
-    // 内部泛型执行引擎：统一处理加锁、设置从站、执行动作、错误转换和重连机制
-    // 使用模板而非 std::function，避免 lambda 闭包 > 16 bytes 时的堆分配（500ms 热路径优化）
+    // 内部泛型执行引擎：统一处理加锁、设置从站、执行动作、错误转换和重连机制。
+    // 使用模板而非 std::function，避免固定周期采集路径产生堆分配。
     template<typename F>
     int execute_with_retry(int slave_id, const char* op_name, F&& modbus_func);
 
-    // 错误码转换辅助函数
+    // 错误码转换辅助函数。
     hal::ModbusResult map_errno_to_result(int err);
 };
 

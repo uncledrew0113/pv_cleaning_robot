@@ -1,3 +1,9 @@
+/**
+ * @file logger.h
+ * @brief 进程日志初始化接口。
+ *
+ * 本模块集中配置 spdlog 控制台和文件输出，供应用组合根在硬件初始化前完成日志准备。
+ */
 #pragma once
 #include <memory>
 #include <string>

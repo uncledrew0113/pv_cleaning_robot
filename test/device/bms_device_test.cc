@@ -249,23 +249,19 @@ TEST_CASE("BMS 设备层 - 低电量告警", "[device][bms]") {
     CHECK(bms.get_data().low_battery);
 }
 
-TEST_CASE("BMS 设备层 - 充满状态检测（需 kFullChargeConfirm 次连续确认）", "[device][bms]") {
+TEST_CASE("BMS 设备层 - 充满状态检测（SOC 达阈值即充满）", "[device][bms]") {
     auto mock = std::make_shared<BmsMockSerial>();
 
-    // SOC=96% >= full_soc=95%，电流接近 0（充电 MOS 关闭时 FET bit0=0）
+    // SOC=96% >= full_soc=95%，即使电流仍明显大于旧的 0.5A 阈值，也应判定充满。
     BasicInfoParams p;
     p.rsoc_pct = 96u;
-    p.current_raw = 0x0002u;  // 20 mA（|I| < 0.5A 阈值）
-    p.fet_control = 0x02u;    // 只有放电 MOS 开通，充电 MOS 关闭
+    p.current_raw = 100u;   // 1000 mA = 1A
+    p.fet_control = 0x03u;  // 充放电 MOS 均开通
     register_version(*mock);
     register_basic_info(*mock, p);
 
     device::BMS bms(mock, 95.0f, 15.0f);
     REQUIRE(bms.open() == device::DeviceError::OK);
-
-    // 首次 open() 内已读取一次，需再读 5 次凑满 kFullChargeConfirm=6
-    for (int i = 0; i < 5; ++i)
-        bms.update();
 
     CHECK(bms.is_fully_charged());
     CHECK(bms.get_data().fully_charged);

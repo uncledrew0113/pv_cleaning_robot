@@ -1,3 +1,9 @@
+/**
+ * @file hw_config_test.cc
+ * @brief 真实硬件测试配置加载测试。
+ *
+ * 本文件验证硬件测试配置文件解析和默认值回退，不直接操作硬件。
+ */
 #include <catch2/catch.hpp>
 
 #include <cstdlib>

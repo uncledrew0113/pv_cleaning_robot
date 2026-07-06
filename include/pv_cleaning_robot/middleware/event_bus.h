@@ -4,6 +4,13 @@
  * publish() 同步执行订阅者回调；需要异步处理时，订阅者应自行投递到对应线程队列。
  * 该类会被 GPIO 安全路径调用，因此发布热路径避免堆分配并使用 PiMutex 降低优先级反转风险。
  */
+/**
+ * @file event_bus.h
+ * @brief 进程内同步事件总线接口。
+ *
+ * EventBus 用于模块间发布轻量事件，例如限位稳定到位事件。回调在发布线程同步执行，
+ * 订阅者应避免长时间阻塞。
+ */
 #pragma once
 #include <algorithm>
 #include <array>

@@ -1,3 +1,10 @@
+/**
+ * @file libserialport_port.cc
+ * @brief libserialport 串口驱动实现。
+ *
+ * 本文件实现串口打开、配置、阻塞读写和资源关闭。close() 通过读写锁等待当前 I/O 完成，
+ * 避免底层 sp_port 指针被释放后仍被并发访问。
+ */
 #include <cerrno>
 #include <libserialport.h>
 #include <spdlog/spdlog.h>
@@ -25,10 +32,10 @@ bool LibSerialPort::check_sp_return(int ret_code, const char* operation) {
 }
 
 bool LibSerialPort::open() {
-    // 防止重入：若已打开则先安全关闭，避免旧 sp_port* 被覆写泻漏
+    // 防止重入：若已打开则先安全关闭，避免旧 sp_port* 被覆盖后泄漏。
     std::unique_lock<std::shared_mutex> lk(port_rwlock_);
 
-    // 防止重入：若已打开则先安全关闭（调用无锁内部函数避免死锁）
+    // 防止重入：若已打开则先安全关闭；调用无锁内部函数避免死锁。
     if (connected_.load()) {
         close_locked();
     }
@@ -46,7 +53,7 @@ bool LibSerialPort::open() {
         return false;
     }
 
-    // 配置阶段，失败则回滚
+    // 配置阶段失败则回滚，避免留下半初始化串口。
     if (!check_sp_return(sp_set_baudrate(port_, config_.baudrate), "sp_set_baudrate") ||
         !check_sp_return(sp_set_bits(port_, config_.data_bits), "sp_set_bits") ||
         !check_sp_return(sp_set_stopbits(port_, config_.stop_bits), "sp_set_stopbits")) {
@@ -99,7 +106,7 @@ void LibSerialPort::close() {
 }
 
 bool LibSerialPort::is_open() const {
-    // 通过 atomic 标志返回，避免裸指针读取引发的数据竞争
+    // 通过 atomic 标志返回，避免裸指针读取引发的数据竞争。
     return connected_.load();
 }
 
@@ -110,7 +117,7 @@ int LibSerialPort::write(const uint8_t* buf, size_t len, int timeout_ms) {
         return -1;
     }
 
-    // timeout_ms == 0 时 sp_blocking_write 退化为非阻塞写，由调用方明确传入
+    // timeout_ms == 0 时 sp_blocking_write 退化为非阻塞写，由调用方明确传入。
     int actual_timeout = (timeout_ms < 0) ? config_.write_timeout_ms : timeout_ms;
     sp_return ret = sp_blocking_write(port_, buf, len, actual_timeout);
 
@@ -153,8 +160,8 @@ int LibSerialPort::read(uint8_t* buf, size_t max_len, int timeout_ms) {
         int saved_errno = errno;
         char* err_msg = sp_last_error_message();
         spdlog::warn("[LibSerialPort] read error on {}: {}", port_name_, err_msg);
-        sp_free_error_message(err_msg);  // 必须调用！
-        // 当底层返回 SP_ERR_FAIL 且 errno 为 EIO 时，大概率是物理设备(如 ttyUSB)断开了
+        sp_free_error_message(err_msg);
+        // SP_ERR_FAIL + EIO 通常表示物理设备（如 ttyUSB）断开。
         if (ret == SP_ERR_FAIL && saved_errno == EIO) {
             last_error_.store(hal::UartResult::DISCONNECTED);
         } else {

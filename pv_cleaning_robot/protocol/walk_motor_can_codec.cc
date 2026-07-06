@@ -1,3 +1,10 @@
+/**
+ * @file walk_motor_can_codec.cc
+ * @brief M1502E_111 行走电机 CAN 协议编解码实现。
+ *
+ * 本文件实现速度、电流、位置、模式、反馈方式、终端电阻、通信超时和状态帧的协议编码/解码。
+ * 编解码函数不执行 CAN I/O，只操作帧数据。
+ */
 #include <cmath>
 #include <cstring>
 
@@ -6,7 +13,7 @@
 
 namespace robot::protocol {
 
-// ── 量化比例常量 ────────────────────────────────────────────────────────────────
+// 量化比例常量。
 /// int16 范围 -21000~21000 对应 -210~210 RPM
 static constexpr float kSpeedScale = 100.0f;
 /// int16 范围 -32767~32767 对应 -33~33 A
@@ -14,7 +21,6 @@ static constexpr float kCurrentScale = 32767.0f / 33.0f;
 /// uint16 范围 0~32767 对应 0~360°
 static constexpr float kPosScale = 32767.0f / 360.0f;
 
-// ── 构造函数 ───────────────────────────────────────────────────────────────────
 WalkMotorCanCodec::WalkMotorCanCodec(uint8_t motor_id) : motor_id_(motor_id) {
     // motor_id 1~4 使用 0x32；motor_id 5~8 使用 0x33
     ctrl_id_ = (motor_id_ <= 4u) ? kWalkMotorCtrlIdGroup1 : kWalkMotorCtrlIdGroup2;
@@ -24,7 +30,6 @@ WalkMotorCanCodec::WalkMotorCanCodec(uint8_t motor_id) : motor_id_(motor_id) {
     slot_ = static_cast<uint8_t>(((motor_id_ - 1u) % 4u) * 2u);
 }
 
-// ── 内部辅助 ────────────────────────────────────────────────────────────────────
 hal::CanFrame WalkMotorCanCodec::make_ctrl_frame(int16_t value) const {
     hal::CanFrame frame;
     frame.id = ctrl_id_;
@@ -36,7 +41,6 @@ hal::CanFrame WalkMotorCanCodec::make_ctrl_frame(int16_t value) const {
     return frame;
 }
 
-// ── 控制帧编码 ───────────────────────────────────────────────────────────────────
 hal::CanFrame WalkMotorCanCodec::encode_speed(float rpm) const {
     return make_ctrl_frame(static_cast<int16_t>(rpm * kSpeedScale));
 }
@@ -108,7 +112,7 @@ hal::CanFrame WalkMotorCanCodec::encode_query_firmware() {
     return frame;
 }
 
-// ── 设置电机 ID / 多功能配置帧 ─────────────────────────────────────────────
+// 设置电机 ID 和多功能配置帧。
 
 hal::CanFrame WalkMotorCanCodec::encode_set_node_id() const {
     hal::CanFrame frame;
@@ -154,7 +158,7 @@ hal::CanFrame WalkMotorCanCodec::encode_read_comm_timeout() const {
     return frame;
 }
 
-// ── 4电机组同步批量编码 ────────────────────────────────────────────────────────
+// 4 电机组同步批量编码。
 
 /// 将4个 int16 值按 big-endian 顺序打包进8字节 data[]
 static void pack_group(uint8_t* data, int16_t v0, int16_t v1, int16_t v2, int16_t v3) {
@@ -231,7 +235,7 @@ hal::CanFrame WalkMotorCanCodec::encode_group_position(uint8_t id_base,
     return frame;
 }
 
-// ── 8电机批量编码 ──────────────────────────────────────────────────────────────────
+// 8 电机批量编码。
 
 hal::CanFrame WalkMotorCanCodec::encode_set_mode_batch(const std::array<WalkMotorMode, 8>& modes) {
     hal::CanFrame frame;
@@ -260,7 +264,7 @@ hal::CanFrame WalkMotorCanCodec::encode_set_termination_batch(const std::array<b
     return frame;
 }
 
-// ── 反馈帧解码 ──────────────────────────────────────────────────────────────────
+// 反馈帧解码。
 std::optional<WalkMotorStatus> WalkMotorCanCodec::decode_status(const hal::CanFrame& frame) const {
     if (frame.id != status_can_id() || frame.len < 8)
         return std::nullopt;

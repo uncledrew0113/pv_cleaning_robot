@@ -1,3 +1,9 @@
+/**
+ * @file network_manager.cc
+ * @brief 多网络通道管理实现。
+ *
+ * 本文件根据运行模式在 MQTT 和 LoRaWAN 之间选择发布路径，并向上层提供统一订阅接口。
+ */
 #include "pv_cleaning_robot/middleware/network_manager.h"
 
 namespace robot::middleware {

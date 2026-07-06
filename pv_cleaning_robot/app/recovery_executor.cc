@@ -1,3 +1,10 @@
+/**
+ * @file recovery_executor.cc
+ * @brief 应用层恢复流程执行器实现。
+ *
+ * 本文件只按恢复计划调用外部端口，不直接判断硬件是否已经真正恢复。后续诊断快照会继续
+ * 驱动 ErrorManager 做错误闭环。
+ */
 #include "pv_cleaning_robot/app/recovery_executor.h"
 
 #include <utility>

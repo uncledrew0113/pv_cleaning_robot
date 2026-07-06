@@ -1,3 +1,10 @@
+/**
+ * @file heading_corrector.cc
+ * @brief 航向纠偏控制器实现。
+ *
+ * 本文件读取 UDS yaw 输入并计算行走电机下轮纠偏量。纠偏输出受速度限幅和数据新鲜度约束，
+ * 只影响 MotionService 下发的速度命令。
+ */
 #include "pv_cleaning_robot/service/heading_corrector.h"
 
 #include <algorithm>

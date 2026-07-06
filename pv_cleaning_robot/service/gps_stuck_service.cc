@@ -1,3 +1,10 @@
+/**
+ * @file gps_stuck_service.cc
+ * @brief GPS 卡滞检测服务实现。
+ *
+ * 本文件根据 GPS 位置变化、启停监控状态和时间窗口生成卡滞诊断事实。服务不直接停机，
+ * 由 DiagnosticsCollector 与 ErrorManager 完成后续升级。
+ */
 #include "pv_cleaning_robot/service/gps_stuck_service.h"
 
 #include <cmath>

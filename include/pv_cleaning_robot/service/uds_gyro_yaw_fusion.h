@@ -1,3 +1,10 @@
+/**
+ * @file uds_gyro_yaw_fusion.h
+ * @brief UDS 与 IMU 陀螺 yaw 融合接口。
+ *
+ * 本模块用于将视觉/UDS 航向与 IMU 角速度融合为运动纠偏可用的 yaw 估计，避免单一低频传感器
+ * 在控制周期内产生突变。
+ */
 #pragma once
 
 #include <cstdint>

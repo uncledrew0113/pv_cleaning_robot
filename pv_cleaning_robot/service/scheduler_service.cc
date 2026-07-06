@@ -1,3 +1,10 @@
+/**
+ * @file scheduler_service.cc
+ * @brief 清扫任务时间窗口调度服务实现。
+ *
+ * 本文件按当前本地时间匹配运行配置中的调度窗口，并在首次命中时调用回调。是否接受启动请求
+ * 由 RobotController 根据状态、电量和位置决定。
+ */
 #include "pv_cleaning_robot/service/scheduler_service.h"
 #include <chrono>
 #include <ctime>

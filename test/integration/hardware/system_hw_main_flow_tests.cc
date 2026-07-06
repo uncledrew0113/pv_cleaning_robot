@@ -1,3 +1,9 @@
+/**
+ * @file system_hw_main_flow_tests.cc
+ * @brief 真实硬件主任务流程系统测试。
+ *
+ * 本文件验证启动、自检、任务段切换、主限位到位、任务结束和锁止动作等完整链路。
+ */
 #include "system_hw_common.h"
 
 #include <sched.h>

@@ -1,3 +1,10 @@
+/**
+ * @file thingsboard_control_plane.cc
+ * @brief ThingsBoard 属性和 RPC 控制平面实现。
+ *
+ * 本文件处理云端运行配置更新、属性请求响应和 RPC 命令转发。业务执行结果由 CommandTracker
+ * 与 RobotController 共同决定，控制平面不直接操作硬件。
+ */
 #include <rapidjson/document.h>
 #include <rapidjson/stringbuffer.h>
 #include <rapidjson/writer.h>

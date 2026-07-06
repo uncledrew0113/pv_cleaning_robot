@@ -1,3 +1,9 @@
+/**
+ * @file hw_exit_guard.cc
+ * @brief 真实硬件测试退出保护实现。
+ *
+ * 本文件注册退出清理回调，用于在测试失败或进程结束时停止关键硬件动作。
+ */
 #include "integration/hardware/hw_exit_guard.h"
 
 #include <csignal>

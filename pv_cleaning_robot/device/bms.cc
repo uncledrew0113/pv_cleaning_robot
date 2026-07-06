@@ -1,6 +1,12 @@
+/**
+ * @file bms.cc
+ * @brief 嘉佰达 BMS 设备实现。
+ *
+ * 本文件实现 BMS UART 请求/应答事务、休眠唤醒兼容、基本信息和单体电压读取以及 MOS 控制。
+ * 通信失败会累计诊断错误计数，周期线程继续在后续 update() 中重试。
+ */
 #include <algorithm>
 #include <chrono>
-#include <cmath>
 #include <spdlog/spdlog.h>
 #include <thread>
 
@@ -8,14 +14,18 @@
 
 namespace robot::device {
 
-BMS::BMS(std::shared_ptr<hal::ISerialPort> serial, float full_soc, float low_soc)
-    : serial_(std::move(serial)), full_soc_(full_soc), low_soc_(low_soc) {}
+BMS::BMS(std::shared_ptr<hal::ISerialPort> serial,
+         float full_soc,
+         float low_soc,
+         float charging_current_threshold_a)
+    : serial_(std::move(serial))
+    , full_soc_(full_soc)
+    , low_soc_(low_soc)
+    , charging_current_threshold_a_(charging_current_threshold_a) {}
 
 BMS::~BMS() {
     close();
 }
-
-// == 生命周期 ==================================================================
 
 DeviceError BMS::open() {
     clear_stop_request();
@@ -24,7 +34,7 @@ DeviceError BMS::open() {
         return DeviceError::NOT_OPEN;
     }
 
-    // 读取硬件版本（0x05），失败不中止启动流程
+    // 读取硬件版本（0x05），失败不中止启动流程。
     {
         auto req = protocol::BmsProtocol::encode_read_version();
         if (transact(req.data(), req.size(), 500) and not parser_.is_error() and
@@ -39,7 +49,7 @@ DeviceError BMS::open() {
         }
     }
 
-    // 首次读取基本信息，失败在下次 update() 中重试
+    // 首次读取基本信息，失败在下次 update() 中重试。
     if (not read_basic_info_uart()) {
         spdlog::warn("[BMS] 首次数据读取失败，将在下次 update() 重试");
     }
@@ -76,8 +86,6 @@ bool BMS::sleep_interruptible(std::chrono::milliseconds duration) const {
     return !stop_requested();
 }
 
-// == 核心事务 ==================================================================
-
 bool BMS::transact(const uint8_t* req, size_t req_len, int timeout_ms) {
     std::lock_guard<std::mutex> lock(uart_tx_mtx_);
     using namespace std::chrono;
@@ -86,7 +94,7 @@ bool BMS::transact(const uint8_t* req, size_t req_len, int timeout_ms) {
         return false;
     }
 
-    // 判断 BMS 是否可能已休眠：从未通讯过、或距上次成功超过 kSleepTimeoutSec
+    // 判断 BMS 是否可能已休眠：从未通讯过，或距上次成功超过 kSleepTimeoutSec。
     auto now = Clock::now();
     bool may_be_sleeping =
         (last_comm_time_ == Clock::time_point::min()) ||
@@ -96,9 +104,7 @@ bool BMS::transact(const uint8_t* req, size_t req_len, int timeout_ms) {
         spdlog::debug("[BMS] 判断可能处于休眠，将在第一帧超时后等待 {} ms 再重试", kWakeupDelayMs);
     }
 
-    // attempt=0：如果可能休眠，此帧份演唤醒帧角色（BMS 不回复，正常超时）
-    // attempt=1：BMS 已唤醒，此帧应正常应答
-    // 如果不可能休眠，只执行一次（attempt=0 即正式帧）
+    // 休眠场景下前几次请求作为唤醒帧，允许正常超时；最后一次按正式请求等待应答。
     int max_attempts = may_be_sleeping ? (kMaxRetries + 1) : 1;
 
     for (int attempt = 0; attempt < max_attempts; ++attempt) {
@@ -122,7 +128,7 @@ bool BMS::transact(const uint8_t* req, size_t req_len, int timeout_ms) {
                 "[BMS] 唤醒帧 {}/{} 已发送 (cmd={:#04x})", attempt + 1, max_attempts, req[2]);
         }
 
-        // 等待应答：每次批量读取最多 64 字节，单次 read 超时 100ms（与 VTIME 精度对齐）
+        // 等待应答：每次批量读取最多 64 字节，单次 read 超时 100ms（与 VTIME 精度对齐）。
         // libserialport 在 Linux 下 VTIME 精度为 0.1s，传入 <100ms 会退化为非阻塞，
         // 使用 ≥100ms 的超时确保 read() 真正阻塞等待数据，避免空转丢过应答字节。
         uint64_t total_rx = 0;
@@ -175,8 +181,6 @@ bool BMS::transact(const uint8_t* req, size_t req_len, int timeout_ms) {
     return false;
 }
 
-// == 读取命令 ==================================================================
-
 bool BMS::read_basic_info_uart() {
     auto req = protocol::BmsProtocol::encode_read_basic_info();
     if (not transact(req.data(), req.size()))  // NOLINT
@@ -201,7 +205,7 @@ bool BMS::read_basic_info_uart() {
     diag_.cell_count = info->cell_count;
     diag_.ntc_count = info->ntc_count;
 
-    // 取所有 NTC 探头的最高温度作为代表值
+    // 取所有 NTC 探头的最高温度作为代表值。
     uint8_t ntc_n = std::min(info->ntc_count, protocol::kBmsMaxNtc);
     float max_t = -273.0f;
     for (uint8_t i = 0; i < ntc_n; ++i) {
@@ -211,17 +215,11 @@ bool BMS::read_basic_info_uart() {
     }
     diag_.temperature_c = (ntc_n > 0) ? max_t : 0.0f;
 
-    diag_.charging = (diag_.current_a > 0.05f);
+    diag_.charging = (diag_.current_a > charging_current_threshold_a_);
     diag_.low_battery = (diag_.soc_pct <= low_soc_);
     diag_.valid = true;
 
-    // 充满检测：SOC 达阈值且电流趋近 0 持续 kFullChargeConfirm 次
-    if (diag_.soc_pct >= full_soc_ and std::fabs(diag_.current_a) < 0.5f) {
-        ++full_charge_count_;
-    } else {
-        full_charge_count_ = 0;
-    }
-    diag_.fully_charged = (full_charge_count_ >= kFullChargeConfirm);
+    diag_.fully_charged = (diag_.soc_pct >= full_soc_);
 
     ++diag_.update_count;
     return true;
@@ -242,7 +240,7 @@ bool BMS::read_cell_voltages_uart() {
     std::lock_guard<std::mutex> lk(mtx_);
     diag_.cell_voltages = *cells;
 
-    // 计算最高/最低单体电压
+    // 计算最高/最低单体电压。
     if (cells->count > 0) {
         uint16_t vmax = cells->mv[0];
         uint16_t vmin = cells->mv[0];
@@ -259,8 +257,6 @@ bool BMS::read_cell_voltages_uart() {
     return true;
 }
 
-// == 周期更新 ==================================================================
-
 void BMS::update() {
     if (stop_requested()) {
         return;
@@ -272,12 +268,10 @@ void BMS::update() {
         ++diag_.error_count;
     }
 
-    // 每 4 次（约 2s）读一次单体电压，降低 9600 bps 总线占用
+    // 每 4 次（约 2s）读一次单体电压，降低 9600 bps 总线占用。
     if (!stop_requested() && update_cycle_ % 4 == 0)
         read_cell_voltages_uart();
 }
-
-// == 数据访问 ==================================================================
 
 BMS::BatteryData BMS::get_data() const {
     std::lock_guard<std::mutex> lk(mtx_);
@@ -303,8 +297,6 @@ bool BMS::has_alarm() const {
     std::lock_guard<std::mutex> lk(mtx_);
     return diag_.alarm_flags != 0;
 }
-
-// == 控制命令 ==================================================================
 
 DeviceError BMS::mos_control(uint8_t mos_state) {
     auto req = protocol::BmsProtocol::encode_mos_control(mos_state);

@@ -1,5 +1,6 @@
-/*
- * 主限位接近传感器接口。
+/**
+ * @file limit_switch.h
+ * @brief 主限位接近传感器设备接口。
  *
  * 本类只封装 GPIO 电平、边沿监控和软件去抖；触发后的安全停机、切段和故障处理
  * 由 SafetyMonitor / RobotController 负责。
@@ -15,6 +16,7 @@
 
 namespace robot::device {
 
+/// @brief 主限位安装侧。
 enum class LimitSide { LEFT, RIGHT };
 
 /// @brief 主限位接近传感器，低有效 GPIO 触发。
@@ -22,13 +24,12 @@ enum class LimitSide { LEFT, RIGHT };
 /// 触发后通过回调通知 SafetyMonitor 的安全优先路径，同时置位原子标志供备用轮询查询。
 /// 本类不直接发送急停指令，避免 device 层绑定具体运动控制对象。
 class LimitSwitch {
-   public:
+public:
     using TriggerCallback = std::function<void(LimitSide)>;
 
     explicit LimitSwitch(std::shared_ptr<hal::IGpioPin> pin, LimitSide side);
     ~LimitSwitch();
 
-    // ── 生命周期 ─────────────────────────────────────────────
     /// @param rt_priority GPIO 监控线程实时优先级，默认高于 SafetyMonitor 主循环。
     /// @param debounce_ms 软件去抖时间。
     /// @param cpu_affinity CPU 亲和性掩码（0=不绑定，1<<N=绑定到核心N）
@@ -37,16 +38,13 @@ class LimitSwitch {
     void close();
     bool is_open() const;
 
-    // ── 监控 ─────────────────────────────────────────────────
     /// 启动边沿监控线程；FALLING 表示接近传感器进入低有效触发态。
     void start_monitoring();
     void stop_monitoring();
 
-    // ── 回调（由 SafetyMonitor 注册，在监控线程内调用）──────
     /// @warning 请在 start_monitoring() 前注册，避免运行期替换回调带来额外同步开销。
     void set_trigger_callback(TriggerCallback cb);
 
-    // ── 状态（原子，可供任意线程轮询）───────────────────────
     bool is_triggered() const;
     void clear_trigger();
 
@@ -59,7 +57,7 @@ class LimitSwitch {
         return side_;
     }
 
-   private:
+private:
     void on_edge();
 
     std::shared_ptr<hal::IGpioPin> pin_;

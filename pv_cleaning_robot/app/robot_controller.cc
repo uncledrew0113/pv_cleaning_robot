@@ -1,3 +1,10 @@
+/**
+ * @file robot_controller.cc
+ * @brief 机器人任务状态机实现。
+ *
+ * 本文件实现命令接收、自检、任务段切换、主限位到位处理、恢复返回和故障锁存。状态机事件
+ * 在内部线程串行处理，硬件端口动作在锁外执行，避免长时间持锁阻塞上报和 RPC。
+ */
 #include "pv_cleaning_robot/app/robot_controller.h"
 
 #include <chrono>
@@ -714,7 +721,7 @@ void RobotController::handle_limit_settled_unlocked(domain::Endpoint endpoint) {
 
 std::optional<domain::Endpoint> RobotController::handle_source_limit_repeat_locked(
     domain::Endpoint) {
-    // 单侧主限位重复触发按业务事件处理：重新启动当前段，不再作为 v1 错误来源。
+    // 单侧主限位重复触发按业务事件处理：重新启动当前段，不作为错误来源。
     state_ = RobotState::ExecutingMission;
     return start_current_segment_locked().already_at_target;
 }

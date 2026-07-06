@@ -1,3 +1,10 @@
+/**
+ * @file watchdog_mgr.h
+ * @brief 软件线程看门狗与可选硬件看门狗接口。
+ *
+ * WatchdogMgr 维护各线程心跳 ticket，超时后通过回调上报线程名。错误归因和故障处理由
+ * ErrorManager 完成；硬件看门狗路径可选，用于进程级失活后的系统复位保护。
+ */
 #pragma once
 #include <atomic>
 #include <chrono>
@@ -22,17 +29,19 @@ public:
     explicit WatchdogMgr(std::string hw_watchdog_path = "");
     ~WatchdogMgr();
 
-    /// 启动看门狗监控线程。
+    /// @brief 启动看门狗监控线程。
     bool start();
+
+    /// @brief 停止监控线程，并在启用硬件看门狗时执行 magic close。
     void stop();
 
-    /// 注册受监控线程。
+    /// @brief 注册受监控线程。
     /// @param name 线程标识名，ErrorManager 依赖该名称映射错误组件。
     /// @param timeout_ms 最大允许心跳间隔（毫秒）。
     /// @return ticket_id 调用 heartbeat() 和 set_thread_paused() 需要传入此 ID。
     int register_thread(const std::string& name, int timeout_ms);
 
-    /// 线程汇报心跳；通常在受监控线程每轮 update() 成功推进后调用。
+    /// @brief 线程汇报心跳；通常在受监控线程每轮 update() 成功推进后调用。
     void heartbeat(int ticket_id);
 
     /// @brief 暂停或恢复某个 ticket 的超时检测。
@@ -41,7 +50,7 @@ public:
     /// 使用该接口避免把“主动停线程”误判成线程卡死。
     bool set_thread_paused(int ticket_id, bool paused);
 
-    /// 设置超时回调；回调在监控锁外执行，允许内部提交 ErrorManager 事件。
+    /// @brief 设置超时回调；回调在监控锁外执行，允许内部提交 ErrorManager 事件。
     void set_timeout_callback(TimeoutCallback cb);
 
 private:

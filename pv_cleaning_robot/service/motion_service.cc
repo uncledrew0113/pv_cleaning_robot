@@ -1,10 +1,9 @@
-/*
- * 运动服务实现。
+/**
+ * @file motion_service.cc
+ * @brief 机器人运动控制服务实现。
  *
- * 维护边界：
- * - app 层通过 MotionService 下发所有行走/滚刷运动命令，避免绕过统一方向换算和急停策略；
- * - SafetyMonitor 触发的 emergency_override 属于安全覆盖，update() 不会用普通心跳抢回控制权；
- * - 恢复流程复用本服务提供的运动入口，但错误仲裁和状态机切换不在本文件处理。
+ * 本文件实现清扫段启动、周期纠偏、滚刷控制、急停和姿态回中所需的行走电机命令封装。
+ * 安全相关入口保持短路径，复杂恢复策略由 AttitudeLimitService 和 RecoveryExecutor 编排。
  */
 #include <cmath>
 #include <thread>
@@ -192,8 +191,6 @@ void MotionService::handle_override_clear() {
     }
 }
 
-// ── 运动控制 ──────────────────────────────────────────────────────────────
-
 bool MotionService::start_cleaning_to(domain::Endpoint target) {
     sync_runtime_config();
     // 解除可能由 SafetyMonitor 触发的安全覆盖；随后由当前任务段重新接管 normal 电机命令。
@@ -313,8 +310,6 @@ bool MotionService::stop_attitude_center_motion() {
     const bool disable_ok = group_->disable_all() == device::DeviceError::OK;
     return speed_zero_ok && disable_ok;
 }
-
-// ── 周期心跳（50 ms，由 ThreadExecutor 调用）──────────────────────────────
 
 void MotionService::update() {
     const bool override_active = group_->is_override_active();

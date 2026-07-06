@@ -1,10 +1,10 @@
-/*
- * 滚刷电机 ODrive ASCII 串口驱动实现。
+/**
+ * @file brush_motor.cc
+ * @brief 滚刷电机 ODrive ASCII 串口驱动实现。
  *
- * 维护边界：
- * - 本类只封装 ODrive ASCII 命令、状态读取和通信错误计数；
- * - 任务何时开停滚刷由 MotionService 决定，故障恢复流程由 RecoveryExecutor 编排；
- * - close()/restart() 前应先停止 brush_exec，避免周期 update() 与串口重建并发。
+ * 本类只封装 ODrive ASCII 命令、状态读取和通信错误计数。任务何时开停滚刷由
+ * MotionService 决定，故障恢复流程由 RecoveryExecutor 编排；close()/restart() 前应先停止
+ * brush_exec，避免周期 update() 与串口重建并发。
  */
 
 #include <cmath>

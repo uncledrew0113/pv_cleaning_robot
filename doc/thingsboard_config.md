@@ -139,8 +139,11 @@ RPC 回复格式：
 - `mode`
 - `cloud_upload`
 - `local_log`
+- `collect_interval_ms`
 - `publish_interval_active_ms`
 - `publish_interval_idle_ms`
+- `local_log_interval_active_ms`
+- `local_log_interval_idle_ms`
 - `local_log_path`
 - `local_log_max_bytes`
 - `local_log_max_files`
@@ -149,6 +152,8 @@ RPC 回复格式：
 
 - 运行态使用 `publish_interval_active_ms`。
 - 空闲态使用 `publish_interval_idle_ms`。
+- 本地日志运行态使用 `local_log_interval_active_ms`。
+- 本地日志空闲态使用 `local_log_interval_idle_ms`。
 
 ## 6. 本地缓存与断网恢复
 

@@ -1,5 +1,6 @@
-/*
- * IMU 设备接口。
+/**
+ * @file imu_device.h
+ * @brief IMU 设备接口。
  *
  * 本类内部维护串口读取线程，持续解析 WIT Motion 数据帧并缓存最新姿态。
  * 配置命令期间会暂停后台读帧，避免 ACK 与流式数据互相抢占串口响应。
@@ -19,7 +20,7 @@ namespace robot::device {
 
 /// @brief 9 轴 IMU 设备（UART，WIT Motion 协议）。
 class ImuDevice {
-   public:
+public:
     struct ImuData {
         float accel[3];  ///< 加速度 m/s²  [x,y,z]
         float gyro[3];   ///< 角速度 rad/s  [x,y,z]
@@ -46,22 +47,22 @@ class ImuDevice {
     explicit ImuDevice(std::shared_ptr<hal::ISerialPort> serial);
     ~ImuDevice();
 
-    // ── 生命周期 ──────────────────────────────────────────────
+    // 生命周期。
     bool open();   ///< 打开串口，启动读取线程
     void request_stop();  ///< 请求后台读取线程尽快退出；不替代 close/open 生命周期管理
     void close();  ///< 停止读取线程，关闭串口
 
-    // ── 配置命令（发送配置帧，等待生效，验证）──────────────
+    // 配置命令：发送配置帧，等待生效并验证。
     DeviceError set_output_rate(int hz);  ///< 设置输出频率
     DeviceError calibrate_gyro();         ///< 陀螺零飘校准（需静止）
     DeviceError save_config();            ///< 保存至 Flash
     DeviceError reset();                  ///< 软件复位
 
-    // ── 数据访问（缓存，无 I/O，线程安全）────────────────────
+    // 数据访问：缓存读取，无 I/O，线程安全。
     ImuData get_latest() const;
     Diagnostics get_diagnostics() const;
 
-   private:
+private:
     void read_loop();
 
     DeviceError send_command(const protocol::ImuProtocol::Cmd& cmd, int wait_ms = 100);

@@ -1,3 +1,9 @@
+/**
+ * @file uds_gyro_yaw_fusion.cc
+ * @brief UDS 与 IMU 陀螺 yaw 融合实现。
+ *
+ * 本文件维护低频绝对航向与高频陀螺积分之间的融合状态，输出运动纠偏所需的连续 yaw。
+ */
 #include "pv_cleaning_robot/service/uds_gyro_yaw_fusion.h"
 
 #include <algorithm>

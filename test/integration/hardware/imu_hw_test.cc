@@ -1,25 +1,9 @@
-/*
- * IMU 协议层与设备层单元测试（WIT Motion UART 协议）
+/**
+ * @file imu_hw_test.cc
+ * @brief IMU 真实硬件集成测试。
  *
- * 测试分组：
- *   [protocol][imu]    - ImuProtocol 帧解析 / 命令编码（纯内存，无 I/O）
- *   [device][imu]      - ImuDevice 设备层（基于 MockSerialPort，不依赖真实硬件）
- *   [hw_imu]           - ImuDevice 硬件集成测试（须在目标机上运行）
- *
- * 运行方法（交叉编译后在目标机上）：
- *   ./unit_tests "[protocol][imu]"    # 只跑协议层单元测试
- *   ./unit_tests "[device][imu]"      # 只跑设备层 mock 测试
- *   ./hw_tests "[hw_imu]"             # 只跑硬件集成测试（需接 IMU 设备）
- *
- * 帧格式：
- *   [0x55][type][d0L][d0H][d1L][d1H][d2L][d2H][d3L][d3H][SUM]  共 11 字节
- *   SUM = (0x55 + type + d0L + d0H + ... + d3L + d3H) & 0xFF
- *
- * 物理换算（来自 imu_protocol.cc 中的 scale 常量）：
- *   加速度: raw / 32768 * 16 * 9.8  (m/s²)
- *   角速度: raw / 32768 * 2000 * π/180  (rad/s)
- *   欧拉角: raw / 32768 * 180  (°)
- *   四元数: raw / 32768
+ * 本文件通过目标机串口验证 WIT Motion IMU 的数据帧解析、配置命令和诊断计数。
+ * 运行前必须确认串口路径、波特率和安装姿态符合测试配置。
  */
 #include <array>
 #include <catch2/catch.hpp>
@@ -40,10 +24,6 @@
 static const hw::HwParams kp = hw::load_hw_test_config();
 
 using namespace robot;
-
-// ═══════════════════════════════════════════════════════════════════════════
-//  测试辅助工具
-// ═══════════════════════════════════════════════════════════════════════════
 
 /// 物理换算常量（与 imu_protocol.cc 保持一致）
 static constexpr float kAccelScale = 16.0f * 9.8f / 32768.0f;

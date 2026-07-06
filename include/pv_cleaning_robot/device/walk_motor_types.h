@@ -1,3 +1,9 @@
+/**
+ * @file walk_motor_types.h
+ * @brief 行走电机状态和诊断数据类型。
+ *
+ * 本文件定义行走电机设备层缓存状态，供 WalkMotorGroup、DiagnosticsCollector 和测试共同使用。
+ */
 #pragma once
 #include <cstdint>
 

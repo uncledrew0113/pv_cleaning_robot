@@ -1,8 +1,9 @@
-/*
- * 健康与诊断 payload 序列化实现。
+/**
+ * @file health_service.cc
+ * @brief 健康与诊断 payload 序列化实现。
  *
  * HealthService 优先消费 DiagnosticsCollector 的统一快照，保证健康上报和错误管理使用
- * 同一份设备诊断事实；保留直接读取设备 getter 的构造路径仅用于兼容测试和旧调用点。
+ * 同一份设备诊断事实；直接读取设备 getter 的构造路径仅用于既有单元测试。
  */
 #include <chrono>
 #include <cstdarg>

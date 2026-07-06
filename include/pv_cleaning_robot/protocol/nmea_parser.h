@@ -3,6 +3,12 @@
  *
  * 本文件只处理 NMEA 语句解析和字段累计，不访问串口/GPSD，也不决定 GPS 卡滞或通信恢复策略。
  */
+/**
+ * @file nmea_parser.h
+ * @brief NMEA GPS 报文解析接口。
+ *
+ * 本文件解析串口 GPS 常见 NMEA 句子并维护最近定位状态。解析失败只影响单句，不应终止数据源线程。
+ */
 #pragma once
 #include <cstdint>
 #include <optional>

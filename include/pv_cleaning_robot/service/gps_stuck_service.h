@@ -4,6 +4,13 @@
  * 本服务只在清扫任务运行期间启用，用 GPS 质量和速度持续性判断“机器人运行但位置未变化”。
  * 恢复流程或非任务状态必须暂停监控，避免急停、倒车、驱动重启期间产生误报。
  */
+/**
+ * @file gps_stuck_service.h
+ * @brief GPS 卡滞检测服务接口。
+ *
+ * 本服务在任务运行期间根据 GPS 位置变化判断机器人是否长时间未移动。检测结果进入
+ * DiagnosticsCollector，再由 ErrorManager 统一升级为故障。
+ */
 #pragma once
 
 #include <chrono>

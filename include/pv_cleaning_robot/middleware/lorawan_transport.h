@@ -1,3 +1,9 @@
+/**
+ * @file lorawan_transport.h
+ * @brief LoRaWAN 网络传输接口。
+ *
+ * LoRaWANTransport 通过串口 AT 命令驱动 LoRaWAN 模块，作为低带宽备用链路承载关键遥测。
+ */
 #pragma once
 #include "pv_cleaning_robot/middleware/i_network_transport.h"
 #include "pv_cleaning_robot/hal/i_serial_port.h"

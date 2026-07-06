@@ -4,6 +4,12 @@
  * 上层设备通过该接口访问 UART/RS232/USB 转串口；具体驱动负责超时、错误码和缓冲区管理。
  * close/open 前应先停止相关 update 线程，避免读写与句柄重建并发。
  */
+/**
+ * @file i_serial_port.h
+ * @brief 串口 HAL 抽象接口。
+ *
+ * 本接口统一 UART 打开、关闭、阻塞读写、缓冲区清理和错误查询，供 BMS、IMU、GPS、滚刷等设备复用。
+ */
 #pragma once
 #include <cstddef>
 #include <cstdint>

@@ -1,3 +1,10 @@
+/**
+ * @file scheduler_service.h
+ * @brief 清扫任务时间窗口调度服务接口。
+ *
+ * SchedulerService 根据运行配置中的时间窗口触发启动事件。服务只发布“窗口命中”事实，
+ * 不直接启动运动，任务接受与否由 RobotController 判定。
+ */
 #pragma once
 #include <chrono>
 #include <functional>

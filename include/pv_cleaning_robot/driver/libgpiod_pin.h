@@ -1,5 +1,6 @@
-/*
- * libgpiod v1.6 GPIO 引脚驱动接口。
+/**
+ * @file libgpiod_pin.h
+ * @brief libgpiod v1.6 GPIO 引脚驱动接口。
  *
  * 支持输入边沿监控和输出 DO 控制。边沿监控优先使用硬件 IRQ；当 GPIO 控制器不支持
  * 可靠边沿事件时，降级为固定周期软件轮询。业务层 read_value() 读取缓存值，避免
@@ -24,7 +25,7 @@ namespace robot::driver {
 
 /// @brief libgpiod v1.6 GPIO 引脚实现，支持输入和输出两种模式。
 class LibGpiodPin final : public hal::IGpioPin {
-   public:
+public:
     /// @param chip_name GPIO 控制器名，如 "gpiochip0"
     /// @param line_num  GPIO 引脚编号
     /// @param consumer  申请标识字符串（调试用）
@@ -42,7 +43,7 @@ class LibGpiodPin final : public hal::IGpioPin {
     void start_monitoring() override;
     void stop_monitoring() override;
 
-   private:
+private:
     void monitor_loop();     ///< IRQ 监控循环，硬件边沿事件可用时使用。
     void poll_loop();        ///< 轮询监控循环，IRQ 不可用时降级使用。
     void setup_thread_rt_(); ///< 实时优先级和 CPU 绑定设置，两个监控循环共用。
@@ -68,7 +69,6 @@ class LibGpiodPin final : public hal::IGpioPin {
     std::atomic<bool> cache_valid_{false};
     std::atomic<uint32_t> read_error_count_{0};
 
-    // ── 核心并发控制 ──
     // 读写锁：保证 close() 与 read/write 并发时不会出现文件描述符 TOCTOU。
     mutable std::shared_mutex io_mutex_;
     // 用于立即打断 poll()/等待循环的事件通知 FD。

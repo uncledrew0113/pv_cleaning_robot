@@ -1,3 +1,11 @@
+/**
+ * @file attitude_limit_service.h
+ * @brief 姿态限位监测与下轮回中恢复接口。
+ *
+ * 本服务监听左右下轮姿态限位开关，触发后立即通过注入端口急停，并向错误管理链路提交
+ * 可消费事件。回中恢复只编排下轮运动方向、限位采样和整体超时，实际电机控制由
+ * MotionService 通过端口完成。
+ */
 #pragma once
 
 #include <chrono>
@@ -18,17 +26,20 @@ namespace robot::service {
 ///   - GPIO 触发时先立即调用急停端口，再记录事件，保证安全动作不等待主循环；
 ///   - 回中流程只编排限位开关判定和时序，实际电机命令通过 MotionPorts 交给 MotionService。
 class AttitudeLimitService {
-   public:
+public:
+    /// @brief 姿态限位事件类型。
     enum class EventType {
         AttitudeLimit,
         AttitudeLimitBoth,
     };
 
+    /// @brief 待 ErrorHandlingService 消费的姿态限位事件。
     struct Event {
         EventType type{EventType::AttitudeLimit};
         device::AttitudeLimitSide side{device::AttitudeLimitSide::LEFT_LOWER};
     };
 
+    /// @brief 左右姿态限位当前电平解释后的活动状态。
     struct Status {
         bool left_active{false};
         bool right_active{false};
@@ -43,12 +54,14 @@ class AttitudeLimitService {
             std::chrono::milliseconds(20)};  ///< 回中轮询和命令刷新周期。
     };
 
+    /// @brief 下轮回中动作结果。
     enum class CenterOutcome {
         Completed,
         TimedOut,
         InterruptedBySafetyOverride,
     };
 
+    /// @brief 下轮回中结果封装。
     struct CenterResult {
         CenterOutcome outcome{CenterOutcome::TimedOut};
     };
@@ -81,7 +94,7 @@ class AttitudeLimitService {
     CenterResult lower_attitude_center();
     CenterResult lower_attitude_center(const CenterConfig& config);
 
-   private:
+private:
     struct CenterPlan {
         device::AttitudeLimitSide release_side{device::AttitudeLimitSide::LEFT_LOWER};
         device::AttitudeLimitSide opposite_side{device::AttitudeLimitSide::RIGHT_LOWER};

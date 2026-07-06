@@ -1,3 +1,9 @@
+/**
+ * @file lock_motor_hw_test.cc
+ * @brief 锁止电机真实硬件集成测试。
+ *
+ * 本文件会实际驱动锁止电机 GPIO 输出，运行前必须确认机构动作安全。
+ */
 #include <catch2/catch.hpp>
 
 #include "hw_config.h"

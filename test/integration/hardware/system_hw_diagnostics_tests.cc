@@ -1,3 +1,9 @@
+/**
+ * @file system_hw_diagnostics_tests.cc
+ * @brief 真实硬件诊断与上报系统测试。
+ *
+ * 本文件验证 DiagnosticsCollector、HealthService 和本地/云端上报在系统级夹具中的输出。
+ */
 #include "system_hw_common.h"
 
 #include "pv_cleaning_robot/service/diagnostics_collector.h"

@@ -1,3 +1,10 @@
+/**
+ * @file system_hw_attitude_tests.cc
+ * @brief 真实硬件姿态限位与回中恢复测试。
+ *
+ * 本文件验证姿态限位触发、下轮回中、上轮保持 0 速和恢复后任务继续等实机行为。
+ * 运行测试前必须确认机器人周围安全，并准备人工急停手段。
+ */
 #include "system_hw_common.h"
 
 TEST_CASE("lower_uds_zero 调速随误差缩小并保持方向", "[hw_system][lower_uds_zero][logic]") {

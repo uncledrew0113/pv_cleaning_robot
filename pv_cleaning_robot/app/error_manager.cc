@@ -1,3 +1,10 @@
+/**
+ * @file error_manager.cc
+ * @brief 应用层错误仲裁和恢复调度实现。
+ *
+ * 本文件把诊断快照、看门狗事件和设备主动事件转换为统一错误决策。硬件急停、状态切换和
+ * 恢复动作均通过外部端口完成，避免错误仲裁层直接访问硬件。
+ */
 #include "pv_cleaning_robot/app/error_manager.h"
 
 #include <algorithm>
@@ -6,19 +13,11 @@
 
 namespace robot::app {
 
-namespace {
-// 通信错误计数连续变化 10 个采样周期后才触发，避免偶发读数抖动误报。
-constexpr uint32_t kConsecutiveErrorCounterLimit = 10;
+ErrorManager::ErrorManager()
+    : ErrorManager(Config{}) {}
 
-// 数据流 3 秒没有新帧，认为对应通信链路或数据源已停滞。
-constexpr uint64_t kStreamTimeoutMs = 3000;
-
-// 行走电机堵转必须连续保持 2.5 秒才停机，避免瞬时负载冲击误报。
-constexpr uint64_t kWalkStallDurationMs = 2500;
-
-// 姿态回中后 10 秒内同 key 再次触发，视为同一区域仍未通过。
-constexpr uint64_t kAttitudeRepeatGapMs = 8000;
-}  // namespace
+ErrorManager::ErrorManager(Config config)
+    : config_(config) {}
 
 bool ErrorManager::same_component(ComponentId lhs, ComponentId rhs) noexcept {
     return lhs.kind == rhs.kind && lhs.index == rhs.index;
@@ -106,7 +105,7 @@ ErrorDecision ErrorManager::decide_attitude_limit(const ErrorFact& fact) {
         attitude_recovery_state_.last_key == key &&
         fact.timestamp_ms >= attitude_recovery_state_.last_recovery_finished_ms &&
         fact.timestamp_ms - attitude_recovery_state_.last_recovery_finished_ms <
-            kAttitudeRepeatGapMs;
+            config_.attitude_repeat_gap_ms;
 
     if (!repeated_after_recent_recovery) {
         attitude_recovery_state_.has_last_key = true;
@@ -116,7 +115,7 @@ ErrorDecision ErrorManager::decide_attitude_limit(const ErrorFact& fact) {
         ++attitude_recovery_state_.repeat_count;
     }
 
-    if (attitude_recovery_state_.repeat_count >= 4) {
+    if (attitude_recovery_state_.repeat_count >= config_.attitude_fault_count) {
         decision.action = ErrorAction::FaultStopped;
         decision.latch_fault = true;
         return decision;
@@ -124,7 +123,7 @@ ErrorDecision ErrorManager::decide_attitude_limit(const ErrorFact& fact) {
 
     decision.action = ErrorAction::StartRecovery;
     decision.requires_robot_recovering = true;
-    decision.plan = attitude_recovery_state_.repeat_count == 3
+    decision.plan = attitude_recovery_state_.repeat_count == config_.attitude_reverse_attempt_count
                         ? RecoveryPlanId::RecoverAttitudeCenterThenReverse
                         : RecoveryPlanId::RecoverAttitudeCenter;
     return decision;
@@ -217,7 +216,7 @@ void ErrorManager::update_error_counter(ErrorCounterState& state,
         state.consecutive_increments = 0;
     }
 
-    if (state.consecutive_increments >= kConsecutiveErrorCounterLimit) {
+    if (state.consecutive_increments >= config_.consecutive_error_limit) {
         submit_error_locked(ErrorFact{ErrorCode::DriverCommError,
                                       ComponentId{component, 0},
                                       "error counter increased continuously",
@@ -259,7 +258,7 @@ void ErrorManager::update(const domain::DiagnosticsSnapshot& snapshot, uint64_t 
     update_stream_timeout(snapshot.bms_update,
                           bms_update_timeout_state_,
                           ComponentKind::Bms,
-                          kStreamTimeoutMs,
+                          config_.stream_timeout_ms,
                           now_ms);
 
     // BrushMotor 的 comm_error_count 连续变化表示串口通信异常；fault_code != 0
@@ -283,12 +282,12 @@ void ErrorManager::update(const domain::DiagnosticsSnapshot& snapshot, uint64_t 
     update_stream_timeout(snapshot.gps,
                           gps_timeout_state_,
                           ComponentKind::Gps,
-                          kStreamTimeoutMs,
+                          config_.stream_timeout_ms,
                           now_ms);
     update_stream_timeout(snapshot.imu,
                           imu_timeout_state_,
                           ComponentKind::Imu,
-                          kStreamTimeoutMs,
+                          config_.stream_timeout_ms,
                           now_ms);
 
     for (auto i = 0U; i < snapshot.walk_feedback.size(); ++i) {
@@ -299,7 +298,7 @@ void ErrorManager::update(const domain::DiagnosticsSnapshot& snapshot, uint64_t 
         update_stream_timeout(health,
                               walk_feedback_timeout_states_[i],
                               ComponentKind::WalkMotorGroup,
-                              kStreamTimeoutMs,
+                              config_.stream_timeout_ms,
                               now_ms);
     }
 
@@ -311,7 +310,7 @@ void ErrorManager::update(const domain::DiagnosticsSnapshot& snapshot, uint64_t 
         walk_stall_state_.reported = false;
     } else if (!walk_stall_state_.reported &&
                now_ms >= walk_stall_state_.active_since_ms &&
-               now_ms - walk_stall_state_.active_since_ms >= kWalkStallDurationMs) {
+               now_ms - walk_stall_state_.active_since_ms >= config_.walk_stall_duration_ms) {
         submit_error_locked(ErrorFact{ErrorCode::WalkMotorStall,
                                       ComponentId{ComponentKind::WalkMotorGroup, 0},
                                       "walk motor stall stayed active",
@@ -389,7 +388,7 @@ bool ErrorHandlingService::recovery_plan_allowed(const std::string& state,
 }
 
 int ErrorHandlingService::decision_priority(const ErrorDecision& decision) noexcept {
-    // v1 不建立复杂因果图；同一调度周期只处理一个最高优先级根错误。
+    // 不建立复杂因果图；同一调度周期只处理一个最高优先级根错误。
     // FaultStopped 必须压过所有恢复动作，避免先执行低优先级恢复再停机。
     if (decision.action == ErrorAction::FaultStopped || decision.latch_fault) {
         return 100;
@@ -425,7 +424,7 @@ void ErrorHandlingService::update() {
     if (ports_.consume_error_event) {
         if (const auto event = ports_.consume_error_event()) {
             // 姿态单侧限位在任何状态都已由 AttitudeLimitService 立即急停；
-            // v1 只在任务执行中把它升级为回中恢复，空闲/自检/充电时不启动运动恢复。
+            // 只在任务执行中把它升级为回中恢复，空闲/自检/充电时不启动运动恢复。
             if (event->code != ErrorCode::AttitudeLimit || is_task_running_state(state)) {
                 manager_.submit_error(*event);
             }
@@ -457,7 +456,7 @@ void ErrorHandlingService::update() {
 
     const std::string decision_state = ports_.current_state ? ports_.current_state() : state;
     if (!recovery_plan_allowed(decision_state, decision.plan)) {
-        // v1 只允许任务运行态执行姿态恢复；其余状态丢弃本轮恢复，
+        // 只允许任务运行态执行姿态恢复；其余状态丢弃本轮恢复，
         // 持续错误会在后续诊断中按统一策略再次提交。
         return;
     }

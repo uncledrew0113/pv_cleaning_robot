@@ -1,6 +1,12 @@
 #include <cmath>
 #include <cstring>
 
+/**
+ * @file imu_protocol.cc
+ * @brief WIT Motion IMU 协议编解码实现。
+ *
+ * 本文件实现流式帧解析和配置命令编码。解析器只维护协议状态，不访问串口。
+ */
 #include "pv_cleaning_robot/protocol/imu_protocol.h"
 
 namespace robot::protocol {
@@ -23,7 +29,7 @@ static inline int16_t to_int16(uint8_t lo, uint8_t hi) {
     return static_cast<int16_t>(static_cast<uint16_t>(hi) << 8 | lo);
 }
 
-// ── 流式帧解析 ────────────────────────────────────────────────────────────────
+// 流式帧解析。
 
 void ImuProtocol::reset() {
     buf_pos_ = 0;
@@ -110,7 +116,7 @@ bool ImuProtocol::parse_frame(const uint8_t* f) {
     }
 }
 
-// ── 配置命令编码 ─────────────────────────────────────────────────────────────
+// 配置命令编码。
 // WIT Motion 寄存器写命令格式：0xFF 0xAA [reg] [data_lo] [data_hi]（固定 5 字节）
 
 using Cmd = ImuProtocol::Cmd;

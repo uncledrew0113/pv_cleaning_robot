@@ -1,3 +1,9 @@
+/**
+ * @file lorawan_transport.cc
+ * @brief LoRaWAN 网络传输实现。
+ *
+ * 本文件通过串口 AT 命令驱动 LoRaWAN 模块，适用于低频关键遥测的备用链路。
+ */
 #include "pv_cleaning_robot/middleware/lorawan_transport.h"
 #include <chrono>
 #include <iomanip>
@@ -141,7 +147,7 @@ bool LoRaWANTransport::subscribe(const std::string& /*topic*/,
     return true;
 }
 
-// ── 私有工具 ──────────────────────────────────────────────────────────────
+// 私有工具。
 
 std::string LoRaWANTransport::send_at(const std::string& cmd, int timeout_ms)
 {

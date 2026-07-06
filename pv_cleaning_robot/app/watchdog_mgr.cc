@@ -1,3 +1,10 @@
+/**
+ * @file watchdog_mgr.cc
+ * @brief 软件线程看门狗与可选硬件看门狗实现。
+ *
+ * 本文件实现周期性心跳检查、线程超时上报和 Linux watchdog 喂狗。超时回调在 ticket 锁外
+ * 执行，避免错误处理链路阻塞看门狗内部状态。
+ */
 #include "pv_cleaning_robot/app/watchdog_mgr.h"
 #include <fcntl.h>
 #include <pthread.h>
@@ -10,6 +17,13 @@
 #include <chrono>
 
 namespace robot::app {
+
+namespace {
+constexpr int kHardwareWatchdogTimeoutSec = 30;
+constexpr int kWatchdogMonitorPriority = 50;
+constexpr int kWatchdogMonitorCpu = 7;
+constexpr int kWatchdogMonitorPeriodMs = 200;
+}  // namespace
 
 WatchdogMgr::WatchdogMgr(std::string hw_watchdog_path)
     : hw_watchdog_path_(std::move(hw_watchdog_path))
@@ -27,7 +41,7 @@ bool WatchdogMgr::start()
     if (!hw_watchdog_path_.empty()) {
         hw_watchdog_fd_ = ::open(hw_watchdog_path_.c_str(), O_WRONLY);
         if (hw_watchdog_fd_ >= 0) {
-            int timeout = 30;  // 硬件看门狗 30 秒超时。
+            int timeout = kHardwareWatchdogTimeoutSec;
             ::ioctl(hw_watchdog_fd_, WDIOC_SETTIMEOUT, &timeout);
         }
     }
@@ -92,19 +106,21 @@ void WatchdogMgr::set_timeout_callback(TimeoutCallback cb)
 
 void WatchdogMgr::monitor_loop()
 {
-    // ── 线程自身完成 RT 提权 + CPU 绑定 ──
+    // 线程创建后立即设置调度参数，避免看门狗监控长期运行在普通调度策略下。
     {
         sched_param sp{};
-        sp.sched_priority = 50;
+        sp.sched_priority = kWatchdogMonitorPriority;
         int rc = pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp);
         if (rc != 0) {
             spdlog::warn("[WatchdogMgr] RT priority elevation failed: {}", strerror(rc));
         }
         cpu_set_t cpuset;
         CPU_ZERO(&cpuset);
-        CPU_SET(7, &cpuset);
+        CPU_SET(kWatchdogMonitorCpu, &cpuset);
         if (pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset) != 0) {
-            spdlog::warn("[WatchdogMgr] CPU 7 affinity set failed: {}", strerror(errno));
+            spdlog::warn("[WatchdogMgr] CPU {} affinity set failed: {}",
+                         kWatchdogMonitorCpu,
+                         strerror(errno));
         }
         pthread_setname_np(pthread_self(), "watchdog_mon");
     }
@@ -133,7 +149,7 @@ void WatchdogMgr::monitor_loop()
             if (on_timeout_) on_timeout_(name);
         }
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        std::this_thread::sleep_for(std::chrono::milliseconds(kWatchdogMonitorPeriodMs));
     }
 }
 

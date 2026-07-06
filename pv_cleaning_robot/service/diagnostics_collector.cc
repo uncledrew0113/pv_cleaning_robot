@@ -1,3 +1,10 @@
+/**
+ * @file diagnostics_collector.cc
+ * @brief 设备诊断快照采集实现。
+ *
+ * 本文件从行走电机、滚刷、BMS、IMU、GPS 和卡滞服务读取缓存状态，合成供错误管理和上报使用
+ * 的统一快照。采集过程不直接访问阻塞式硬件事务。
+ */
 #include "pv_cleaning_robot/service/diagnostics_collector.h"
 
 #include <chrono>

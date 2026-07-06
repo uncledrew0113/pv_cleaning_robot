@@ -1,3 +1,10 @@
+/**
+ * @file libgpiod_pin.cc
+ * @brief libgpiod GPIO 引脚驱动实现。
+ *
+ * 本文件实现 GPIO 输入/输出申请、IRQ 或轮询监控、缓存读和 eventfd 退出唤醒。缓存读用于
+ * 避免安全监控路径阻塞在慢速 GPIO 扩展芯片的 ioctl 调用中。
+ */
 #include <cstring>
 #include <gpiod.h>
 #include <poll.h>
@@ -26,7 +33,7 @@ LibGpiodPin::LibGpiodPin(std::string chip_name, unsigned int line_num, std::stri
     , last_event_time_(std::chrono::steady_clock::now()) {}
 
 LibGpiodPin::~LibGpiodPin() {
-    close();  // close 现在安全地包含了 stop_monitoring
+    close();
 }
 
 bool LibGpiodPin::request_line_as_input() {
@@ -74,7 +81,7 @@ void LibGpiodPin::update_cached_value(bool value) {
 
 bool LibGpiodPin::open(const hal::GpioConfig& config) {
     std::unique_lock<std::shared_mutex> lock(io_mutex_);
-    // 允许以新配置重新打开：先安全释放旧资源，再重新申请
+    // 允许以新配置重新打开：先安全释放旧资源，再重新申请。
     if (chip_ && line_) {
         stop_monitoring_locked();
         gpiod_chip_close(chip_);
@@ -142,7 +149,7 @@ void LibGpiodPin::stop_monitoring_locked() {
     if (!was_running)
         return;
 
-    // 写入 EventFD，瞬间唤醒正在死等 (-1) 的 poll()，拒绝 RT 延迟
+    // 写入 eventfd，唤醒正在阻塞的 poll()，避免退出等待完整轮询周期。
     const int cancel_fd = cancel_fd_.load(std::memory_order_acquire);
     if (cancel_fd >= 0) {
         uint64_t val = 1;
@@ -235,8 +242,7 @@ void LibGpiodPin::start_monitoring() {
         return;
     }
 
-    // ── 轮询模式（use_irq=false）──────────────────────────────────────────────
-    // 直接以固定周期软件轮询，不尝试硬件 IRQ 申请。
+    // 轮询模式：直接以固定周期软件轮询，不尝试硬件 IRQ 申请。
     // 适用于不支持 IRQ 的 GPIO 控制器（如 RK3576 gpiochip5）。
     if (!config_.use_irq) {
         // 线已在 INPUT 模式（open() 已 request_line_as_input），无需重新申请
@@ -259,7 +265,7 @@ void LibGpiodPin::start_monitoring() {
         return;
     }
 
-    // ── IRQ 模式（use_irq=true）───────────────────────────────────────────────
+    // IRQ 模式：重新申请边沿事件并由监控线程等待中断。
     gpiod_line_release(line_);
 
     hal::GpioEdge snapshot_edge;
@@ -299,7 +305,7 @@ void LibGpiodPin::start_monitoring() {
         return;
     }
 
-    // 创建 EventFD 以备退出打断之用
+    // 创建 eventfd，用于 stop_monitoring() 打断阻塞等待。
     const int new_cancel_fd = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
     cancel_fd_.store(new_cancel_fd, std::memory_order_release);
     if (new_cancel_fd < 0) {
@@ -325,7 +331,7 @@ void LibGpiodPin::stop_monitoring() {
 void LibGpiodPin::monitor_loop() {
     setup_thread_rt_();
 
-    // 取到底层的 GPIO 中断描述符
+    // 取得底层 GPIO 中断描述符。
     int gpio_fd = gpiod_line_event_get_fd(line_);
     const int cancel_fd = cancel_fd_.load(std::memory_order_acquire);
     if (gpio_fd < 0 || cancel_fd < 0) {
@@ -340,12 +346,12 @@ void LibGpiodPin::monitor_loop() {
     pfds[1].events = POLLIN;
 
     while (running_.load()) {
-        // -1 永久阻塞，让该核心彻底休眠。硬件中断或退出信号一到，立马唤醒。
+        // -1 永久阻塞，让该核心休眠；硬件中断或退出信号到达后立即唤醒。
         int ret = ::poll(pfds, 2, -1);
         if (ret <= 0)
             continue;
 
-        // 收到来自 stop_monitoring 的打断信号，安全切出循环
+        // 收到来自 stop_monitoring 的打断信号，安全切出循环。
         if (pfds[1].revents & POLLIN) {
             break;
         }
@@ -397,7 +403,7 @@ void LibGpiodPin::monitor_loop() {
     }
 }
 
-// ── RT 提权 + CPU 绑定（monitor_loop / poll_loop 共用）────────────────────────
+// RT 提权和 CPU 绑定由 monitor_loop 与 poll_loop 共用。
 void LibGpiodPin::setup_thread_rt_() {
     if (config_.rt_priority > 0) {
         sched_param sp{};
@@ -431,7 +437,6 @@ void LibGpiodPin::setup_thread_rt_() {
     }
 }
 
-// ── 软件轮询循环（use_irq=false 时使用）──────────────────────────────────────
 // 通过定期读取 gpiod_line_get_value() 检测电平变化并触发回调；
 // 去抖逻辑与 monitor_loop() 完全一致。
 void LibGpiodPin::poll_loop() {

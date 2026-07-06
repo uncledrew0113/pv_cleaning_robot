@@ -15,7 +15,7 @@ class CommandTracker {
     /// @return 本地内部命令 ID，用于日志、上报和 RPC 回复关联。
     std::string accept(const std::string& name, const std::string& request_id);
 
-    /// @brief 将当前活动命令标记为运行中；当前 MVP 只保留本地 ID 追踪，不再暴露完成态查询。
+    /// @brief 将当前活动命令标记为运行中；当前实现只保留本地 ID 追踪。
     void mark_running(const std::string& id);
 
     /// @brief 拒绝一个命令请求，并消耗一个本地命令 ID，保证日志中的命令序号单调递增。

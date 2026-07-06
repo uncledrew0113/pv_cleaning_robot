@@ -1,3 +1,10 @@
+/**
+ * @file thingsboard_control_plane.h
+ * @brief ThingsBoard 属性和 RPC 控制平面接口。
+ *
+ * 本模块负责接收云端运行配置、调度窗口和 RPC 命令，并通过 RobotCommandPort 提交给状态机。
+ * 配置持久化和命令运行态跟踪分别由 ConfigService 与 CommandTracker 完成。
+ */
 #pragma once
 
 #include <array>

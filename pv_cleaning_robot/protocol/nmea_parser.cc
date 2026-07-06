@@ -1,3 +1,9 @@
+/**
+ * @file nmea_parser.cc
+ * @brief NMEA GPS 报文解析实现。
+ *
+ * 本文件解析 RMC、GGA、GSA 等常见 NMEA 句子，更新定位状态、卫星数和精度因子。
+ */
 #include "pv_cleaning_robot/protocol/nmea_parser.h"
 
 #include <chrono>
@@ -24,7 +30,7 @@ bool NmeaParser::parse_sentence(const std::string& sentence) {
 
 void NmeaParser::reset() { data_ = GpsData{}; }
 
-// ── 内部辅助 ─────────────────────────────────────────────────────────────────
+// 内部辅助。
 
 std::vector<std::string> NmeaParser::split(const std::string& s, char delim) {
     std::vector<std::string> result;

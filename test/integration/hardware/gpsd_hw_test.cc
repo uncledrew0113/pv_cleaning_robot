@@ -1,3 +1,9 @@
+/**
+ * @file gpsd_hw_test.cc
+ * @brief gpsd 数据源真实硬件集成测试。
+ *
+ * 本文件验证 GPSD 连接、WATCH 配置和定位数据解析链路。
+ */
 #include <catch2/catch.hpp>
 #include <chrono>
 #include <memory>

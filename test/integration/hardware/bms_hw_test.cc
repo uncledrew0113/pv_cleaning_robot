@@ -1,15 +1,9 @@
-/*
- * BMS 协议层与设备层单元测试
+/**
+ * @file bms_hw_test.cc
+ * @brief BMS 真实硬件集成测试。
  *
- * 测试分组：
- *   [protocol][bms]    - BmsProtocol 编码 / 解码 / 帧解析（纯内存，无 I/O）
- *   [device][bms]      - BMS 设备层（基于 BmsMockSerial，不依赖真实硬件）
- *   [hw_bms]           - BMS 硬件集成测试（须在目标机上运行）
- *
- * 运行方法（交叉编译后在目标机上）：
- *   ./unit_tests "[protocol][bms]"    # 只跑协议层单元测试
- *   ./unit_tests "[device][bms]"      # 只跑设备层 mock 测试
- *   ./hw_tests "[hw_bms]"             # 只跑硬件集成测试（需接 BMS 设备）
+ * 本文件通过目标机串口读取真实 BMS，验证基础信息、诊断数据和通信错误计数。
+ * 运行前必须确认 BMS 接线、波特率和电池状态安全。
  */
 #include <algorithm>
 #include <catch2/catch.hpp>

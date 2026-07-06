@@ -1,15 +1,10 @@
 /**
  * @file robot_application.cc
- * @brief PV 清扫机器人应用生命周期编排（配置文件驱动依赖注入）
+ * @brief PV 清扫机器人应用生命周期编排实现。
  *
- * 启动流程：
- *   1. 加载 split config（runtime + fixed）
- *   2. 初始化日志
- *   3. 构造 HAL / Driver / Device 对象
- *   4. 构造 Middleware / Service / App 对象
- *   5. 启动各执行线程
- *   6. 进入主循环（轮询 RobotController 状态与调度服务）
- *   7. 接收 main 注入的退出标志，按固定顺序优雅关闭
+ * 本文件作为组合根加载运行配置和固定配置，构造 HAL、驱动、设备、中间件、服务和应用层对象，
+ * 再按安全依赖顺序启动线程。硬件初始化失败时启动过程直接失败，退出时按固定顺序停止运动、
+ * 监控、通信和缓存服务。
  */
 #include <cmath>
 #include <sys/mman.h>
@@ -81,6 +76,19 @@ namespace {
 // 否则视觉纠偏 PID / 融合预测会使用错误时间基准。
 constexpr int kWalkCtrlPeriodMs = 50;
 constexpr float kWalkCtrlPeriodS = static_cast<float>(kWalkCtrlPeriodMs) / 1000.0f;
+constexpr int kWalkCtrlPriority = 80;
+constexpr int kWalkCtrlCpuMask = 1 << 5;
+constexpr int kWalkCtrlWatchdogMs = 500;
+constexpr int kGpsStuckPeriodMs = 500;
+constexpr int kGpsStuckPriority = 65;
+constexpr int kGpsStuckCpuMask = 1 << 6;
+constexpr int kGpsStuckWatchdogMs = 2000;
+constexpr int kGpioMonitorPriority = 95;
+constexpr int kGpioMonitorCpuMask = 1 << 4;
+constexpr int kBackgroundCpuMask = 0x0F;
+constexpr int kBmsWatchdogMs = 5000;
+constexpr int kBrushWatchdogMs = 2000;
+constexpr int kErrorManagerDefaultPeriodMs = 100;
 
 uint64_t steady_now_ms() {
     return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -182,7 +190,7 @@ bool stream_ready_for_self_check(const robot::domain::StreamHealth& health,
 
 bool self_check_ready(const robot::service::DiagnosticsCollector::Snapshot& snapshot,
                       uint64_t now_ms) {
-    // v1 自检只做确定性健康门槛：关键通信流必须已有真实计数，且最近 3s 内更新。
+    // 自检只做确定性健康门槛：关键通信流必须已有真实计数，且最近 3s 内更新。
     // 更细的业务质量（例如 GPS 是否定位、BMS 电量门槛）仍由各自既有启动校验负责。
     constexpr uint64_t kSelfCheckStreamMaxAgeMs = 3000;
     if (snapshot.ts_ms == 0) {
@@ -331,6 +339,8 @@ robot::service::MotionService::Config read_motion_config_fields(
     motion_cfg.clean_speed_rpm = cfg.get<float>("robot.clean_speed_rpm", 300.0f);
     motion_cfg.return_speed_rpm = cfg.get<float>("robot.return_speed_rpm", 300.0f);
     motion_cfg.brush_rpm = cfg.get<int>("robot.brush_rpm", 1000);
+    motion_cfg.brush_direction_sign =
+        cfg.get_fixed<int>("installation.brush_direction_sign", motion_cfg.brush_direction_sign);
     motion_cfg.heading_pid_en = cfg.get<bool>("robot.heading_pid_en", false);
     motion_cfg.control_dt_s = kWalkCtrlPeriodS;
     // 视觉纠偏参数从 robot.pid.* 读取；未配置时使用控制器头文件默认值。
@@ -395,6 +405,79 @@ robot::service::MotionService::Config read_motion_config_fields(
     return motion_cfg;
 }
 
+robot::service::GpsStuckConfig read_gps_stuck_config(robot::service::ConfigService& cfg) {
+    robot::service::GpsStuckConfig gps_cfg;
+    gps_cfg.min_fix_quality =
+        cfg.get_fixed<uint8_t>("gps_stuck.min_fix_quality", gps_cfg.min_fix_quality);
+    gps_cfg.min_satellites_used =
+        cfg.get_fixed<uint8_t>("gps_stuck.min_satellites_used", gps_cfg.min_satellites_used);
+    gps_cfg.max_hdop = cfg.get_fixed<float>("gps_stuck.max_hdop", gps_cfg.max_hdop);
+    gps_cfg.max_pdop = cfg.get_fixed<float>("gps_stuck.max_pdop", gps_cfg.max_pdop);
+    gps_cfg.moving_speed_mps =
+        cfg.get_fixed<float>("gps_stuck.moving_speed_mps", gps_cfg.moving_speed_mps);
+    gps_cfg.moving_speed_confirm_samples = cfg.get_fixed<int>(
+        "gps_stuck.moving_speed_confirm_samples",
+        gps_cfg.moving_speed_confirm_samples);
+    gps_cfg.stuck_timeout = std::chrono::milliseconds(
+        cfg.get_fixed<int>("gps_stuck.stuck_timeout_ms",
+                           static_cast<int>(gps_cfg.stuck_timeout.count())));
+    gps_cfg.sample_stale_timeout = std::chrono::milliseconds(
+        cfg.get_fixed<int>("gps_stuck.sample_stale_timeout_ms",
+                           static_cast<int>(gps_cfg.sample_stale_timeout.count())));
+    return gps_cfg;
+}
+
+robot::service::AttitudeLimitService::CenterConfig read_attitude_center_config(
+    robot::service::ConfigService& cfg) {
+    robot::service::AttitudeLimitService::CenterConfig center_cfg;
+    center_cfg.lower_rpm =
+        cfg.get_fixed<float>("recovery.attitude_center.lower_rpm", center_cfg.lower_rpm);
+    center_cfg.stable_samples_required = cfg.get_fixed<int>(
+        "recovery.attitude_center.stable_samples_required",
+        center_cfg.stable_samples_required);
+    center_cfg.overall_timeout = std::chrono::milliseconds(
+        cfg.get_fixed<int>("recovery.attitude_center.timeout_ms",
+                           static_cast<int>(center_cfg.overall_timeout.count())));
+    center_cfg.tick = std::chrono::milliseconds(
+        cfg.get_fixed<int>("recovery.attitude_center.tick_ms",
+                           static_cast<int>(center_cfg.tick.count())));
+    return center_cfg;
+}
+
+robot::app::ErrorManager::Config read_error_manager_config(robot::service::ConfigService& cfg) {
+    robot::app::ErrorManager::Config error_cfg;
+    error_cfg.consecutive_error_limit = cfg.get_fixed<uint32_t>(
+        "error_manager.consecutive_error_limit",
+        error_cfg.consecutive_error_limit);
+    error_cfg.stream_timeout_ms =
+        cfg.get_fixed<uint64_t>("error_manager.stream_timeout_ms", error_cfg.stream_timeout_ms);
+    error_cfg.walk_stall_duration_ms = cfg.get_fixed<uint64_t>(
+        "error_manager.walk_stall_duration_ms",
+        error_cfg.walk_stall_duration_ms);
+    error_cfg.attitude_repeat_gap_ms = cfg.get_fixed<uint64_t>(
+        "error_manager.attitude_repeat_gap_ms",
+        error_cfg.attitude_repeat_gap_ms);
+    error_cfg.attitude_reverse_attempt_count = cfg.get_fixed<uint32_t>(
+        "error_manager.attitude_reverse_attempt_count",
+        error_cfg.attitude_reverse_attempt_count);
+    error_cfg.attitude_fault_count =
+        cfg.get_fixed<uint32_t>("error_manager.attitude_fault_count",
+                                error_cfg.attitude_fault_count);
+    return error_cfg;
+}
+
+robot::middleware::SafetyMonitor::Config read_safety_monitor_config(
+    robot::service::ConfigService& cfg) {
+    robot::middleware::SafetyMonitor::Config safety_cfg;
+    safety_cfg.limit_settle_stable_ms = cfg.get_fixed<uint64_t>(
+        "safety.limit_settle_stable_ms",
+        safety_cfg.limit_settle_stable_ms);
+    safety_cfg.limit_release_stable_ms = cfg.get_fixed<uint64_t>(
+        "safety.limit_release_stable_ms",
+        safety_cfg.limit_release_stable_ms);
+    return safety_cfg;
+}
+
 bool initialize_devices(
     const std::shared_ptr<spdlog::logger>& log,
     const std::shared_ptr<robot::device::WalkMotorGroup>& walk_group,
@@ -414,23 +497,28 @@ bool initialize_devices(
         log->error("[Main] walk_group CAN 初始化失败，退出");
         return false;
     }
-    // 主动配置电机反馈方式：10ms 主动上报（100Hz），与运动控制采样对齐。
+    const auto walk_feedback_period_ms =
+        cfg.get_fixed<uint8_t>("can.walk_motor.feedback_period_ms", 10u);
+    // 主动配置电机反馈方式：默认 10ms 主动上报（100Hz），与运动控制采样对齐。
     // 不依赖上次写入 EEPROM 的值，确保每次上电行为确定性。
-    if (walk_group->set_feedback_mode_all(10u) != robot::device::DeviceError::OK) {
+    if (walk_group->set_feedback_mode_all(walk_feedback_period_ms) !=
+        robot::device::DeviceError::OK) {
         log->warn("[Main] 电机反馈模式配置失败，将使用硬件保存值");
     } else {
-        log->info("[Main] 电机反馈配置：10ms 主动上报 (100Hz)");
+        log->info("[Main] 电机反馈配置：{}ms 主动上报",
+                  static_cast<int>(walk_feedback_period_ms));
     }
 
     if (!imu->open()) {
         log->warn("[Main] IMU 初始化失败");
     } else {
-        // 主动配置 IMU 输出频率为 100Hz（RRATE=0x09），与 imu_read 线程和姿态纠偏周期对齐。
+        const auto imu_output_rate_hz = cfg.get_fixed<int>("serial.imu.output_rate_hz", 100);
+        // 主动配置 IMU 输出频率，默认 100Hz（RRATE=0x09），与 imu_read 线程和姿态纠偏周期对齐。
         // 不依赖硬件 EEPROM 保存值，确保上电后频率确定。
-        if (imu->set_output_rate(100) != robot::device::DeviceError::OK) {
+        if (imu->set_output_rate(imu_output_rate_hz) != robot::device::DeviceError::OK) {
             log->warn("[Main] IMU 频率配置失败，将使用硬件保存值");
         } else {
-            log->info("[Main] IMU 输出频率配置：100Hz");
+            log->info("[Main] IMU 输出频率配置：{}Hz", imu_output_rate_hz);
         }
     }
     if (!gps->open()) {
@@ -440,8 +528,11 @@ bool initialize_devices(
     // gpio.use_irq: 若 GPIO 控制器不支持硬件 IRQ（如 RK3576 gpiochip5），配置为 false 使用
     // 驱动层固定周期软件轮询。pca953x 这类 I2C GPIO 扩展芯片不能承受多路 1ms 高频并发读。
     const bool gpio_use_irq = cfg.get<bool>("gpio.use_irq", false);
-    gpio_status.left_limit = left_switch->open(95, 2, 1 << 4, gpio_use_irq);
-    gpio_status.right_limit = right_switch->open(95, 2, 1 << 4, gpio_use_irq);
+    const int gpio_input_debounce_ms = cfg.get_fixed<int>("gpio.input_debounce_ms", 2);
+    gpio_status.left_limit = left_switch->open(
+        kGpioMonitorPriority, gpio_input_debounce_ms, kGpioMonitorCpuMask, gpio_use_irq);
+    gpio_status.right_limit = right_switch->open(
+        kGpioMonitorPriority, gpio_input_debounce_ms, kGpioMonitorCpuMask, gpio_use_irq);
     if (!gpio_status.left_limit) {
         log->warn("[Main] 左限位开关初始化失败");
     }
@@ -451,8 +542,12 @@ bool initialize_devices(
 
     // 姿态限位用于急停和回中测量，RK3576 对应 GPIO 线按驱动层固定周期软件轮询处理；
     // 回中流程本身也通过 read_current_level() 轮询判断“刚释放/刚触发”。
-    gpio_status.left_attitude = left_attitude_switch->open(95, 2, 1 << 4, false);
-    gpio_status.right_attitude = right_attitude_switch->open(95, 2, 1 << 4, false);
+    gpio_status.left_attitude =
+        left_attitude_switch->open(
+            kGpioMonitorPriority, gpio_input_debounce_ms, kGpioMonitorCpuMask, false);
+    gpio_status.right_attitude =
+        right_attitude_switch->open(
+            kGpioMonitorPriority, gpio_input_debounce_ms, kGpioMonitorCpuMask, false);
     if (!gpio_status.left_attitude) {
         log->warn("[Main] 左姿态限位开关初始化失败");
     }
@@ -482,7 +577,10 @@ void run_application_loop(
     const std::shared_ptr<robot::service::DiagnosticsCollector>& diagnostics_collector,
     robot::middleware::ThreadExecutor& cloud_exec,
     int active_report_period,
-    int idle_report_period) {
+    int idle_report_period,
+    robot::middleware::ThreadExecutor* local_diag_exec,
+    int active_local_log_period,
+    int idle_local_log_period) {
     // 主循环只推进低频业务编排：调度窗口、自检完成条件、云端上报周期和控制器 tick。
     // RT 运动控制、诊断采集、错误处理和云端发送均由各自 ThreadExecutor 执行。
     std::optional<uint64_t> self_check_started_ms;
@@ -515,6 +613,13 @@ void run_application_loop(
         if (cloud_exec.period_ms() != desired_report_period) {
             cloud_exec.set_period_ms(desired_report_period);
         }
+        if (local_diag_exec) {
+            const int desired_local_log_period =
+                active_motion_state ? active_local_log_period : idle_local_log_period;
+            if (local_diag_exec->period_ms() != desired_local_log_period) {
+                local_diag_exec->set_period_ms(desired_local_log_period);
+            }
+        }
         controller->post_tick();
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
@@ -541,6 +646,7 @@ bool shutdown_runtime(
     robot::middleware::ThreadExecutor& brush_exec,
     robot::middleware::ThreadExecutor& error_exec,
     robot::middleware::ThreadExecutor& diagnostics_exec,
+    robot::middleware::ThreadExecutor* local_diag_exec,
     robot::middleware::ThreadExecutor& cloud_exec,
     const std::shared_ptr<robot::service::AttitudeLimitService>& attitude_limit,
     robot::middleware::SafetyMonitor& safety_monitor,
@@ -573,6 +679,10 @@ bool shutdown_runtime(
     stopped_cleanly &= stop_executor_with_timeout(log, "brush", brush_exec, std::chrono::milliseconds(2000));
     stopped_cleanly &= stop_executor_with_timeout(log, "error_mgr", error_exec, std::chrono::milliseconds(1000));
     stopped_cleanly &= stop_executor_with_timeout(log, "diagnostics", diagnostics_exec, std::chrono::milliseconds(1000));
+    if (local_diag_exec) {
+        stopped_cleanly &= stop_executor_with_timeout(
+            log, "local_diag", *local_diag_exec, std::chrono::milliseconds(2000));
+    }
     stopped_cleanly &= stop_executor_with_timeout(log, "cloud", cloud_exec, std::chrono::milliseconds(2000));
     attitude_limit->stop_monitoring();
     safety_monitor.stop();
@@ -648,6 +758,7 @@ bool start_runtime_threads(const std::shared_ptr<spdlog::logger>& log,
                            robot::middleware::ThreadExecutor& brush_exec,
                            robot::middleware::ThreadExecutor& diagnostics_exec,
                            robot::middleware::ThreadExecutor& error_exec,
+                           robot::middleware::ThreadExecutor* local_diag_exec,
                            robot::middleware::ThreadExecutor& cloud_exec) {
     // 启动顺序保持原业务流程：先运动/设备采集，再诊断、错误处理和云端上报。
     if (!walk_exec.start()) {
@@ -674,6 +785,9 @@ bool start_runtime_threads(const std::shared_ptr<spdlog::logger>& log,
         log->error("[Main] error_mgr 启动失败");
         return false;
     }
+    if (local_diag_exec && !local_diag_exec->start()) {
+        log->warn("[Main] local_diag 启动失败，本地高频诊断日志不可用");
+    }
     if (!cloud_exec.start()) {
         log->error("[Main] cloud 启动失败，云端上报/RPC 不可用，机器人本体继续运行");
     }
@@ -684,7 +798,10 @@ bool start_runtime_threads(const std::shared_ptr<spdlog::logger>& log,
 robot::app::RecoveryExecutor::Ports make_recovery_ports(
     const std::shared_ptr<robot::service::GpsStuckService>& gps_stuck,
     const std::shared_ptr<robot::service::MotionService>& motion,
-    const std::shared_ptr<robot::service::AttitudeLimitService>& attitude_limit) {
+    const std::shared_ptr<robot::service::AttitudeLimitService>& attitude_limit,
+    robot::service::AttitudeLimitService::CenterConfig attitude_center_config,
+    std::chrono::milliseconds reverse_duration,
+    std::chrono::milliseconds reverse_tick) {
     robot::app::RecoveryExecutor::Ports recovery_ports;
     recovery_ports.pause_gps_stuck = [gps_stuck] { gps_stuck->set_monitoring_enabled(false); };
     recovery_ports.resume_gps_stuck = [gps_stuck] {
@@ -695,12 +812,11 @@ robot::app::RecoveryExecutor::Ports make_recovery_ports(
         motion->emergency_stop();
         return true;
     };
-    recovery_ports.reverse_walk_motion = [motion] {
-        return motion->reverse_for_recovery(
-            std::chrono::seconds(2), std::chrono::milliseconds(20), [] { return false; });
+    recovery_ports.reverse_walk_motion = [motion, reverse_duration, reverse_tick] {
+        return motion->reverse_for_recovery(reverse_duration, reverse_tick, [] { return false; });
     };
-    recovery_ports.lower_attitude_center = [attitude_limit] {
-        const auto result = attitude_limit->lower_attitude_center();
+    recovery_ports.lower_attitude_center = [attitude_limit, attitude_center_config] {
+        const auto result = attitude_limit->lower_attitude_center(attitude_center_config);
         switch (result.outcome) {
         case robot::service::AttitudeLimitService::CenterOutcome::Completed:
             return robot::app::RecoveryStepResult{
@@ -772,23 +888,23 @@ service::MotionService::Config make_motion_config_from_config(service::ConfigSer
 }
 
 int RobotApplication::run(const std::atomic<bool>& running) {
-    // ── 1. 配置服务 ────────────────────────────────────────────────────
+    // 配置服务必须最先初始化，后续硬件路径、线程周期和安全阈值均来自配置。
     auto cfg_ptr = load_config_or_fallback();
     if (!cfg_ptr) {
         return 1;
     }
     auto& cfg = *cfg_ptr;
 
-    // ── 2. 日志初始化 ──────────────────────────────────────────────────
+    // 日志初始化依赖配置路径；后续启动失败都通过该 logger 上报。
     auto log = initialize_logging(cfg);
 
-    // ── 2.1 锁定所有内存页（消除运行期缺页中断，降低 RT 延迟抖动）──────
+    // 锁定内存页以降低实时线程运行期缺页中断带来的延迟抖动。
     lock_memory_pages(log);
 
-    // ── 4. EventBus ───────────────────────────────────────────────────
+    // EventBus 负责模块间同步事件发布，不直接承载硬件控制动作。
     robot::middleware::EventBus event_bus;
 
-    // ── 5. CAN 驱动 ────────────────────────────────────────────────────
+    // CAN 驱动用于行走电机组控制和反馈。
     auto can_bus = std::make_shared<robot::driver::LinuxCanSocket>(
         cfg.get<std::string>("can.interface", "can0"));
 
@@ -803,7 +919,7 @@ int RobotApplication::run(const std::atomic<bool>& running) {
         cfg.get<uint8_t>("can.walk_motor.termination_init_retry_count", 3u),
         cfg.get<uint8_t>("can.walk_motor.termination_motor_id", 2u));
 
-    // ── 6. 串口驱动 ───────────────────────────────────────────────────
+    // 串口驱动用于滚刷、BMS、IMU、GPS 和 LoRaWAN 等外设。
     auto brush_serial = std::make_shared<robot::driver::LibSerialPort>(
         cfg.get<std::string>("serial.brush.port", "/dev/ttyS3"),
         robot::hal::UartConfig{cfg.get<int>("serial.brush.baudrate", 115200)});
@@ -817,9 +933,12 @@ int RobotApplication::run(const std::atomic<bool>& running) {
 
     auto bms = std::make_shared<robot::device::BMS>(bms_serial,
                                                     cfg.get<float>("robot.charge_stop_soc", 95.0f),
-                                                    cfg.get<float>("robot.min_battery_soc", 30.0f));
+                                                    cfg.get<float>("robot.min_battery_soc", 30.0f),
+                                                    cfg.get_fixed<float>(
+                                                        "bms.charging_current_threshold_a",
+                                                        0.05f));
 
-    // ── 7. UART 驱动 ──────────────────────────────────────────────────
+    // IMU 和 GPS 在这里选择具体数据源，后续统一通过设备接口读取。
     auto imu_serial = std::make_shared<robot::driver::LibSerialPort>(
         cfg.get<std::string>("serial.imu.port", "/dev/ttyS1"),
         robot::hal::UartConfig{cfg.get<int>("serial.imu.baudrate", 921600)});
@@ -845,7 +964,7 @@ int RobotApplication::run(const std::atomic<bool>& running) {
         gps = std::make_shared<robot::device::GpsDevice>(gps_serial);
     }
 
-    // ── 8. GPIO 限位开关 ───────────────────────────────────────────────
+    // GPIO 输入用于主限位和姿态限位；GPIO 输出用于锁止电机。
     auto left_gpio = std::make_shared<robot::driver::LibGpiodPin>(
         cfg.get<std::string>("gpio.left_limit.chip", "gpiochip5"),
         cfg.get<int>("gpio.left_limit.line", 0));
@@ -878,7 +997,7 @@ int RobotApplication::run(const std::atomic<bool>& running) {
     auto lock_motor = std::make_shared<robot::device::LockMotor>(
         lock_open_gpio, lock_close_gpio, make_lock_motor_config(cfg));
 
-    // ── 9. 初始化设备 ──────────────────────────────────────────────────
+    // 打开设备并记录 GPIO 可用性；关键硬件初始化失败时直接终止启动。
     GpioOpenStatus gpio_status;
     if (!initialize_devices(log,
                             walk_group,
@@ -896,17 +1015,18 @@ int RobotApplication::run(const std::atomic<bool>& running) {
         return 1;
     }
 
-    // ── 10. 安全监控器 ─────────────────────────────────────────────────
+    // 安全监控器只负责主限位首响急停和到位事件发布，任务推进由状态机处理。
     robot::middleware::SafetyMonitor safety_monitor(
         [walk_group]() { walk_group->emergency_override(0.0f); },
         left_switch,
         right_switch,
-        event_bus);
+        event_bus,
+        read_safety_monitor_config(cfg));
     // 这里只构造安全监控器，不立即启动 GPIO polling 线程。上电位置自检仍需要同步读取
     // 主限位电平；若此时已经有多个 RT GPIO 线程在同一颗 pca953x 上轮询，主线程可能在
     // 内核 GPIO 锁上不可中断等待。监控线程会在上电自检读取完成后统一启动。
 
-    // ── 11. 网络传输 ───────────────────────────────────────────────────
+    // 网络传输按配置选择 MQTT、LoRaWAN 或双通道并行。
     auto mqtt = std::make_shared<robot::middleware::MqttTransport>(make_mqtt_config(cfg));
     const auto net_mode = network_mode_from_config(cfg);
 
@@ -926,15 +1046,16 @@ int RobotApplication::run(const std::atomic<bool>& running) {
     auto net_mgr =
         std::make_shared<robot::middleware::NetworkManager>(mqtt, lorawan_transport, net_mode);
 
-    // ── 12. 数据缓存 ───────────────────────────────────────────────────
+    // 数据缓存用于网络不可用时暂存待上报遥测。
     auto data_cache = std::make_shared<robot::middleware::DataCache>(
         cfg.get<std::string>("storage.cache_path", "/var/robot/telemetry_cache.jsonl"));
     data_cache->open();
 
-    // ── 13. 服务层 ─────────────────────────────────────────────────────
+    // 服务层封装运动控制、卡滞检测、姿态限位、云端控制和诊断采集。
     auto motion = std::make_shared<robot::service::MotionService>(
         walk_group, brush_motor, imu, event_bus, make_motion_config_from_config(cfg));
-    auto gps_stuck = std::make_shared<robot::service::GpsStuckService>(gps);
+    auto gps_stuck =
+        std::make_shared<robot::service::GpsStuckService>(gps, read_gps_stuck_config(cfg));
     // GpsStuck 只在执行清扫任务时启用；启动期/自检/空闲/充电都不应判定“卡住”。
     gps_stuck->set_monitoring_enabled(false);
     auto attitude_limit = std::make_shared<robot::service::AttitudeLimitService>(
@@ -954,9 +1075,10 @@ int RobotApplication::run(const std::atomic<bool>& running) {
     auto diagnostics_collector = std::make_shared<robot::service::DiagnosticsCollector>(
         walk_group, brush_motor, bms, imu, gps, gps_stuck);
 
-    auto error_manager = std::make_shared<robot::app::ErrorManager>();
+    auto error_manager =
+        std::make_shared<robot::app::ErrorManager>(read_error_manager_config(cfg));
 
-    // ── 14. 应用层 ─────────────────────────────────────────────────────
+    // 应用层状态机只依赖端口回调，不直接持有底层硬件对象。
     auto controller =
         std::make_shared<robot::app::RobotController>(robot::app::RobotController::ActionPorts{
             [motion](const robot::domain::MissionSegment& segment) {
@@ -1069,7 +1191,7 @@ int RobotApplication::run(const std::atomic<bool>& running) {
     connect_cloud_and_publish_startup(
         running, log, cfg, tb_control, net_mgr, startup_state, dual_dock_mode);
 
-    // ── 调度服务：定时触发清扫任务（读取 active runtime 的 scheduler.windows） ─────
+    // 调度服务只读取 active runtime 的时间窗口，命中后把启动请求交给状态机。
     scheduler.set_on_window_hit([controller] { controller->post_schedule_window_hit(); });
 
     robot::app::WatchdogMgr watchdog(cfg.get<std::string>("system.hw_watchdog", "/dev/watchdog"));
@@ -1078,7 +1200,7 @@ int RobotApplication::run(const std::atomic<bool>& running) {
     });
     watchdog.start();
 
-    // ── 15. 上报服务 ───────────────────────────────────────────────────
+    // 上报服务从 DiagnosticsCollector 获取唯一诊断事实，按运行状态动态调整周期。
     std::string diag_mode = cfg.get<std::string>("diagnostics.mode", "production");
     const bool cloud_upload = cfg.get<bool>("diagnostics.cloud_upload", true);
     const bool local_log = cfg.get<bool>("diagnostics.local_log", true);
@@ -1093,18 +1215,29 @@ int RobotApplication::run(const std::atomic<bool>& running) {
         std::max(1, cfg.get<int>("diagnostics.local_log_max_bytes", 10 * 1024 * 1024)));
     const size_t local_log_max_files =
         static_cast<size_t>(std::max(1, cfg.get<int>("diagnostics.local_log_max_files", 3)));
+    const auto health_mode =
+        diag_mode == "development" ? robot::service::HealthService::Mode::DIAGNOSTICS
+                                   : robot::service::HealthService::Mode::HEALTH;
     std::shared_ptr<robot::service::CloudService> health_cloud = cloud_upload ? cloud : nullptr;
-    auto reporter = std::make_shared<robot::service::HealthService>(
+    auto cloud_reporter = std::make_shared<robot::service::HealthService>(
         diagnostics_collector,
         health_cloud,
-        diag_mode == "development" ? robot::service::HealthService::Mode::DIAGNOSTICS
-                                   : robot::service::HealthService::Mode::HEALTH,
-        local_tel_path,
+        health_mode,
+        "",
         local_log_max_bytes,
         local_log_max_files);
+    std::shared_ptr<robot::service::HealthService> local_reporter;
+    if (!local_tel_path.empty()) {
+        local_reporter = std::make_shared<robot::service::HealthService>(
+            diagnostics_collector,
+            nullptr,
+            health_mode,
+            local_tel_path,
+            local_log_max_bytes,
+            local_log_max_files);
+    }
 
-    // ── 16. 线程执行器 ────────────────────────────────────────────────
-    // ── RK3576 CPU 拓扑 ───────────────────────────────────────────────
+    // RK3576 CPU 拓扑：
     //   CPU 0-3: Cortex-A55 (LITTLE 核)  → 非 RT 后台任务
     //   CPU 4-7: Cortex-A76 (BIG 核)     → RT 任务专用
     //
@@ -1118,40 +1251,53 @@ int RobotApplication::run(const std::atomic<bool>& running) {
     // 行走控制线程：SCHED_FIFO 80, 50ms (20Hz)，绑定 CPU 5。
     // MotionService::control_dt_s 与此周期绑定，保证 PID / 融合预测的时间基准一致。
     robot::middleware::ThreadExecutor walk_exec(
-        {"walk_ctrl", kWalkCtrlPeriodMs, SCHED_FIFO, 80, 1 << 5});
+        {"walk_ctrl", kWalkCtrlPeriodMs, SCHED_FIFO, kWalkCtrlPriority, kWalkCtrlCpuMask});
     walk_exec.add_runnable(motion);
     // 心跳在 walk_ctrl 线程自身内汇报（超时 = 该线程死锁，而非主线程死锁）
-    int walk_wd = watchdog.register_thread("walk_ctrl", 500);
+    int walk_wd = watchdog.register_thread("walk_ctrl", kWalkCtrlWatchdogMs);
     walk_exec.add_runnable(std::make_shared<robot::middleware::RunnableAdapter>(
         [&watchdog, walk_wd]() { watchdog.heartbeat(walk_wd); }));
 
-    // GPS 卡住检测线程：SCHED_FIFO 65, 10ms，绑定 CPU 6
-    robot::middleware::ThreadExecutor gps_stuck_exec({"gps_stuck", 10, SCHED_FIFO, 65, 1 << 6});
+    // GPS 卡住检测线程：SCHED_FIFO 65, 500ms，绑定 CPU 6，匹配 1Hz GPS 更新。
+    robot::middleware::ThreadExecutor gps_stuck_exec(
+        {"gps_stuck", kGpsStuckPeriodMs, SCHED_FIFO, kGpsStuckPriority, kGpsStuckCpuMask});
     gps_stuck_exec.add_runnable(gps_stuck);
-    int gps_stuck_wd = watchdog.register_thread("gps_stuck", 100);
+    int gps_stuck_wd = watchdog.register_thread("gps_stuck", kGpsStuckWatchdogMs);
     gps_stuck_exec.add_runnable(std::make_shared<robot::middleware::RunnableAdapter>(
         [&watchdog, gps_stuck_wd]() { watchdog.heartbeat(gps_stuck_wd); }));
 
-    // BMS 采集线程：500ms，绑定 LITTLE 核 CPU 0-3（低功耗后台）。
+    const int bms_poll_period_ms = cfg.get_fixed<int>("bms.poll_interval_ms", 500);
+    const int brush_poll_period_ms = cfg.get_fixed<int>("brush.poll_interval_ms", 500);
+
+    // BMS 采集线程：默认 500ms，绑定 LITTLE 核 CPU 0-3（低功耗后台）。
     // BMS 休眠或无响应时单次 update 可能包含多轮唤醒重试；watchdog 只判定线程卡死，
     // 通信异常由 DiagnosticsCollector/ErrorManager 的 update_count 停滞规则判定。
-    robot::middleware::ThreadExecutor bms_exec({"bms", 500, SCHED_OTHER, 0, 0x0F});
+    robot::middleware::ThreadExecutor bms_exec(
+        {"bms", bms_poll_period_ms, SCHED_OTHER, 0, kBackgroundCpuMask});
     bms_exec.add_runnable(
         std::make_shared<robot::middleware::RunnableAdapter>([&bms]() { bms->update(); }));
-    int bms_wd = watchdog.register_thread("bms", 5000);
+    int bms_wd = watchdog.register_thread("bms", kBmsWatchdogMs);
     bms_exec.add_runnable(std::make_shared<robot::middleware::RunnableAdapter>(
         [&watchdog, bms_wd]() { watchdog.heartbeat(bms_wd); }));
 
-    // BrushMotor 状态不需要实时性，500ms 周期足够。独立线程便于恢复时只停止滚刷通信。
-    robot::middleware::ThreadExecutor brush_exec({"brush", 500, SCHED_OTHER, 0, 0x0F});
+    // BrushMotor 状态不需要实时性，默认 500ms 周期足够。独立线程便于恢复时只停止滚刷通信。
+    robot::middleware::ThreadExecutor brush_exec(
+        {"brush", brush_poll_period_ms, SCHED_OTHER, 0, kBackgroundCpuMask});
     brush_exec.add_runnable(std::make_shared<robot::middleware::RunnableAdapter>(
         [&brush_motor]() { brush_motor->update(); }));
-    int brush_wd = watchdog.register_thread("brush", 2000);
+    int brush_wd = watchdog.register_thread("brush", kBrushWatchdogMs);
     brush_exec.add_runnable(std::make_shared<robot::middleware::RunnableAdapter>(
         [&watchdog, brush_wd]() { watchdog.heartbeat(brush_wd); }));
 
     robot::app::RecoveryExecutor recovery_executor(
-        make_recovery_ports(gps_stuck, motion, attitude_limit));
+        make_recovery_ports(
+            gps_stuck,
+            motion,
+            attitude_limit,
+            read_attitude_center_config(cfg),
+            std::chrono::milliseconds(
+                cfg.get_fixed<int>("recovery.reverse.duration_ms", 2000)),
+            std::chrono::milliseconds(cfg.get_fixed<int>("recovery.reverse.tick_ms", 20))));
     auto error_handling = make_error_handling_service(error_manager,
                                                       controller,
                                                       attitude_limit,
@@ -1161,27 +1307,38 @@ int RobotApplication::run(const std::atomic<bool>& running) {
 
     // 诊断采集与云端上报线程：绑定 LITTLE 核 CPU 0-3（低功耗后台）
     const int diagnostics_collect_period =
-        std::max(50, cfg.get<int>("diagnostics.collect_interval_ms", 500));
-    const int error_period = std::max(50, cfg.get<int>("error_manager.period_ms", 100));
+        std::max(50, cfg.get<int>("diagnostics.collect_interval_ms", 50));
+    const int error_period =
+        std::max(50, cfg.get<int>("error_manager.period_ms", kErrorManagerDefaultPeriodMs));
     const int active_report_period =
         std::max(1, cfg.get<int>("diagnostics.publish_interval_active_ms", 1000));
     const int idle_report_period =
         std::max(1, cfg.get<int>("diagnostics.publish_interval_idle_ms", 300000));
+    const int active_local_log_period =
+        std::max(50, cfg.get<int>("diagnostics.local_log_interval_active_ms", 50));
+    const int idle_local_log_period =
+        std::max(1, cfg.get<int>("diagnostics.local_log_interval_idle_ms", 300000));
     robot::middleware::ThreadExecutor diagnostics_exec(
-        {"diagnostics", diagnostics_collect_period, SCHED_OTHER, 0, 0x0F});
+        {"diagnostics", diagnostics_collect_period, SCHED_OTHER, 0, kBackgroundCpuMask});
     diagnostics_exec.add_runnable(diagnostics_collector);
-    robot::middleware::ThreadExecutor error_exec({"error_mgr", error_period, SCHED_OTHER, 0, 0x0F});
+    robot::middleware::ThreadExecutor error_exec(
+        {"error_mgr", error_period, SCHED_OTHER, 0, kBackgroundCpuMask});
     error_exec.add_runnable(error_handling);
+    robot::middleware::ThreadExecutor local_diag_exec(
+        {"local_diag", active_local_log_period, SCHED_OTHER, 0, kBackgroundCpuMask});
+    robot::middleware::ThreadExecutor* local_diag_exec_ptr = nullptr;
+    if (local_reporter) {
+        local_diag_exec.add_runnable(local_reporter);
+        local_diag_exec_ptr = &local_diag_exec;
+    }
     robot::middleware::ThreadExecutor cloud_exec(
-        {"cloud", active_report_period, SCHED_OTHER, 0, 0x0F});
+        {"cloud", active_report_period, SCHED_OTHER, 0, kBackgroundCpuMask});
     cloud_exec.add_runnable(std::make_shared<robot::middleware::RunnableAdapter>(
         [controller, diagnostics_collector]() {
             log_runtime_diagnostics(controller->snapshot(), diagnostics_collector->snapshot());
         }));
-    if (cloud_upload || local_log) {
-        cloud_exec.add_runnable(reporter);
-    }
     if (cloud_upload) {
+        cloud_exec.add_runnable(cloud_reporter);
         cloud_exec.add_runnable(std::make_shared<robot::middleware::RunnableAdapter>(
             [tb_control]() { tb_control->publish_business_telemetry(); }));
         cloud_exec.add_runnable(cloud);
@@ -1193,6 +1350,7 @@ int RobotApplication::run(const std::atomic<bool>& running) {
                                brush_exec,
                                diagnostics_exec,
                                error_exec,
+                               local_diag_exec_ptr,
                                cloud_exec)) {
         log->error("[Main] 核心运行线程启动失败，退出");
         static_cast<void>(shutdown_runtime(log,
@@ -1202,6 +1360,7 @@ int RobotApplication::run(const std::atomic<bool>& running) {
                                            brush_exec,
                                            error_exec,
                                            diagnostics_exec,
+                                           local_diag_exec_ptr,
                                            cloud_exec,
                                            attitude_limit,
                                            safety_monitor,
@@ -1222,16 +1381,19 @@ int RobotApplication::run(const std::atomic<bool>& running) {
         return 1;
     }
 
-    // ── 17. 主循环 ───────────────────────────────────────────────────
+    // 主循环处理调度 tick、诊断上报周期切换和退出信号。
     run_application_loop(running,
                          scheduler,
                          controller,
                          diagnostics_collector,
                          cloud_exec,
                          active_report_period,
-                         idle_report_period);
+                         idle_report_period,
+                         local_diag_exec_ptr,
+                         active_local_log_period,
+                         idle_local_log_period);
 
-    // ── 18. 优雅关闭 ──────────────────────────────────────────────────
+    // 退出时按依赖反向停止线程、监控器、状态机、运动和通信资源。
     const bool shutdown_ok = shutdown_runtime(log,
                                              walk_exec,
                                              gps_stuck_exec,
@@ -1239,6 +1401,7 @@ int RobotApplication::run(const std::atomic<bool>& running) {
                                              brush_exec,
                                              error_exec,
                                              diagnostics_exec,
+                                             local_diag_exec_ptr,
                                              cloud_exec,
                                              attitude_limit,
                                              safety_monitor,

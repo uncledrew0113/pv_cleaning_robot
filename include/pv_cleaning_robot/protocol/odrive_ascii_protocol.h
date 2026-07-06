@@ -1,3 +1,9 @@
+/**
+ * @file odrive_ascii_protocol.h
+ * @brief ODrive ASCII 协议辅助接口。
+ *
+ * 本文件提供滚刷电机 ODrive ASCII 命令和响应解析所需的轻量工具函数。
+ */
 #pragma once
 
 #include <cstddef>

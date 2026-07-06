@@ -1,3 +1,10 @@
+/**
+ * @file config_service.cc
+ * @brief 运行配置和固定配置加载实现。
+ *
+ * 本文件实现 JSON 配置读取、路径查找、运行配置提升和原子写回。配置非法或持久化失败会通过
+ * 返回值和日志显式暴露，不静默吞掉错误。
+ */
 #include "pv_cleaning_robot/service/config_service.h"
 
 #include <cmath>

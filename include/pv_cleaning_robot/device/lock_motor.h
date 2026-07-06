@@ -1,3 +1,10 @@
+/**
+ * @file lock_motor.h
+ * @brief 锁止电机 GPIO 输出控制接口。
+ *
+ * 锁止电机通过两个 DO 输出分别执行开锁和关锁脉冲。本模块只能确认 GPIO 写入是否成功，
+ * 不具备机械到位反馈能力；停机位确认由状态机在调用前完成。
+ */
 #pragma once
 
 #include <cstdint>
@@ -13,7 +20,7 @@ namespace robot::device {
 /// 是否真的打开或关闭。这里的 open_lock()/close_lock() 是业务定义的“开/关动作”，
 /// 不等同于 GPIO 生命周期 open()/close()。
 class LockMotor {
-   public:
+public:
     struct Config {
         uint32_t pulse_ms{200};   ///< DO 高电平保持时间。
         uint32_t settle_ms{8000}; ///< 动作后机械等待时间。
@@ -34,7 +41,7 @@ class LockMotor {
     /// @brief 执行“关”动作：close GPIO 高电平 pulse_ms 后拉低，再等待 settle_ms。
     bool close_lock();
 
-   private:
+private:
     bool pulse_pin(const std::shared_ptr<hal::IGpioPin>& pin, const char* action_name);
     static void sleep_ms(uint32_t ms);
 

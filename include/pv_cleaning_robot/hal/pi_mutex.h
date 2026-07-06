@@ -4,6 +4,12 @@
  * 用于实时线程和普通线程共享状态的边界，降低优先级反转风险；同时启用 robust mutex，
  * 让持锁线程异常退出时能够显式失败，而不是让等待线程永久死锁。
  */
+/**
+ * @file pi_mutex.h
+ * @brief 优先级继承互斥量封装。
+ *
+ * PiMutex 使用 PTHREAD_PRIO_INHERIT 降低实时线程等待低优先级持锁线程时的优先级反转风险。
+ */
 #pragma once
 #include <cerrno>
 #include <cstring>

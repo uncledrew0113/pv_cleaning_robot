@@ -1,3 +1,10 @@
+/**
+ * @file thread_executor.h
+ * @brief 周期任务线程执行器接口。
+ *
+ * ThreadExecutor 负责按固定周期调用 IRunnable::update()，并可设置调度策略、优先级和 CPU 亲和性。
+ * 线程本身不处理业务错误，调用方通过看门狗和 ErrorManager 观察执行停滞。
+ */
 #pragma once
 #include <atomic>
 #include <chrono>

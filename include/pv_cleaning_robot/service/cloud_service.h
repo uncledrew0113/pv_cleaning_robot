@@ -1,3 +1,10 @@
+/**
+ * @file cloud_service.h
+ * @brief 云端 MQTT/ThingsBoard 通信服务接口。
+ *
+ * CloudService 封装 ThingsBoard 遥测、属性和 RPC topic 的发布订阅逻辑，并通过网络管理器处理
+ * MQTT/LoRaWAN 传输差异。业务命令解析由控制平面服务完成。
+ */
 #pragma once
 #include <functional>
 #include <memory>

@@ -1,3 +1,10 @@
+/**
+ * @file system_hw_motion_tests.cc
+ * @brief 真实硬件运动链路系统测试。
+ *
+ * 本文件验证行走电机、滚刷和运动服务在任务段执行中的实机行为。测试会驱动机器人运动，
+ * 运行前必须确认测试区域安全。
+ */
 #include "system_hw_common.h"
 
 TEST_CASE("系统组合根初始化后处于 Idle", "[hw_system][full_init]") {

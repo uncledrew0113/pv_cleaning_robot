@@ -1,3 +1,10 @@
+/**
+ * @file data_cache.h
+ * @brief 离线遥测数据缓存接口。
+ *
+ * DataCache 使用 JSONL 文件缓存网络不可用时待发送的数据，并在确认发送后删除对应记录。
+ * 文件写入路径需考虑断电恢复和容量上限。
+ */
 #pragma once
 #include <cstdint>
 #include <deque>

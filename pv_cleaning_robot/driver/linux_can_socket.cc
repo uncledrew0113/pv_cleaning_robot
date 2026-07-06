@@ -1,3 +1,10 @@
+/**
+ * @file linux_can_socket.cc
+ * @brief Linux SocketCAN 驱动实现。
+ *
+ * 本文件实现非阻塞 CAN 收发、eventfd 退出唤醒、Bus-Off 状态检测和接口级恢复。实时发送路径
+ * 避免打印日志和堆分配，拥塞情况通过无锁计数器暴露给上层诊断。
+ */
 #include <cerrno>
 #include <chrono>
 #include <cstring>
@@ -8,7 +15,7 @@
 #include <net/if.h>
 #include <poll.h>
 #include <spdlog/spdlog.h>
-#include <sys/eventfd.h>  // 必须引入 eventfd 头文件
+#include <sys/eventfd.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/time.h>
@@ -26,7 +33,7 @@ LinuxCanSocket::~LinuxCanSocket() {
 }
 
 bool LinuxCanSocket::open() {
-    // 防止重入：若已打开则先安全关闭，避免旧 socket fd 被覆写泳漏
+    // 防止重入：若已打开则先安全关闭，避免旧 socket fd 被覆盖后泄漏。
     if (is_open())
         close();
 
@@ -86,7 +93,7 @@ bool LinuxCanSocket::open() {
 void LinuxCanSocket::close() {
     connected_.store(false, std::memory_order_release);
 
-    // ─── 优化点 1：使用 eventfd 瞬间唤醒阻塞的 poll ───
+    // 使用 eventfd 唤醒阻塞在 recv() 中的 poll，避免 close() 等待超时周期结束。
     const int cancel_fd = cancel_fd_.load(std::memory_order_acquire);
     if (cancel_fd >= 0) {
         uint64_t val = 1;
@@ -95,7 +102,7 @@ void LinuxCanSocket::close() {
         ::write(cancel_fd, &val, sizeof(val));
     }
 
-    // atomic exchange：FD 改为 -1 并一并获取旧志。
+    // atomic exchange：FD 改为 -1 并一并获取旧值。
     // 其他线程在 close() 之后拿到 fd==-1 会得到 EBADF，
     // 而不会操作被内核重新分配的新 FD（FD 窜号）。
     int old_fd = socket_fd_.exchange(-1, std::memory_order_acq_rel);
@@ -105,7 +112,7 @@ void LinuxCanSocket::close() {
         spdlog::debug("[LinuxCanSocket] closed: {}", interface_);
     }
 
-    // 释放 eventfd 资源
+    // 释放 eventfd 资源。
     const int old_cancel_fd = cancel_fd_.exchange(-1, std::memory_order_acq_rel);
     if (old_cancel_fd >= 0) {
         ::close(old_cancel_fd);
@@ -113,19 +120,19 @@ void LinuxCanSocket::close() {
 }
 
 bool LinuxCanSocket::is_open() const {
-    // 通过 atomic 标志返回，避免裸 int socket_fd_ 读取引发的数据竞争
+    // 通过 atomic 标志返回，避免裸 int socket_fd_ 读取引发的数据竞争。
     return connected_.load();
 }
 
 bool LinuxCanSocket::send(const hal::CanFrame& frame) {
-    // 将 FD 快照到栏变量：即使 close() 并发，最差收到 EBADF，而不会操作被内核重用的新 FD
+    // 将 FD 快照到局部变量；即使 close() 并发，最差收到 EBADF，而不会操作被内核重用的新 FD。
     int fd = socket_fd_.load(std::memory_order_acquire);
     if (fd < 0) {
         return false;
     }
 
     if (bus_off_.load()) {
-        // RT 热路径：不打印日志（spdlog 内存分配可导致延迟峰値）。
+        // RT 热路径：不打印日志，避免 spdlog 内存分配导致延迟峰值。
         // Bus-Off 状态变化时已在 recv() 中记录了一次。
         return false;
     }
@@ -147,7 +154,7 @@ bool LinuxCanSocket::send(const hal::CanFrame& frame) {
             return false;
         }
         if (errno == ENETDOWN) {
-            // 状态转换日志：只说一次
+            // 状态转换日志只打印一次，避免 Bus-Off 期间刷屏。
             bool was_off = bus_off_.exchange(true, std::memory_order_relaxed);
             if (!was_off) {
                 spdlog::error("[LinuxCanSocket] Bus-Off detected on {} (send ENETDOWN)",
@@ -171,7 +178,7 @@ bool LinuxCanSocket::recv(hal::CanFrame& frame, int timeout_ms) {
     // pfd.fd = fd;
     // pfd.events = POLLIN;
 
-    // ─── 优化点 1：同时监听 CAN FD 和 Event FD ───
+    // 同时监听 CAN FD 和 eventfd，保证 close() 能打断阻塞接收。
     pollfd pfds[2]{};
     pfds[0].fd = fd;
     pfds[0].events = POLLIN;
@@ -189,15 +196,15 @@ bool LinuxCanSocket::recv(hal::CanFrame& frame, int timeout_ms) {
         return false;
     }
 
-    // 检查是否是 cancel_fd_ 触发了退出信号
+    // cancel_fd_ 触发表示 close() 正在退出接收路径。
     if (pfds[1].revents & POLLIN) {
         spdlog::debug("[LinuxCanSocket] recv poll interrupted safely by close() on {}", interface_);
-        // 直接返回 false 放弃本次接收，不用更新 last_error_ 避免覆盖真实状态
+        // 直接放弃本次接收，不更新 last_error_，避免覆盖真实 CAN 状态。
         return false;
     }
 
     if (pfds[0].revents & (POLLERR | POLLHUP)) {
-        // 状态转换日志：只在首次进入 Bus-Off 时打印，防止每次 poll 都输出
+        // 状态转换日志只在首次进入 Bus-Off 时打印，防止每次 poll 都输出。
         bool was_off = bus_off_.exchange(true, std::memory_order_relaxed);
         last_error_.store(hal::CanResult::BUS_OFF, std::memory_order_relaxed);
         if (!was_off) {
@@ -224,7 +231,7 @@ bool LinuxCanSocket::recv(hal::CanFrame& frame, int timeout_ms) {
             } else if (raw.can_id & CAN_ERR_CRTL) {
                 // raw.data[1] 包含了具体的控制器状态
                 if (raw.data[1] & CAN_ERR_CRTL_ACTIVE) {
-                    // 硬件已恢复到 Error Active 状态！
+                    // 控制器已恢复到 Error Active 状态。
                     bool was_off = bus_off_.exchange(false, std::memory_order_relaxed);
                     last_error_.store(hal::CanResult::OK, std::memory_order_relaxed);
                     if (was_off) {
@@ -242,7 +249,7 @@ bool LinuxCanSocket::recv(hal::CanFrame& frame, int timeout_ms) {
                 //              interface_,
                 //              raw.data[1]);
             }
-            // 捕获显式的重启事件（部分驱动会发送这个标志）
+            // 捕获显式的重启事件；部分驱动会发送该标志。
             else if (raw.can_id & CAN_ERR_RESTARTED) {
                 bus_off_.store(false, std::memory_order_relaxed);
                 last_error_.store(hal::CanResult::OK, std::memory_order_relaxed);
@@ -277,12 +284,12 @@ bool LinuxCanSocket::set_filters(const hal::CanFilter* filters, size_t count) {
         last_error_.store(hal::CanResult::SYS_ERROR);
         return false;
     }
-    // count==0 语义等同于清空过滤器（接收全部帧），委托给 clear_filter()
+    // count==0 语义等同于清空过滤器（接收全部帧），委托给 clear_filter()。
     if (count == 0 || filters == nullptr) {
         return clear_filter();
     }
 
-    // 栈上数组，无堆分配；kMaxFilters 定义于类头文件（static constexpr）
+    // 栈上数组无堆分配；kMaxFilters 定义于类头文件。
     if (count > kMaxFilters) {
         spdlog::warn("[LinuxCanSocket] set_filters: {} filters requested, truncated to {}",
                      count,
@@ -301,7 +308,7 @@ bool LinuxCanSocket::set_filters(const hal::CanFilter* filters, size_t count) {
                            static_cast<socklen_t>(actual * sizeof(can_filter)));
 
     if (ret == 0) {
-        // 保存过滤器配置，供 recover() 重建 socket 后恢复使用
+        // 保存过滤器配置，供 recover() 重建 socket 后恢复使用。
         {
             std::lock_guard<std::mutex> lk(filter_mutex_);
             saved_filter_count_ = actual;
@@ -338,7 +345,7 @@ bool LinuxCanSocket::clear_filter() {
 bool LinuxCanSocket::recover() {
     spdlog::info("[LinuxCanSocket] recovering Bus-Off on {}", interface_);
 
-    // recover() 中在 close() 之前快照过滤器配置
+    // recover() 在 close() 之前快照过滤器配置，便于重建 socket 后恢复接收范围。
     hal::CanFilter filters_snapshot[kMaxFilters];
     size_t count_snapshot;
     {
@@ -347,10 +354,10 @@ bool LinuxCanSocket::recover() {
         std::memcpy(filters_snapshot, saved_filters_, count_snapshot * sizeof(hal::CanFilter));
     }
 
-    // Step 1: 关闭并释放旧 CAN socket
+    // 先关闭并释放旧 CAN socket。
     close();
 
-    // Step 2: 通过 SIOCSIFFLAGS 将 CAN 接口先 down 在 up，触发内核 CAN 控制器硬件复位。
+    // 通过 SIOCSIFFLAGS 将 CAN 接口先 down 再 up，触发内核 CAN 控制器硬件复位。
     // 原因：用户态重新执行 socket()/bind() 只是创建了新的 socket 实例，
     // 并不会清除 CAN 硬件控制器的 Bus-Off 状态寄存器。
     // 需要 CAP_NET_ADMIN 权限（嵌入式设备通常以 root 运行）。
@@ -384,7 +391,7 @@ bool LinuxCanSocket::recover() {
     bus_off_.store(false);
     last_error_.store(hal::CanResult::OK);
 
-    // Step 3: 重建 CAN socket 并恢复过滤器
+    // 重建 CAN socket 并恢复过滤器。
     if (open()) {
         if (count_snapshot > 0u) {
             set_filters(filters_snapshot, count_snapshot);

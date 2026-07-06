@@ -1,3 +1,10 @@
+/**
+ * @file device_error.h
+ * @brief 设备层统一错误码定义。
+ *
+ * 本文件定义设备驱动和设备封装返回给服务层的基础错误枚举，避免不同硬件协议错误直接泄漏到
+ * 应用状态机。
+ */
 #pragma once
 #include <cstdint>
 

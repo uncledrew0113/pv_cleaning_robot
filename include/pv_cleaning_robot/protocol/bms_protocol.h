@@ -1,3 +1,10 @@
+/**
+ * @file bms_protocol.h
+ * @brief 嘉佰达 BMS 通用协议 V4 编解码接口。
+ *
+ * 本文件定义 BMS UART 帧格式、保护位、MOS 控制值和解析后的协议数据结构。协议常量由
+ * 厂商协议固定，不应进入运行配置。
+ */
 #pragma once
 #include <array>
 #include <cstddef>
@@ -7,11 +14,11 @@
 
 namespace robot::protocol {
 
-// == 容量限制 =================================================================
+// 容量限制。
 static constexpr uint8_t kBmsMaxCells = 32;  ///< 最大串联节数
 static constexpr uint8_t kBmsMaxNtc   = 8;   ///< 最大 NTC 温度探头数量
 
-// == 保护状态位掩码 (BmsBasicInfo::protection_status) ========================
+// 保护状态位掩码（BmsBasicInfo::protection_status）。
 static constexpr uint16_t kBmsProtCellOverVolt  = (1u << 0);  ///< 单体过压
 static constexpr uint16_t kBmsProtCellUnderVolt = (1u << 1);  ///< 单体欠压
 static constexpr uint16_t kBmsProtBatOverVolt   = (1u << 2);  ///< 总压过压
@@ -26,13 +33,11 @@ static constexpr uint16_t kBmsProtShortCircuit  = (1u << 10); ///< 短路保护
 static constexpr uint16_t kBmsProtForeEndIC     = (1u << 11); ///< 前端IC错误
 static constexpr uint16_t kBmsProtMosSoftLock   = (1u << 12); ///< MOS 软件锁定
 
-// == MOS 控制状态值 ===========================================================
+// MOS 控制状态值。
 static constexpr uint8_t kBmosMosReleaseAll     = 0x00; ///< 解除软件关断
 static constexpr uint8_t kBmosMosChargeClose    = 0x01; ///< 软件关闭充电 MOS
 static constexpr uint8_t kBmosMosDischargeClose = 0x02; ///< 软件关闭放电 MOS
 static constexpr uint8_t kBmosMosBothClose      = 0x03; ///< 同时关闭两路 MOS
-
-// == 数据结构 =================================================================
 
 /// 生产日期（由 0x03 响应 Production Date 字段解码）
 struct BmsDate {
@@ -65,8 +70,6 @@ struct BmsCellVoltages {
     uint16_t mv[kBmsMaxCells]; ///< 各节电芯电压（mV）
     uint8_t  count;            ///< 实际节数
 };
-
-// == 编解码器 =================================================================
 
 /**
  * @brief 嘉佰达通用协议 V4  BMS UART 编解码器

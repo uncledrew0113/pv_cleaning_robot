@@ -1,7 +1,8 @@
-/*
- * 主限位安全监控器接口。
+/**
+ * @file safety_monitor.h
+ * @brief 主限位安全监控器接口。
  *
- * SafetyMonitor 负责接近传感器触发后的安全停机和到位事件发布；
+ * SafetyMonitor 负责主限位接近传感器触发后的首响急停、去抖确认和到位事件发布。
  * 任务切段、故障锁存和恢复流程由 RobotController / ErrorManager 决定。
  */
 #pragma once
@@ -30,7 +31,12 @@ namespace robot::middleware {
 /// @note 急停函数由组合根注入。当前生产路径绑定 WalkMotorGroup::emergency_override(0.0f)，
 /// 只负责最快速度停行走轮；滚刷停机由任务停止或系统级急停路径处理。
 class SafetyMonitor {
-   public:
+public:
+    struct Config {
+        uint64_t limit_settle_stable_ms{30};
+        uint64_t limit_release_stable_ms{30};
+    };
+
     /// @brief 限位开关去抖完成事件，monitor_loop 确认持续触发稳定后发布。
     ///
     /// device 层左/右接近传感器在本模块边界转换为 domain 的 Endpoint::A/B，
@@ -43,17 +49,26 @@ class SafetyMonitor {
                   std::shared_ptr<device::LimitSwitch> left_switch,
                   std::shared_ptr<device::LimitSwitch> right_switch,
                   EventBus& event_bus);
+    SafetyMonitor(std::function<void()> emergency_stop,
+                  std::shared_ptr<device::LimitSwitch> left_switch,
+                  std::shared_ptr<device::LimitSwitch> right_switch,
+                  EventBus& event_bus,
+                  Config config);
     ~SafetyMonitor();
 
-    /// 启动安全监控：GPIO 监控线程负责首响急停，monitor_loop 负责去抖确认和事件发布。
+    /// @brief 启动安全监控。
+    ///
+    /// GPIO 监控线程负责首响急停，monitor_loop 负责去抖确认和事件发布。
+    /// @return 启动成功返回 true；缺少限位开关或 GPIO 未打开时返回 false。
     bool start();
 
-    /// 停止安全监控并等待后台线程退出。
+    /// @brief 停止安全监控并等待后台线程退出。
     void stop();
 
+    /// @brief 设置主限位去抖完成后的同步回调。
     void set_limit_settled_callback(std::function<void(domain::Endpoint)> cb);
 
-    private:
+private:
     /// LimitSwitch 触发回调；在 GPIO 监控线程中执行，必须保持极短路径。
     void on_limit_trigger(domain::Endpoint endpoint);
 
@@ -64,6 +79,7 @@ class SafetyMonitor {
     std::shared_ptr<device::LimitSwitch> left_switch_;
     std::shared_ptr<device::LimitSwitch> right_switch_;
     EventBus& event_bus_;
+    Config config_{};
     std::function<void(domain::Endpoint)> limit_settled_cb_;
 
     std::atomic<bool> running_{false};

@@ -1,3 +1,10 @@
+/**
+ * @file diagnostics_collector.h
+ * @brief 设备诊断快照采集接口。
+ *
+ * DiagnosticsCollector 从各设备和服务读取缓存状态，生成统一诊断快照。采集过程不主动控制硬件，
+ * 供 HealthService、ErrorManager 和本地日志复用同一份诊断事实。
+ */
 #pragma once
 
 #include <array>

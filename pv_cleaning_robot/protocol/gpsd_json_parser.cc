@@ -1,3 +1,10 @@
+/**
+ * @file gpsd_json_parser.cc
+ * @brief gpsd JSON 定位报文解析实现。
+ *
+ * 本文件解析 gpsd TPV/SKY 等 JSON 片段并转换为统一 GPS 数据结构。解析函数不访问网络，
+ * 只处理单条 JSON 文本。
+ */
 #include "pv_cleaning_robot/protocol/gpsd_json_parser.h"
 
 #include <cctype>
