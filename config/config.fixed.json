@@ -12,7 +12,7 @@
       "feedback_period_ms": 10,
       "termination_init_enabled": true,
       "termination_init_retry_count": 3,
-      "termination_motor_id": 2
+      "termination_motor_id": 1
     }
   },
   "serial": {
@@ -103,7 +103,7 @@
       "username": "",
       "password": "",
       "tls_enabled": true,
-      "ca_cert_path": "",
+      "ca_cert_path": "config/tb_server_ca.pem",
       "client_cert_path": "config/pv_device_test1.pem",
       "client_key_path": "config/pv_device_test1.key",
       "insecure_skip_server_name_check": true,
@@ -134,7 +134,7 @@
     "local_log_interval_idle_ms": 300000,
     "local_log_path": "data/pv_robot/logs/telemetry.jsonl",
     "local_log_max_bytes": 10485760,
-    "local_log_max_files": 5
+    "local_log_max_files": 10
   },
   "device": {
     "software_version": "1.0.0",
