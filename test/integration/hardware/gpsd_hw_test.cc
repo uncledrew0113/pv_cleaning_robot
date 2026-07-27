@@ -17,7 +17,7 @@ static const hw::HwParams kp = hw::load_hw_test_config();
 using namespace robot;
 using namespace std::chrono_literals;
 
-TEST_CASE("集成测试 - GPSD TCP 服务可获得真实有效定位", "[hw_gpsd][fix]") {
+TEST_CASE("集成测试 - GPSD TCP 服务可获得真实有效定位", "[gps][gps.fix]") {
     device::GpsdSourceConfig cfg;
     cfg.host = kp.gpsd_host;
     cfg.port = kp.gpsd_port;
@@ -59,7 +59,8 @@ TEST_CASE("集成测试 - GPSD TCP 服务可获得真实有效定位", "[hw_gpsd
     REQUIRE(data.valid);
 }
 
-TEST_CASE("集成测试 - GPSD TCP 服务连续读取并打印真实数据", "[hw_gpsd][stream]") {
+TEST_CASE("集成测试 - GPSD TCP 服务连续读取并打印真实数据",
+          "[gps][gps.stream][manual][long]") {
     device::GpsdSourceConfig cfg;
     cfg.host = kp.gpsd_host;
     cfg.port = kp.gpsd_port;
@@ -68,6 +69,7 @@ TEST_CASE("集成测试 - GPSD TCP 服务连续读取并打印真实数据", "[h
     auto gps = device::GpsDevice::create_gpsd(cfg);
     REQUIRE(gps != nullptr);
     REQUIRE(gps->open());
+    const auto sentences_before = gps->get_diagnostics().sentence_count;
 
     const auto start = std::chrono::steady_clock::now();
     auto next_print = start;
@@ -102,5 +104,5 @@ TEST_CASE("集成测试 - GPSD TCP 服务连续读取并打印真实数据", "[h
     const auto diag = gps->get_diagnostics();
     gps->close();
 
-    REQUIRE(diag.sentence_count > 0u);
+    REQUIRE(diag.sentence_count > sentences_before);
 }

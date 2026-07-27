@@ -30,14 +30,14 @@ std::shared_ptr<robot::device::LockMotor> make_lock_motor(const hw::HwParams& p)
 
 }  // namespace
 
-TEST_CASE("LockMotor 真实 GPIO 初始化", "[hw_lock][open]") {
+TEST_CASE("LockMotor 真实 GPIO 初始化", "[lock][lock.init]") {
     const auto p = hw::load_hw_test_config();
     auto lock_motor = make_lock_motor(p);
 
     REQUIRE(lock_motor->initialize());
 }
 
-TEST_CASE("LockMotor 真实 GPIO 单独执行开锁止电机动作", "[hw_lock][open_lock]") {
+TEST_CASE("LockMotor 真实 GPIO 单独执行开锁止电机动作", "[lock][lock.open]") {
     const auto p = hw::load_hw_test_config();
     auto lock_motor = make_lock_motor(p);
     REQUIRE(lock_motor->initialize());
@@ -46,7 +46,7 @@ TEST_CASE("LockMotor 真实 GPIO 单独执行开锁止电机动作", "[hw_lock][
     REQUIRE(lock_motor->open_lock());
 }
 
-TEST_CASE("LockMotor 真实 GPIO 单独执行关锁止电机动作", "[hw_lock][close_lock]") {
+TEST_CASE("LockMotor 真实 GPIO 单独执行关锁止电机动作", "[lock][lock.close]") {
     const auto p = hw::load_hw_test_config();
     auto lock_motor = make_lock_motor(p);
     REQUIRE(lock_motor->initialize());
@@ -55,7 +55,7 @@ TEST_CASE("LockMotor 真实 GPIO 单独执行关锁止电机动作", "[hw_lock][
     REQUIRE(lock_motor->close_lock());
 }
 
-TEST_CASE("LockMotor 真实 GPIO 执行关锁再开锁动作", "[hw_lock][close_open]") {
+TEST_CASE("LockMotor 真实 GPIO 执行关锁再开锁动作", "[lock][lock.cycle]") {
     const auto p = hw::load_hw_test_config();
     auto lock_motor = make_lock_motor(p);
     REQUIRE(lock_motor->initialize());

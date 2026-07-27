@@ -1,3 +1,13 @@
+/*
+ * @Author: UncleDrew
+ * @Date: 2026-04-16 16:47:23
+ * @LastEditors: UncleDrew
+ * @LastEditTime: 2026-07-26 13:33:48
+ * @FilePath: /pv_cleaning_robot/test/integration/hardware/walk_motor_group_hw_test.cc
+ * @Description:
+ *
+ * Copyright (c) 2026 by UncleDrew, All Rights Reserved.
+ */
 // test/integration/hardware/walk_motor_group_hw_test.cc
 /**
  * 行走电机组硬件单元测试（4 轮 M1502E_111，CAN 总线）
@@ -55,7 +65,7 @@ static void run_control_updates(device::WalkMotorGroup& grp, std::chrono::millis
 // ────────────────────────────────────────────────────────────────────────────
 // [hw_walk][open_close]
 // ────────────────────────────────────────────────────────────────────────────
-TEST_CASE("WalkMotorGroup CAN 初始化与关闭", "[hw_walk][open_close]") {
+TEST_CASE("WalkMotorGroup CAN 初始化与关闭", "[walk][walk.init]") {
     auto can = std::make_shared<driver::LinuxCanSocket>(kp.can_iface);
     auto grp = make_hw_group(can);
 
@@ -68,7 +78,7 @@ TEST_CASE("WalkMotorGroup CAN 初始化与关闭", "[hw_walk][open_close]") {
 // ────────────────────────────────────────────────────────────────────────────
 // [hw_walk][enable_disable]
 // ────────────────────────────────────────────────────────────────────────────
-TEST_CASE("WalkMotorGroup 使能与失能", "[hw_walk][enable_disable]") {
+TEST_CASE("WalkMotorGroup 使能与失能", "[walk][walk.enable]") {
     auto can = std::make_shared<driver::LinuxCanSocket>(kp.can_iface);
     auto grp = make_hw_group(can);
 
@@ -88,7 +98,7 @@ TEST_CASE("WalkMotorGroup 使能与失能", "[hw_walk][enable_disable]") {
 // ────────────────────────────────────────────────────────────────────────────
 // [hw_walk][all_online]
 // ────────────────────────────────────────────────────────────────────────────
-TEST_CASE("WalkMotorGroup 全轮联机", "[hw_walk][all_online]") {
+TEST_CASE("WalkMotorGroup 全轮联机", "[walk][walk.online]") {
     auto can = std::make_shared<driver::LinuxCanSocket>(kp.can_iface);
     auto grp = make_hw_group(can);
 
@@ -127,7 +137,7 @@ TEST_CASE("WalkMotorGroup 全轮联机", "[hw_walk][all_online]") {
 // ────────────────────────────────────────────────────────────────────────────
 // [hw_walk][fwd_no_pid] — 纯 WalkMotorGroup 前进
 // ────────────────────────────────────────────────────────────────────────────
-TEST_CASE("WalkMotorGroup 前进（纯执行器路径）", "[hw_walk][fwd_no_pid]") {
+TEST_CASE("WalkMotorGroup 前进（纯执行器路径）", "[walk][walk.forward]") {
     auto can = std::make_shared<driver::LinuxCanSocket>(kp.can_iface);
     auto grp = make_hw_group(can);
 
@@ -176,7 +186,7 @@ TEST_CASE("WalkMotorGroup 前进（纯执行器路径）", "[hw_walk][fwd_no_pid
 // ────────────────────────────────────────────────────────────────────────────
 // [hw_walk][rev_speed] — 反转
 // ────────────────────────────────────────────────────────────────────────────
-TEST_CASE("WalkMotorGroup 反转", "[hw_walk][rev_speed]") {
+TEST_CASE("WalkMotorGroup 反转", "[walk][walk.reverse]") {
     auto can = std::make_shared<driver::LinuxCanSocket>(kp.can_iface);
     auto grp = make_hw_group(can);
 
@@ -212,7 +222,7 @@ TEST_CASE("WalkMotorGroup 反转", "[hw_walk][rev_speed]") {
 // ────────────────────────────────────────────────────────────────────────────
 // [hw_walk][emergency_override] — 急停
 // ────────────────────────────────────────────────────────────────────────────
-TEST_CASE("WalkMotorGroup 急停（emergency_override）", "[hw_walk][emergency_override]") {
+TEST_CASE("WalkMotorGroup 急停（emergency_override）", "[walk][walk.estop]") {
     auto can = std::make_shared<driver::LinuxCanSocket>(kp.can_iface);
     auto grp = make_hw_group(can);
 
@@ -248,7 +258,7 @@ TEST_CASE("WalkMotorGroup 急停（emergency_override）", "[hw_walk][emergency_
 // ────────────────────────────────────────────────────────────────────────────
 // [hw_walk][override_blocks_set_speeds] — override 期间 set_speeds 封锁
 // ────────────────────────────────────────────────────────────────────────────
-TEST_CASE("WalkMotorGroup override 封锁 set_speeds", "[hw_walk][override_blocks_set_speeds]") {
+TEST_CASE("WalkMotorGroup override 封锁 set_speeds", "[walk][walk.override-block]") {
     auto can = std::make_shared<driver::LinuxCanSocket>(kp.can_iface);
     auto grp = make_hw_group(can);
 
@@ -282,7 +292,7 @@ TEST_CASE("WalkMotorGroup override 封锁 set_speeds", "[hw_walk][override_block
 // ────────────────────────────────────────────────────────────────────────────
 // [hw_walk][clear_override] — 解除急停后恢复驱动
 // ────────────────────────────────────────────────────────────────────────────
-TEST_CASE("WalkMotorGroup 解除急停后恢复驱动", "[hw_walk][clear_override]") {
+TEST_CASE("WalkMotorGroup 解除急停后恢复驱动", "[walk][walk.override-clear]") {
     auto can = std::make_shared<driver::LinuxCanSocket>(kp.can_iface);
     auto grp = make_hw_group(can);
 
@@ -324,7 +334,7 @@ TEST_CASE("WalkMotorGroup 解除急停后恢复驱动", "[hw_walk][clear_overrid
 // ────────────────────────────────────────────────────────────────────────────
 // [hw_walk][comm_timeout_self_stop] — 通信超时自保护（打印观察）
 // ────────────────────────────────────────────────────────────────────────────
-TEST_CASE("WalkMotorGroup 通信超时自保护", "[hw_walk][comm_timeout_self_stop]") {
+TEST_CASE("WalkMotorGroup 通信超时自保护", "[walk][walk.timeout][manual]") {
     constexpr uint16_t kShortTimeout = 300u;  // 300ms 超时（更短，便于测试）
 
     auto can = std::make_shared<driver::LinuxCanSocket>(kp.can_iface);
@@ -356,7 +366,7 @@ TEST_CASE("WalkMotorGroup 通信超时自保护", "[hw_walk][comm_timeout_self_s
 // ────────────────────────────────────────────────────────────────────────────
 // [hw_walk][frame_stats_no_pid] — 帧统计（纯执行器路径）
 // ────────────────────────────────────────────────────────────────────────────
-TEST_CASE("WalkMotorGroup 帧统计（纯执行器路径，10s）", "[hw_walk][frame_stats_no_pid]") {
+TEST_CASE("WalkMotorGroup 帧统计（纯执行器路径，10s）", "[walk][walk.frames]") {
     auto can = std::make_shared<driver::LinuxCanSocket>(kp.can_iface);
     auto grp = make_hw_group(can);
 
@@ -386,7 +396,7 @@ TEST_CASE("WalkMotorGroup 帧统计（纯执行器路径，10s）", "[hw_walk][f
 }
 
 TEST_CASE("WalkMotorGroup 启动阶段终端电阻初始化后仍可正常进入控制流程",
-          "[hw_walk][termination_init_startup]") {
+          "[walk][walk.termination]") {
     auto can = std::make_shared<driver::LinuxCanSocket>(kp.can_iface);
     auto grp = make_hw_group(can);
 

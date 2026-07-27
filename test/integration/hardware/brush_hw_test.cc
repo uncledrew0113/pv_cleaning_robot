@@ -123,7 +123,8 @@ void log_diag(const char* label, const robot::device::BrushMotor::Diagnostics& d
 
 }  // namespace
 
-TEST_CASE("BrushMotor（真实硬件）打开串口并执行清错/重启命令", "[hw_brush][open_close]") {
+TEST_CASE("BrushMotor（真实硬件）打开串口并执行清错/重启命令",
+          "[brush][brush.init]") {
     require_brush_hw_params();
 
     BrushFixture f;
@@ -134,7 +135,7 @@ TEST_CASE("BrushMotor（真实硬件）打开串口并执行清错/重启命令"
     REQUIRE(f.motor.restart() == robot::device::DeviceError::OK);
 }
 
-TEST_CASE("BrushMotor（真实硬件）速度模式主链", "[hw_brush][speed_cycle]") {
+TEST_CASE("BrushMotor（真实硬件）速度模式主链", "[brush][brush.speed]") {
     require_brush_hw_params();
 
     BrushFixture f;
@@ -159,7 +160,7 @@ TEST_CASE("BrushMotor（真实硬件）速度模式主链", "[hw_brush][speed_cy
     CHECK((diag.actual_rpm > 0) == (target_rpm > 0));
 }
 
-TEST_CASE("BrushMotor（真实硬件）stop 能让滚刷收敛下来", "[hw_brush][stop]") {
+TEST_CASE("BrushMotor（真实硬件）stop 能让滚刷收敛下来", "[brush][brush.stop]") {
     require_brush_hw_params();
 
     BrushFixture f;
@@ -181,7 +182,7 @@ TEST_CASE("BrushMotor（真实硬件）stop 能让滚刷收敛下来", "[hw_brus
 }
 
 TEST_CASE("BrushMotor（真实硬件）status 和 diagnostics 在轮询后保持一致",
-          "[hw_brush][diagnostics_poll]") {
+          "[brush][brush.diagnostics]") {
     require_brush_hw_params();
 
     BrushFixture f;

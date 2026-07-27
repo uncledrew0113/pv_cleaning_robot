@@ -43,7 +43,7 @@ void log_status(const char* tag, const device::AttitudeLimitSwitch::Status& stat
 
 }  // namespace
 
-TEST_CASE("姿态极限接近传感器 GPIO 初始化", "[hw_attitude_limit][open]") {
+TEST_CASE("姿态极限接近传感器 GPIO 初始化", "[attitude][attitude.init]") {
     auto left_gpio =
         std::make_shared<driver::LibGpiodPin>(kp.gpio_chip, kp.left_attitude_limit_line);
     auto right_gpio =
@@ -58,7 +58,8 @@ TEST_CASE("姿态极限接近传感器 GPIO 初始化", "[hw_attitude_limit][ope
                  kp.right_attitude_limit_line);
 }
 
-TEST_CASE("姿态极限接近传感器连续读取状态", "[hw_attitude_limit][read_status]") {
+TEST_CASE("姿态极限接近传感器连续读取状态",
+          "[attitude][attitude.stream][manual][long]") {
     auto left_gpio =
         std::make_shared<driver::LibGpiodPin>(kp.gpio_chip, kp.left_attitude_limit_line);
     auto right_gpio =
@@ -77,7 +78,7 @@ TEST_CASE("姿态极限接近传感器连续读取状态", "[hw_attitude_limit][
 }
 
 TEST_CASE("左下姿态极限接近传感器回调链路（手动触发）",
-          "[hw_attitude_limit][callback_left_lower]") {
+          "[attitude][attitude.left][manual]") {
     auto gpio = std::make_shared<driver::LibGpiodPin>(kp.gpio_chip, kp.left_attitude_limit_line);
     device::AttitudeLimitSwitch sw(gpio, device::AttitudeLimitSide::LEFT_LOWER);
 
@@ -106,7 +107,7 @@ TEST_CASE("左下姿态极限接近传感器回调链路（手动触发）",
 }
 
 TEST_CASE("右下姿态极限接近传感器回调链路（手动触发）",
-          "[hw_attitude_limit][callback_right_lower]") {
+          "[attitude][attitude.right][manual]") {
     auto gpio = std::make_shared<driver::LibGpiodPin>(kp.gpio_chip, kp.right_attitude_limit_line);
     device::AttitudeLimitSwitch sw(gpio, device::AttitudeLimitSide::RIGHT_LOWER);
 

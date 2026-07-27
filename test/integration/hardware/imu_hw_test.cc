@@ -76,7 +76,8 @@ static std::vector<uint8_t> frame_to_vec(const std::array<uint8_t, 11>& f) {
 //  Part 1：协议层 - 帧解析
 // ═══════════════════════════════════════════════════════════════════════════
 
-TEST_CASE("集成测试 - IMU 连续读取 60 秒并打印数据", "[hw_imu][long]") {
+TEST_CASE("集成测试 - IMU 连续读取 60 秒并打印数据",
+          "[imu][imu.stream][manual][long]") {
     using namespace std::chrono_literals;
 
     hal::UartConfig cfg;
@@ -99,6 +100,7 @@ TEST_CASE("集成测试 - IMU 连续读取 60 秒并打印数据", "[hw_imu][lon
         std::this_thread::sleep_for(50ms);
     }
     REQUIRE(imu.get_latest().valid);
+    const auto frames_before = imu.get_diagnostics().frame_count;
 
     auto start = std::chrono::steady_clock::now();
     auto next_print = start;
@@ -136,6 +138,7 @@ TEST_CASE("集成测试 - IMU 连续读取 60 秒并打印数据", "[hw_imu][lon
         std::this_thread::sleep_for(10ms);
     }
 
+    const auto final_data = imu.get_latest();
     auto diag = imu.get_diagnostics();
     spdlog::info("[IMU 连续读取] 完成。总帧数={} 平均帧率={:.1f}Hz 错误帧={}",
                  diag.frame_count,
@@ -143,6 +146,7 @@ TEST_CASE("集成测试 - IMU 连续读取 60 秒并打印数据", "[hw_imu][lon
                  diag.parse_error_count);
     imu.close();
 
-    CHECK(diag.frame_count > 0u);
+    CHECK(final_data.valid);
+    CHECK(diag.frame_count > frames_before + 60u);
     CHECK(diag.frame_rate_hz > 1.0f);
 }

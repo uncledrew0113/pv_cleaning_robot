@@ -9,7 +9,7 @@
 #include "pv_cleaning_robot/service/diagnostics_collector.h"
 
 TEST_CASE("DiagnosticsCollector 汇聚真实硬件诊断快照",
-          "[hw_system][diagnostics_collector]") {
+          "[diag][diag.snapshot]") {
     SystemHwFixture f;
     REQUIRE(f.init());
 

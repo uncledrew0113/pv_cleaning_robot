@@ -15,11 +15,11 @@
 #include <unordered_map>
 #include <vector>
 
+#include "hw_config.h"
 #include "mock/mock_serial_port.h"
 #include "pv_cleaning_robot/device/bms.h"
 #include "pv_cleaning_robot/driver/libserialport_port.h"
 #include "pv_cleaning_robot/protocol/bms_protocol.h"
-#include "hw_config.h"
 
 static const hw::HwParams kp = hw::load_hw_test_config();
 
@@ -169,7 +169,7 @@ static void register_version(BmsMockSerial& mock, const std::string& ver = "V1.0
 //  Part 1: BmsProtocol 编码测试
 // ═══════════════════════════════════════════════════════════════════════════
 
-TEST_CASE("BMS 集成测试 - ttyS8 串口连接与数据读取", "[hw_bms]") {
+TEST_CASE("BMS 集成测试 - ttyS8 串口连接与数据读取", "[bms][bms.read]") {
     using namespace std::chrono_literals;
 
     hal::UartConfig cfg;
@@ -233,22 +233,26 @@ TEST_CASE("BMS 集成测试 - ttyS8 串口连接与数据读取", "[hw_bms]") {
                      diag.cell_voltage_max_v,
                      diag.cell_voltage_min_v);
 
-        if (diag.cell_voltages.count > 0u) {
-            CHECK(diag.cell_voltage_max_v > 0.0f);
-            CHECK(diag.cell_voltage_min_v > 0.0f);
-            CHECK(diag.cell_voltage_max_v >= diag.cell_voltage_min_v);
+        REQUIRE(diag.cell_voltages.count > 0u);
+        CHECK(diag.cell_voltage_max_v > 0.0f);
+        CHECK(diag.cell_voltage_min_v > 0.0f);
+        CHECK(diag.cell_voltage_max_v >= diag.cell_voltage_min_v);
 
-            for (uint8_t i = 0; i < diag.cell_voltages.count; ++i) {
-                spdlog::info("[BMS 集成]   cell[{}] = {} mV", i, diag.cell_voltages.mv[i]);
-            }
+        for (uint8_t i = 0; i < diag.cell_voltages.count; ++i) {
+            spdlog::info("[BMS 集成]   cell[{}] = {} mV", i, diag.cell_voltages.mv[i]);
         }
     }
 
     SECTION("NTC 温度读取") {
         REQUIRE(bms.open() == device::DeviceError::OK);
+        for (int i = 0; i < 4; ++i) {
+            bms.update();
+            std::this_thread::sleep_for(200ms);
+        }
 
         auto diag = bms.get_diagnostics();
         spdlog::info("[BMS 集成] NTC 探头数量={}", diag.ntc_count);
+        REQUIRE(diag.ntc_count > 0u);
         for (uint8_t i = 0; i < diag.ntc_count; ++i) {
             spdlog::info("[BMS 集成]   NTC[{}] = {:.1f} ℃", i, diag.ntc_temps_c[i]);
             CHECK(diag.ntc_temps_c[i] > -40.0f);
@@ -295,6 +299,9 @@ TEST_CASE("BMS 集成测试 - ttyS8 串口连接与数据读取", "[hw_bms]") {
         spdlog::info("  最高单体电压  = {:.3f} V", diag.cell_voltage_max_v);
         spdlog::info("  最低单体电压  = {:.3f} V", diag.cell_voltage_min_v);
         spdlog::info("  update/error  = {}/{}", diag.update_count, diag.error_count);
-        SUCCEED();
+        REQUIRE(diag.update_count > 0u);
+        CHECK(diag.soc_pct >= 0.0f);
+        CHECK(diag.soc_pct <= 100.0f);
+        CHECK(diag.voltage_v > 0.0f);
     }
 }
