@@ -1,0 +1,28 @@
+[Unit]
+Description=PV Cleaning Robot Main Service
+Requires=ec20-qmi.service pv_edge_tracker.service
+After=ec20-qmi.service pv_edge_tracker.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/pv_cleaning_robot/bin_new_0724
+
+ExecStartPre=/bin/sleep 10
+ExecStart=/root/pv_cleaning_robot/bin_new_0724/pv_cleaning_robot
+
+Restart=on-failure
+RestartSec=5s
+KillSignal=SIGTERM
+TimeoutStartSec=30s
+TimeoutStopSec=30s
+
+LimitMEMLOCK=infinity
+LimitRTPRIO=99
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pv-cleaning-robot
+
+[Install]
+WantedBy=multi-user.target

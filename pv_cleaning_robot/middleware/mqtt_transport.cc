@@ -212,6 +212,7 @@ bool MqttTransport::connect(const std::atomic<bool>* running)
                 stop_connect_requested_.load(std::memory_order_acquire)) {
                 spdlog::warn("[MqttTransport] connect cancelled");
                 connected_.store(false);
+                initial_connect_completed_.store(true);
                 return false;
             }
             if (token->wait_for(std::chrono::milliseconds(100))) {
@@ -222,28 +223,32 @@ bool MqttTransport::connect(const std::atomic<bool>* running)
         if (!completed) {
             spdlog::error("[MqttTransport] connect timeout after {}s", cfg_.connect_timeout_sec);
             connected_.store(false);
+            initial_connect_completed_.store(true);
             return false;
         }
         connected_.store(client_->is_connected());
         spdlog::info("[MqttTransport] connect result: connected={}", connected_.load());
         if (connected_.load()) {
             subscribe_all_registered_topics();
-            initial_connect_completed_.store(true);
         }
+        initial_connect_completed_.store(true);
         return connected_.load();
     } catch (const mqtt::exception& ex) {
         spdlog::error("[MqttTransport] connect mqtt::exception: what='{}' reason_code={}",
                       ex.what(),
                       ex.get_reason_code());
         connected_.store(false);
+        initial_connect_completed_.store(true);
         return false;
     } catch (const std::exception& ex) {
         spdlog::error("[MqttTransport] connect std::exception: {}", ex.what());
         connected_.store(false);
+        initial_connect_completed_.store(true);
         return false;
     } catch (...) {
         spdlog::error("[MqttTransport] connect unknown exception");
         connected_.store(false);
+        initial_connect_completed_.store(true);
         return false;
     }
 }
