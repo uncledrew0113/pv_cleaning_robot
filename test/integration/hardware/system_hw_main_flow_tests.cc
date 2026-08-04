@@ -195,6 +195,7 @@ class MainLikeHardwareFixture : public hw::IGracefulShutdown {
                 log_failure_context("mission_fault");
                 return false;
             }
+            controller->post_tick();
             std::this_thread::sleep_for(100ms);
         }
         if (controller->snapshot().state == "Idle") {
@@ -224,6 +225,7 @@ class MainLikeHardwareFixture : public hw::IGracefulShutdown {
                 log_failure_context("attitude_recovery_not_completed");
                 return false;
             }
+            controller->post_tick();
             std::this_thread::sleep_for(20ms);
         }
         log_failure_context("attitude_recovery_timeout");
@@ -579,6 +581,7 @@ class MainLikeHardwareFixture : public hw::IGracefulShutdown {
                     ++lock_close_count;
                     return lock_motor->close_lock();
                 },
+                [this] { return motion->hold_at_endpoint(); },
             });
         controller->set_position_state_query([this] {
             const bool left_active = !left_sw->read_current_level();

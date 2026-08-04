@@ -477,6 +477,7 @@ class SystemHwFixture : public hw::IGracefulShutdown {
         actions.emergency_stop = [this]() { motion->emergency_stop(); };
         // RobotController 自身锁存/清除故障，测试夹具不再维护额外故障缓存。
         actions.clear_fault = []() {};
+        actions.hold_at_endpoint = [this]() { return motion->hold_at_endpoint(); };
         controller = std::make_shared<robot::app::RobotController>(actions);
         controller->set_config_ports(robot::app::RobotController::ConfigPorts{
             [this]() { return config->active_runtime_config(); },
@@ -1055,6 +1056,7 @@ void run_configured_system_chain(
             REQUIRE(now < segment_deadline);
         }
 
+        f.controller->post_tick();
         f.motion->update();
         f.gps_stuck->update();
         // BMS 串口离线时一次 update 可能阻塞数百毫秒，组合运动链路测试中不轮询 BMS，

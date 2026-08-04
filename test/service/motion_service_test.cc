@@ -4,8 +4,10 @@
  */
 #include <catch2/catch.hpp>
 
-#include <cstring>
+#include <algorithm>
 #include <chrono>
+#include <cstring>
+#include <iterator>
 #include <memory>
 #include <string>
 #include <vector>
@@ -224,6 +226,47 @@ TEST_CASE("MotionService stop_cleaning stops brush and walk motors", "[service][
     REQUIRE(diag.wheel[2].target_value == Approx(0.0f));
     REQUIRE(diag.wheel[3].target_value == Approx(0.0f));
     REQUIRE(f.serial->take_tx_text().find("v 0 0.000 0\n") != std::string::npos);
+}
+
+TEST_CASE("MotionService endpoint hold enables disabled walk at zero and stops brush",
+          "[service][motion]") {
+    MotionFixture f;
+    REQUIRE(f.group->disable_all() == robot::device::DeviceError::OK);
+    f.can->sent_frames.clear();
+    f.serial->clear_tx();
+
+    REQUIRE(f.motion.hold_at_endpoint());
+
+    const auto diag = f.group->get_group_diagnostics();
+    CHECK(diag.wheel[0].target_value == Approx(0.0f));
+    CHECK(diag.wheel[1].target_value == Approx(0.0f));
+    CHECK(diag.wheel[2].target_value == Approx(0.0f));
+    CHECK(diag.wheel[3].target_value == Approx(0.0f));
+    CHECK(f.group->is_override_active());
+    REQUIRE(f.can->sent_frames.size() == 4);
+    CHECK(f.can->sent_frames[0].id == robot::protocol::kWalkMotorCtrlIdGroup1);
+    CHECK(f.can->sent_frames[1].id == robot::protocol::kWalkMotorSetModeId);
+    CHECK(f.can->sent_frames[2].id == robot::protocol::kWalkMotorSetModeId);
+    CHECK(f.can->sent_frames[3].id == robot::protocol::kWalkMotorCtrlIdGroup1);
+    for (std::size_t i = 0; i < 8; ++i) {
+        CHECK(f.can->sent_frames[0].data[i] == 0);
+        CHECK(f.can->sent_frames[3].data[i] == 0);
+    }
+    std::vector<robot::hal::CanFrame> mode_frames;
+    std::copy_if(f.can->sent_frames.begin(),
+                 f.can->sent_frames.end(),
+                 std::back_inserter(mode_frames),
+                 [](const robot::hal::CanFrame& frame) {
+                     return frame.id == robot::protocol::kWalkMotorSetModeId;
+                 });
+    REQUIRE(mode_frames.size() == 2);
+    for (std::size_t i = 0; i < WalkMotorGroup::kWheelCount; ++i) {
+        CHECK(mode_frames[0].data[i] ==
+              static_cast<uint8_t>(robot::protocol::WalkMotorMode::ENABLE));
+        CHECK(mode_frames[1].data[i] ==
+              static_cast<uint8_t>(robot::protocol::WalkMotorMode::SPEED));
+    }
+    CHECK(f.serial->take_tx_text().find("v 0 0.000 0\n") != std::string::npos);
 }
 
 TEST_CASE("MotionService emergency_stop clears walk targets and brush", "[service][motion]") {

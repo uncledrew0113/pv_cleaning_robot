@@ -1091,6 +1091,7 @@ int RobotApplication::run(const std::atomic<bool>& running) {
             [] {},
             [lock_motor] { return lock_motor->open_lock(); },
             [lock_motor] { return lock_motor->close_lock(); },
+            [motion] { return motion->hold_at_endpoint(); },
         });
     auto command_port = robot::service::RobotCommandPort{
         [controller](const robot::domain::RobotCommand& command) {
@@ -1142,6 +1143,7 @@ int RobotApplication::run(const std::atomic<bool>& running) {
                     : robot::domain::DockMode::SingleDock;
             return robot::domain::LaneConfig{dock_mode, cfg.active_runtime_config().primary_dock};
         },
+        cfg.get_fixed<uint64_t>("mission.endpoint_settle_delay_ms", 3000),
     });
     controller->start();
     const auto configured_primary_dock_text =

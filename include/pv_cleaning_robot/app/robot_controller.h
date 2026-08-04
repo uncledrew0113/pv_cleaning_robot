@@ -7,6 +7,7 @@
  */
 #pragma once
 
+#include <chrono>
 #include <condition_variable>
 #include <deque>
 #include <functional>
@@ -71,6 +72,8 @@ public:
         std::function<bool()> open_lock_motor;
         /// 自检通过、清扫启动前解除锁止；失败会锁存 FaultStopped。
         std::function<bool()> close_lock_motor;
+        /// 主限位到位后的段间保持：行走轮使能零速，滚刷停止。
+        std::function<bool()> hold_at_endpoint;
     };
 
     struct ConfigPorts {
@@ -82,6 +85,8 @@ public:
         std::function<bool()> promote_pending_runtime_config;
         /// 固定车道配置，描述主停机端和端点几何关系。
         std::function<domain::LaneConfig()> lane_config;
+        /// 主限位稳定确认后，下一任务段或最终锁车前的统一等待时间。
+        uint64_t endpoint_settle_delay_ms{3000};
     };
 
     RobotController() = default;
@@ -109,6 +114,7 @@ public:
     void complete_self_check(bool ok);
     void complete_self_check_for_test(bool ok);
     void handle_limit_settled_for_test(domain::Endpoint endpoint);
+    void handle_tick_for_test(std::chrono::steady_clock::time_point now);
     void post_for_test(std::function<void()> fn);
     void drain_for_test();
 
@@ -133,6 +139,7 @@ private:
     StartSegmentResult start_current_segment_locked();
     void complete_self_check_unlocked(bool ok);
     void handle_limit_settled_unlocked(domain::Endpoint endpoint);
+    void handle_endpoint_settle_tick(std::chrono::steady_clock::time_point now);
     std::optional<domain::Endpoint> handle_source_limit_repeat_locked(domain::Endpoint endpoint);
     std::optional<domain::Endpoint> handle_recovery_finished_locked(bool ok);
 
@@ -141,6 +148,8 @@ private:
     std::optional<domain::MissionContext> mission_;
     std::optional<uint32_t> active_fault_;
     std::optional<RobotState> recovery_return_state_;
+    std::optional<std::chrono::steady_clock::time_point> endpoint_settle_deadline_;
+    std::optional<domain::Endpoint> settled_endpoint_;
     ActionPorts actions_{};
     ConfigPorts config_{};
     std::function<domain::PositionState()> position_state_query_;

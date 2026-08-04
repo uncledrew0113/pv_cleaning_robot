@@ -5,12 +5,12 @@
  * 本文件实现命令接收、自检、任务段切换、主限位到位处理、恢复返回和故障锁存。状态机事件
  * 在内部线程串行处理，硬件端口动作在锁外执行，避免长时间持锁阻塞上报和 RPC。
  */
-#include "pv_cleaning_robot/app/robot_controller.h"
-
 #include <chrono>
 #include <future>
 #include <spdlog/spdlog.h>
 #include <utility>
+
+#include "pv_cleaning_robot/app/robot_controller.h"
 
 namespace robot::app {
 
@@ -25,63 +25,37 @@ domain::PositionState position_state_from_endpoint(domain::Endpoint endpoint) no
                                            : domain::PositionState::AtB;
 }
 
-const char* position_state_name(domain::PositionState state) noexcept {
-    switch (state) {
-    case domain::PositionState::Unknown:
-        return "Unknown";
-    case domain::PositionState::AtA:
-        return "AtA";
-    case domain::PositionState::AtB:
-        return "AtB";
-    case domain::PositionState::OnSegment:
-        return "OnSegment";
-    case domain::PositionState::Inconsistent:
-        return "Inconsistent";
-    }
-    return "Unknown";
-}
-
-const char* dock_mode_name(domain::DockMode mode) noexcept {
-    switch (mode) {
-    case domain::DockMode::SingleDock:
-        return "SingleDock";
-    case domain::DockMode::DualDock:
-        return "DualDock";
-    }
-    return "SingleDock";
-}
-
 uint32_t fault_code_from_error_decision(const ErrorDecision& decision) noexcept {
     switch (decision.root_error.code) {
-    case ErrorCode::AttitudeLimitBoth:
-        return domain::FaultCode::kAttitudeLimitBoth;
-    case ErrorCode::RecoveryFailed:
-        return domain::FaultCode::kRecoveryFailed;
-    case ErrorCode::GpsStuck:
-        return domain::FaultCode::kGpsStuck;
-    case ErrorCode::DriverCommError:
-        switch (decision.root_error.component.kind) {
-        case ComponentKind::WalkMotorGroup:
-            return domain::FaultCode::kCanCommunicationLost;
-        case ComponentKind::Gps:
-        case ComponentKind::GpsStuckService:
-            return domain::FaultCode::kGpsCommunicationLost;
-        case ComponentKind::Bms:
-            return domain::FaultCode::kBmsCommunicationLost;
-        case ComponentKind::BrushMotor:
-            return domain::FaultCode::kBrushMotorCommunicationLost;
-        case ComponentKind::Imu:
-            return domain::FaultCode::kImuCommunicationLost;
-        case ComponentKind::AttitudeLimitSwitch:
+        case ErrorCode::AttitudeLimitBoth:
+            return domain::FaultCode::kAttitudeLimitBoth;
+        case ErrorCode::RecoveryFailed:
             return domain::FaultCode::kRecoveryFailed;
-        }
-        return domain::FaultCode::kRecoveryFailed;
-    case ErrorCode::WalkMotorStall:
-        return domain::FaultCode::kWalkMotorStall;
-    case ErrorCode::BrushMotorFault:
-        return domain::FaultCode::kBrushMotorFault;
-    case ErrorCode::AttitudeLimit:
-        return domain::FaultCode::kRepeatedAttitudeLimit;
+        case ErrorCode::GpsStuck:
+            return domain::FaultCode::kGpsStuck;
+        case ErrorCode::DriverCommError:
+            switch (decision.root_error.component.kind) {
+                case ComponentKind::WalkMotorGroup:
+                    return domain::FaultCode::kCanCommunicationLost;
+                case ComponentKind::Gps:
+                case ComponentKind::GpsStuckService:
+                    return domain::FaultCode::kGpsCommunicationLost;
+                case ComponentKind::Bms:
+                    return domain::FaultCode::kBmsCommunicationLost;
+                case ComponentKind::BrushMotor:
+                    return domain::FaultCode::kBrushMotorCommunicationLost;
+                case ComponentKind::Imu:
+                    return domain::FaultCode::kImuCommunicationLost;
+                case ComponentKind::AttitudeLimitSwitch:
+                    return domain::FaultCode::kRecoveryFailed;
+            }
+            return domain::FaultCode::kRecoveryFailed;
+        case ErrorCode::WalkMotorStall:
+            return domain::FaultCode::kWalkMotorStall;
+        case ErrorCode::BrushMotorFault:
+            return domain::FaultCode::kBrushMotorFault;
+        case ErrorCode::AttitudeLimit:
+            return domain::FaultCode::kRepeatedAttitudeLimit;
     }
     return domain::FaultCode::kRecoveryFailed;
 }
@@ -172,15 +146,15 @@ void RobotController::post_recovery_finished(bool ok) {
 void RobotController::post_schedule_window_hit() {
     post([this] {
         std::lock_guard<std::mutex> lk(mtx_);
-        (void)submit_command_locked(domain::RobotCommand{
-            domain::RobotCommandKind::StartConfiguredMission,
-            domain::CommandSource::Scheduler,
-            "schedule"});
+        (void)submit_command_locked(
+            domain::RobotCommand{domain::RobotCommandKind::StartConfiguredMission,
+                                 domain::CommandSource::Scheduler,
+                                 "schedule"});
     });
 }
 
 void RobotController::post_tick() {
-    post([] {});
+    post([this] { handle_endpoint_settle_tick(std::chrono::steady_clock::now()); });
 }
 
 void RobotController::apply_error_decision(const ErrorDecision& decision) {
@@ -192,27 +166,29 @@ void RobotController::apply_error_decision(const ErrorDecision& decision) {
         std::lock_guard<std::mutex> lk(mtx_);
 
         switch (decision.action) {
-        case ErrorAction::Ignore:
-        case ErrorAction::WarnOnly:
-            return;
-        case ErrorAction::StartRecovery:
-            if (!decision.requires_robot_recovering) {
+            case ErrorAction::Ignore:
+            case ErrorAction::WarnOnly:
                 return;
-            }
-            if (state_ == RobotState::ExecutingMission && mission_) {
-                recovery_return_state_ = RobotState::ExecutingMission;
-                state_ = RobotState::Recovering;
-                do_stop_motion = true;
-                do_start_recovery = true;
-            }
-            break;
-        case ErrorAction::FaultStopped:
-            active_fault_ = fault_code_from_error_decision(decision);
-            mission_.reset();
-            recovery_return_state_.reset();
-            state_ = RobotState::FaultStopped;
-            do_emergency_stop = true;
-            break;
+            case ErrorAction::StartRecovery:
+                if (!decision.requires_robot_recovering) {
+                    return;
+                }
+                if (state_ == RobotState::ExecutingMission && mission_) {
+                    recovery_return_state_ = RobotState::ExecutingMission;
+                    state_ = RobotState::Recovering;
+                    do_stop_motion = true;
+                    do_start_recovery = true;
+                }
+                break;
+            case ErrorAction::FaultStopped:
+                active_fault_ = fault_code_from_error_decision(decision);
+                mission_.reset();
+                recovery_return_state_.reset();
+                endpoint_settle_deadline_.reset();
+                settled_endpoint_.reset();
+                state_ = RobotState::FaultStopped;
+                do_emergency_stop = true;
+                break;
         }
     }
 
@@ -256,6 +232,8 @@ void RobotController::loop() {
             active_fault_ = domain::FaultCode::kTaskContextInconsistent;
             mission_.reset();
             recovery_return_state_.reset();
+            endpoint_settle_deadline_.reset();
+            settled_endpoint_.reset();
             state_ = RobotState::FaultStopped;
             if (actions_.emergency_stop) {
                 try {
@@ -275,6 +253,8 @@ void RobotController::loop() {
             active_fault_ = domain::FaultCode::kTaskContextInconsistent;
             mission_.reset();
             recovery_return_state_.reset();
+            endpoint_settle_deadline_.reset();
+            settled_endpoint_.reset();
             state_ = RobotState::FaultStopped;
             if (actions_.emergency_stop) {
                 try {
@@ -296,29 +276,27 @@ void RobotController::loop() {
 
 const char* RobotController::state_name(RobotState state) noexcept {
     switch (state) {
-    case RobotState::Idle:
-        return "Idle";
-    case RobotState::SelfChecking:
-        return "SelfChecking";
-    case RobotState::ExecutingMission:
-        return "ExecutingMission";
-    case RobotState::SettlingEndpoint:
-        return "SettlingEndpoint";
-    case RobotState::Recovering:
-        return "Recovering";
-    case RobotState::Charging:
-        return "Charging";
-    case RobotState::FaultStopped:
-        return "FaultStopped";
+        case RobotState::Idle:
+            return "Idle";
+        case RobotState::SelfChecking:
+            return "SelfChecking";
+        case RobotState::ExecutingMission:
+            return "ExecutingMission";
+        case RobotState::SettlingEndpoint:
+            return "SettlingEndpoint";
+        case RobotState::Recovering:
+            return "Recovering";
+        case RobotState::Charging:
+            return "Charging";
+        case RobotState::FaultStopped:
+            return "FaultStopped";
     }
     return "Unknown";
 }
 
 bool RobotController::mission_active() const noexcept {
-    return state_ == RobotState::SelfChecking ||
-           state_ == RobotState::ExecutingMission ||
-           state_ == RobotState::SettlingEndpoint ||
-           state_ == RobotState::Recovering;
+    return state_ == RobotState::SelfChecking || state_ == RobotState::ExecutingMission ||
+           state_ == RobotState::SettlingEndpoint || state_ == RobotState::Recovering;
 }
 
 CommandResult RobotController::submit_command(const domain::RobotCommand& command) {
@@ -345,24 +323,26 @@ CommandResult RobotController::submit_command(const domain::RobotCommand& comman
 
 CommandResult RobotController::submit_command_locked(const domain::RobotCommand& command) {
     switch (command.kind) {
-    case domain::RobotCommandKind::StartConfiguredMission:
-    case domain::RobotCommandKind::CleanTowardOppositeEndpoint:
-    case domain::RobotCommandKind::CleanTowardPrimaryDock:
-        return start_command_locked(command);
-    case domain::RobotCommandKind::Stop:
-        return stop_locked();
-    case domain::RobotCommandKind::FaultReset:
-        if (state_ != RobotState::FaultStopped) {
-            return {false, "not_fault_stopped"};
-        }
-        active_fault_.reset();
-        mission_.reset();
-        recovery_return_state_.reset();
-        if (actions_.clear_fault) {
-            actions_.clear_fault();
-        }
-        state_ = RobotState::Idle;
-        return {true, "accepted"};
+        case domain::RobotCommandKind::StartConfiguredMission:
+        case domain::RobotCommandKind::CleanTowardOppositeEndpoint:
+        case domain::RobotCommandKind::CleanTowardPrimaryDock:
+            return start_command_locked(command);
+        case domain::RobotCommandKind::Stop:
+            return stop_locked();
+        case domain::RobotCommandKind::FaultReset:
+            if (state_ != RobotState::FaultStopped) {
+                return {false, "not_fault_stopped"};
+            }
+            active_fault_.reset();
+            mission_.reset();
+            recovery_return_state_.reset();
+            endpoint_settle_deadline_.reset();
+            settled_endpoint_.reset();
+            if (actions_.clear_fault) {
+                actions_.clear_fault();
+            }
+            state_ = RobotState::Idle;
+            return {true, "accepted"};
     }
     return {false, "unknown_command"};
 }
@@ -372,10 +352,11 @@ CommandResult RobotController::start_command_locked(const domain::RobotCommand& 
         return {false, "busy"};
     }
 
-    const auto active_cfg = config_.active_runtime_config ? config_.active_runtime_config()
-                                                          : domain::RuntimeConfig{};
-    const auto pending_cfg = config_.pending_runtime_config ? config_.pending_runtime_config()
-                                                            : std::optional<domain::RuntimeConfig>{};
+    const auto active_cfg =
+        config_.active_runtime_config ? config_.active_runtime_config() : domain::RuntimeConfig{};
+    const auto pending_cfg = config_.pending_runtime_config
+                                 ? config_.pending_runtime_config()
+                                 : std::optional<domain::RuntimeConfig>{};
     const auto start_cfg = pending_cfg.value_or(active_cfg);
     // RPC 在本项目中定义为维护类指令：人工确认后执行，不参与调度启动的电量门槛。
     if (!is_rpc_command(command) && battery_soc_query_ &&
@@ -386,8 +367,8 @@ CommandResult RobotController::start_command_locked(const domain::RobotCommand& 
     domain::LaneConfig lane = config_.lane_config ? config_.lane_config() : domain::LaneConfig{};
     lane.primary_dock = start_cfg.primary_dock;
 
-    const auto position_state = position_state_query_ ? position_state_query_()
-                                                      : domain::PositionState::Unknown;
+    const auto position_state =
+        position_state_query_ ? position_state_query_() : domain::PositionState::Unknown;
     const auto validation = validate_start_command_locked(command, lane, position_state);
     if (!validation.accepted || validation.reason == "already_at_target") {
         return validation;
@@ -409,12 +390,15 @@ CommandResult RobotController::validate_start_command_locked(
     const domain::LaneConfig& lane,
     domain::PositionState position_state) const {
     // RPC 统一作为维护类指令处理：跳过位置合法性检查，避免维护场景被限位事实阻断。
-    // 调度和本地自动任务仍保留位置门槛，防止无人值守时盲动。
     if (is_rpc_command(command)) {
         return {true, "start_allowed"};
     }
 
+    const bool scheduler_assumes_primary_dock =
+        command.source == domain::CommandSource::Scheduler &&
+        lane.dock_mode == domain::DockMode::SingleDock;
     if (command.kind == domain::RobotCommandKind::StartConfiguredMission &&
+        !scheduler_assumes_primary_dock &&
         !domain::can_start_configured_mission(lane, position_state)) {
         return {false, "configured_mission_requires_start_endpoint"};
     }
@@ -486,6 +470,8 @@ RobotController::StartSegmentResult RobotController::start_current_segment_locke
     if (!mission_) {
         active_fault_ = FaultCode::kTaskContextInconsistent;
         recovery_return_state_.reset();
+        endpoint_settle_deadline_.reset();
+        settled_endpoint_.reset();
         state_ = RobotState::FaultStopped;
         return {};
     }
@@ -494,11 +480,12 @@ RobotController::StartSegmentResult RobotController::start_current_segment_locke
         active_fault_ = FaultCode::kTaskContextInconsistent;
         mission_.reset();
         recovery_return_state_.reset();
+        endpoint_settle_deadline_.reset();
+        settled_endpoint_.reset();
         state_ = RobotState::FaultStopped;
         return {};
     }
-    if (position_state_query_ &&
-        domain::is_at_target(position_state_query_(), segment->target)) {
+    if (position_state_query_ && domain::is_at_target(position_state_query_(), segment->target)) {
         spdlog::warn(
             "[RobotController] current segment target already active before motion start: "
             "target={}",
@@ -509,6 +496,8 @@ RobotController::StartSegmentResult RobotController::start_current_segment_locke
         active_fault_ = FaultCode::kSegmentStartFailed;
         mission_.reset();
         recovery_return_state_.reset();
+        endpoint_settle_deadline_.reset();
+        settled_endpoint_.reset();
         state_ = RobotState::FaultStopped;
         if (actions_.emergency_stop) {
             actions_.emergency_stop();
@@ -604,22 +593,23 @@ void RobotController::handle_limit_settled_for_test(domain::Endpoint endpoint) {
     handle_limit_settled_unlocked(endpoint);
 }
 
+void RobotController::handle_tick_for_test(std::chrono::steady_clock::time_point now) {
+    handle_endpoint_settle_tick(now);
+}
+
 void RobotController::handle_limit_settled_unlocked(domain::Endpoint endpoint) {
     namespace FaultCode = robot::domain::FaultCode;
 
-    std::function<void()> stop_motion;
-    std::function<bool()> open_lock_motor;
-    bool mission_finished = false;
+    std::function<bool()> hold_at_endpoint;
+    bool endpoint_target_reached = false;
     bool do_emergency_stop = false;
     std::optional<domain::Endpoint> already_at_target;
 
     {
         std::lock_guard<std::mutex> lk(mtx_);
-        if (state_ == RobotState::Idle ||
-            state_ == RobotState::SelfChecking ||
-            state_ == RobotState::Recovering ||
-            state_ == RobotState::FaultStopped ||
-            state_ == RobotState::Charging) {
+        if (state_ == RobotState::Idle || state_ == RobotState::SelfChecking ||
+            state_ == RobotState::SettlingEndpoint || state_ == RobotState::Recovering ||
+            state_ == RobotState::FaultStopped || state_ == RobotState::Charging) {
             return;
         }
 
@@ -644,41 +634,87 @@ void RobotController::handle_limit_settled_unlocked(domain::Endpoint endpoint) {
         }
         if (!already_at_target.has_value() && segment->target == endpoint) {
             state_ = RobotState::SettlingEndpoint;
+            settled_endpoint_ = endpoint;
+            endpoint_target_reached = true;
+            hold_at_endpoint = actions_.hold_at_endpoint;
+        }
+    }
+
+    if (already_at_target.has_value()) {
+        handle_limit_settled_unlocked(*already_at_target);
+        return;
+    }
+    if (!endpoint_target_reached) {
+        return;
+    }
+
+    const bool held = hold_at_endpoint && hold_at_endpoint();
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        if (state_ != RobotState::SettlingEndpoint) {
+            return;
+        }
+        if (!held || !mission_) {
+            active_fault_ = FaultCode::kSegmentStartFailed;
+            mission_.reset();
+            recovery_return_state_.reset();
+            endpoint_settle_deadline_.reset();
+            settled_endpoint_.reset();
+            state_ = RobotState::FaultStopped;
+            do_emergency_stop = static_cast<bool>(actions_.emergency_stop);
+        } else {
             ++mission_->current_segment_index;
             if (mission_->current_segment_index >= mission_->segments.size()) {
                 ++mission_->completed_cycles;
                 mission_->current_segment_index = 0;
             }
-            if (mission_->completed_cycles < mission_->repeat_count) {
+            endpoint_settle_deadline_ = std::chrono::steady_clock::now() +
+                                        std::chrono::milliseconds(config_.endpoint_settle_delay_ms);
+        }
+    }
+
+    if (do_emergency_stop) {
+        actions_.emergency_stop();
+    }
+}
+
+void RobotController::handle_endpoint_settle_tick(std::chrono::steady_clock::time_point now) {
+    namespace FaultCode = robot::domain::FaultCode;
+
+    std::function<void()> stop_motion;
+    std::function<bool()> open_lock_motor;
+    bool mission_finished = false;
+    bool do_emergency_stop = false;
+    std::optional<domain::Endpoint> already_at_target;
+
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        if (state_ != RobotState::SettlingEndpoint || !mission_ || !endpoint_settle_deadline_ ||
+            now < *endpoint_settle_deadline_) {
+            return;
+        }
+
+        endpoint_settle_deadline_.reset();
+        if (mission_->completed_cycles < mission_->repeat_count) {
+            const auto start_result = start_current_segment_locked();
+            if (start_result.ok) {
                 state_ = RobotState::ExecutingMission;
-                already_at_target = start_current_segment_locked().already_at_target;
-            } else {
-                mission_finished = true;
-                stop_motion = actions_.stop_motion;
-                auto lane = config_.lane_config ? config_.lane_config() : domain::LaneConfig{};
-                if (config_.active_runtime_config) {
-                    lane.primary_dock = config_.active_runtime_config().primary_dock;
-                }
-                const bool finished_at_dock =
-                    lane.dock_mode == domain::DockMode::DualDock || endpoint == lane.primary_dock;
-                if (finished_at_dock) {
-                    const auto expected_endpoint =
-                        lane.dock_mode == domain::DockMode::DualDock ? endpoint : lane.primary_dock;
-                    const auto confirmed_position = position_state_query_
-                                                        ? position_state_query_()
-                                                        : domain::PositionState::Unknown;
-                    if (domain::is_at_target(confirmed_position, expected_endpoint)) {
-                        open_lock_motor = actions_.open_lock_motor;
-                    } else {
-                        spdlog::warn(
-                            "[RobotController] skip lock open: dock position confirmation failed: "
-                            "dock_mode={} finished_endpoint={} expected_endpoint={} position={}",
-                            dock_mode_name(lane.dock_mode),
-                            domain::endpoint_config_string(endpoint),
-                            domain::endpoint_config_string(expected_endpoint),
-                            position_state_name(confirmed_position));
-                    }
-                }
+                settled_endpoint_.reset();
+                already_at_target = start_result.already_at_target;
+            }
+        } else {
+            mission_finished = true;
+            stop_motion = actions_.stop_motion;
+
+            auto lane = config_.lane_config ? config_.lane_config() : domain::LaneConfig{};
+            if (config_.active_runtime_config) {
+                lane.primary_dock = config_.active_runtime_config().primary_dock;
+            }
+            const auto endpoint = settled_endpoint_.value_or(lane.primary_dock);
+            const bool finished_at_dock =
+                lane.dock_mode == domain::DockMode::DualDock || endpoint == lane.primary_dock;
+            if (finished_at_dock) {
+                open_lock_motor = actions_.open_lock_motor;
             }
         }
     }
@@ -690,32 +726,39 @@ void RobotController::handle_limit_settled_unlocked(domain::Endpoint endpoint) {
     if (!mission_finished) {
         return;
     }
+
+    const bool lock_opened = !open_lock_motor || open_lock_motor();
+    if (!lock_opened) {
+        {
+            std::lock_guard<std::mutex> lk(mtx_);
+            if (state_ != RobotState::SettlingEndpoint) {
+                return;
+            }
+            active_fault_ = FaultCode::kLockMotorOpenFailed;
+            mission_.reset();
+            recovery_return_state_.reset();
+            settled_endpoint_.reset();
+            state_ = RobotState::FaultStopped;
+            do_emergency_stop = static_cast<bool>(actions_.emergency_stop);
+        }
+        if (do_emergency_stop) {
+            actions_.emergency_stop();
+        }
+        return;
+    }
+
     if (stop_motion) {
         stop_motion();
     }
-    const bool lock_opened = !open_lock_motor || open_lock_motor();
-
     {
         std::lock_guard<std::mutex> lk(mtx_);
         if (state_ != RobotState::SettlingEndpoint) {
             return;
         }
-        if (!lock_opened) {
-            // 锁止电机只在最终停机位动作；GPIO 写入失败必须进入故障停机，避免误认为已锁车。
-            active_fault_ = FaultCode::kLockMotorOpenFailed;
-            mission_.reset();
-            recovery_return_state_.reset();
-            state_ = RobotState::FaultStopped;
-            do_emergency_stop = static_cast<bool>(actions_.emergency_stop);
-        } else {
-            mission_.reset();
-            recovery_return_state_.reset();
-            state_ = RobotState::Idle;
-        }
-    }
-
-    if (do_emergency_stop) {
-        actions_.emergency_stop();
+        mission_.reset();
+        recovery_return_state_.reset();
+        settled_endpoint_.reset();
+        state_ = RobotState::Idle;
     }
 }
 
@@ -731,7 +774,8 @@ std::optional<domain::Endpoint> RobotController::handle_recovery_finished_locked
         return std::nullopt;
     }
     if (!ok) {
-        // RecoveryExecutor 的连续失败升级已由 ErrorManager 仲裁；这里仅处理执行器明确返回失败的兜底闭环。
+        // RecoveryExecutor 的连续失败升级已由 ErrorManager
+        // 仲裁；这里仅处理执行器明确返回失败的兜底闭环。
         active_fault_ = domain::FaultCode::kRecoveryFailed;
         mission_.reset();
         recovery_return_state_.reset();

@@ -8,11 +8,11 @@ Type=simple
 User=root
 WorkingDirectory=/root/pv_cleaning_robot/bin_new_0724
 
-ExecStartPre=/bin/sleep 10
+ExecStartPre=/bin/sleep 5
 ExecStart=/root/pv_cleaning_robot/bin_new_0724/pv_cleaning_robot
 
 Restart=on-failure
-RestartSec=5s
+RestartSec=20s
 KillSignal=SIGTERM
 TimeoutStartSec=30s
 TimeoutStopSec=30s

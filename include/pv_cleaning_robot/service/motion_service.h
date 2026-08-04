@@ -25,7 +25,7 @@ namespace robot::service {
 /// @brief 运动服务：把业务任务段转换成行走电机和滚刷命令。
 ///
 /// 边界约束：
-///   - app 层只能调用 start_segment()/stop_cleaning()/emergency_stop()；
+///   - app 层只能通过本服务的任务、端点保持和停止接口控制运动；
 ///   - 具体轮向和滚刷方向在本服务内根据目标端点和主停机端统一换算；
 ///   - update() 负责周期心跳和姿态纠偏，override 激活时不抢占安全停车。
 class MotionService : public middleware::IRunnable, public domain::EmergencyStopPort {
@@ -58,6 +58,9 @@ class MotionService : public middleware::IRunnable, public domain::EmergencyStop
 
     /// @brief 按业务任务段启动运动，是 app 层唯一的任务段运动入口。
     bool start_segment(const domain::MissionSegment& segment);
+
+    /// 端点等待期间保持行走轮使能零速并停止滚刷，不失能行走电机。
+    bool hold_at_endpoint();
 
     /// 停止当前运动段（停滚刷，行走归零，禁用姿态纠偏）。
     void stop_cleaning();

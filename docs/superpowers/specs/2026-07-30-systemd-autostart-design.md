@@ -50,16 +50,23 @@
 
 ### EC20N 和视觉服务依赖
 
-由于两个现有 unit 名称尚未确定，基础 service 不写空的 `After=` 或 `Requires=`。
+两个现有依赖 unit 为：
+
+- EC20N 拨号服务：`ec20-qmi.service`
+- 视觉服务：`pv_edge_tracker.service`
+
 机器相关依赖使用独立 drop-in：
 
 `/etc/systemd/system/pv-cleaning-robot.service.d/dependencies.conf`
 
-得到真实服务名后，在 drop-in 的 `[Unit]` 段中用 `Requires=` 同时声明 EC20N 和视觉
-unit，并用 `After=` 声明相同的两个 unit。没有真实名称时不生成该 drop-in。
+```ini
+[Unit]
+Requires=ec20-qmi.service pv_edge_tracker.service
+After=ec20-qmi.service pv_edge_tracker.service
+```
 
 安装 drop-in 并执行 `systemctl daemon-reload` 后，才启用机器人主程序的开机自启动。
-这样基础 unit 始终合法，同时不会假装已经满足尚未配置的依赖关系。
+这样基础 unit 保持通用，工控机上的依赖关系则明确绑定到实际服务。
 
 `After=` 保证 unit 启动顺序，`Requires=` 保证依赖启动失败时机器人服务不会启动。
 它们是否代表“业务已就绪”取决于 EC20N 和视觉服务自身的 `Type`：
@@ -83,7 +90,7 @@ systemctl status pv-cleaning-robot
 journalctl -u pv-cleaning-robot -f
 ```
 
-安装完成并补齐依赖后，使用：
+安装基础 service 和依赖 drop-in 后，使用：
 
 ```bash
 systemctl enable --now pv-cleaning-robot

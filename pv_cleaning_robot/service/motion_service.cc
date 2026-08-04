@@ -237,6 +237,21 @@ bool MotionService::start_segment(const domain::MissionSegment& segment) {
     return false;
 }
 
+bool MotionService::hold_at_endpoint() {
+    heading_corrector_.enable(false);
+    deactivate_walk_command();
+    const bool initial_zero_ok =
+        group_->emergency_override(0.0f) == device::DeviceError::OK;
+    const bool brush_ok = brush_->stop() == device::DeviceError::OK;
+    if (!initial_zero_ok) {
+        return false;
+    }
+    const bool speed_mode_ok = enable_speed_mode();
+    const bool confirmed_zero_ok =
+        group_->emergency_override(0.0f) == device::DeviceError::OK;
+    return speed_mode_ok && confirmed_zero_ok && brush_ok;
+}
+
 void MotionService::emergency_stop() {
     heading_corrector_.enable(false);
     deactivate_walk_command();

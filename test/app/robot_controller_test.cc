@@ -1,5 +1,6 @@
 #include <atomic>
 #include <catch2/catch.hpp>
+#include <chrono>
 #include <future>
 #include <stdexcept>
 #include <thread>
@@ -22,8 +23,11 @@ struct RecordingRobotActions {
     int clear_fault_count{0};
     int lock_open_count{0};
     int lock_close_count{0};
+    int hold_at_endpoint_count{0};
     bool lock_open_result{true};
     bool lock_close_result{true};
+    bool hold_at_endpoint_result{true};
+    std::vector<std::string> action_order;
 
     robot::app::RobotController::ActionPorts ports() {
         robot::app::RobotController::ActionPorts result;
@@ -31,17 +35,26 @@ struct RecordingRobotActions {
             ++start_segment_count;
             return true;
         };
-        result.stop_motion = [this] { ++stop_count; };
+        result.stop_motion = [this] {
+            ++stop_count;
+            action_order.push_back("stop");
+        };
         result.emergency_stop = [this] { ++emergency_stop_count; };
         result.start_recovery = [this] { ++start_recovery_count; };
         result.clear_fault = [this] { ++clear_fault_count; };
         result.open_lock_motor = [this] {
             ++lock_open_count;
+            action_order.push_back("lock");
             return lock_open_result;
         };
         result.close_lock_motor = [this] {
             ++lock_close_count;
             return lock_close_result;
+        };
+        result.hold_at_endpoint = [this] {
+            ++hold_at_endpoint_count;
+            action_order.push_back("hold");
+            return hold_at_endpoint_result;
         };
         return result;
     }
@@ -65,6 +78,10 @@ robot::app::ErrorDecision make_fault_stopped_decision(
     decision.root_error.code = code;
     decision.root_error.component = robot::app::ComponentId{component, 0};
     return decision;
+}
+
+void finish_endpoint_settle(RobotController& controller) {
+    controller.handle_tick_for_test(std::chrono::steady_clock::time_point::max());
 }
 
 TEST_CASE("RobotController starts configured mission through SelfChecking",
@@ -105,7 +122,7 @@ TEST_CASE("RobotController RPC configured mission assumes primary dock as start"
             lane.primary_dock = robot::domain::Endpoint::B;
             return lane;
         }});
-    controller.set_position_state_query([] { return robot::domain::PositionState::AtA; });
+    controller.set_position_state_query([] { return robot::domain::PositionState::OnSegment; });
 
     const auto result = controller.submit_command(
         RobotCommand{RobotCommandKind::StartConfiguredMission, CommandSource::Rpc, "rpc-maint"});
@@ -241,7 +258,8 @@ TEST_CASE("RobotController completes configured single-dock mission through two 
           "[app][robot_controller]") {
     RecordingRobotActions actions;
     RobotController controller(actions.ports());
-    controller.set_position_state_query([] { return robot::domain::PositionState::AtA; });
+    auto position = robot::domain::PositionState::AtA;
+    controller.set_position_state_query([&position] { return position; });
     REQUIRE(controller
                 .submit_command(RobotCommand{
                     RobotCommandKind::StartConfiguredMission, CommandSource::Rpc, "cmd-1"})
@@ -250,12 +268,159 @@ TEST_CASE("RobotController completes configured single-dock mission through two 
     controller.complete_self_check_for_test(true);
     REQUIRE(controller.snapshot().state == "ExecutingMission");
 
+    position = robot::domain::PositionState::AtB;
     controller.handle_limit_settled_for_test(robot::domain::Endpoint::B);
+    finish_endpoint_settle(controller);
     REQUIRE(controller.snapshot().state == "ExecutingMission");
 
+    position = robot::domain::PositionState::AtA;
     controller.handle_limit_settled_for_test(robot::domain::Endpoint::A);
+    finish_endpoint_settle(controller);
     REQUIRE(controller.snapshot().state == "Idle");
     REQUIRE(actions.stop_count == 1);
+}
+
+TEST_CASE("RobotController waits in SettlingEndpoint before starting next segment",
+          "[app][robot_controller]") {
+    RecordingRobotActions actions;
+    RobotController controller(actions.ports());
+    RobotController::ConfigPorts config;
+    config.endpoint_settle_delay_ms = 3000;
+    controller.set_config_ports(std::move(config));
+    auto position = robot::domain::PositionState::AtA;
+    controller.set_position_state_query([&position] { return position; });
+    REQUIRE(controller
+                .submit_command(RobotCommand{
+                    RobotCommandKind::StartConfiguredMission, CommandSource::Rpc, "cmd-1"})
+                .accepted);
+    controller.complete_self_check_for_test(true);
+    REQUIRE(actions.start_segment_count == 1);
+
+    position = robot::domain::PositionState::AtB;
+    controller.handle_limit_settled_for_test(robot::domain::Endpoint::B);
+
+    CHECK(controller.snapshot().state == "SettlingEndpoint");
+    CHECK(actions.hold_at_endpoint_count == 1);
+    CHECK(actions.start_segment_count == 1);
+    const auto stop_result = controller.submit_command(
+        RobotCommand{RobotCommandKind::Stop, CommandSource::Rpc, "stop-settling"});
+    CHECK_FALSE(stop_result.accepted);
+    CHECK(stop_result.reason == "not_running");
+
+    controller.handle_tick_for_test(std::chrono::steady_clock::time_point::min());
+    CHECK(controller.snapshot().state == "SettlingEndpoint");
+    CHECK(actions.start_segment_count == 1);
+
+    controller.handle_tick_for_test(std::chrono::steady_clock::time_point::max());
+    CHECK(controller.snapshot().state == "ExecutingMission");
+    CHECK(actions.start_segment_count == 2);
+}
+
+TEST_CASE("RobotController ignores repeated settled endpoint during endpoint hold",
+          "[app][robot_controller]") {
+    RecordingRobotActions actions;
+    RobotController controller(actions.ports());
+    auto position = robot::domain::PositionState::AtA;
+    controller.set_position_state_query([&position] { return position; });
+    REQUIRE(controller
+                .submit_command(RobotCommand{
+                    RobotCommandKind::StartConfiguredMission, CommandSource::Rpc, "cmd-1"})
+                .accepted);
+    controller.complete_self_check_for_test(true);
+
+    position = robot::domain::PositionState::AtB;
+    controller.handle_limit_settled_for_test(robot::domain::Endpoint::B);
+    REQUIRE(controller.snapshot().state == "SettlingEndpoint");
+    REQUIRE(actions.hold_at_endpoint_count == 1);
+
+    controller.handle_limit_settled_for_test(robot::domain::Endpoint::B);
+
+    CHECK(controller.snapshot().state == "SettlingEndpoint");
+    CHECK_FALSE(controller.snapshot().fault.has_value());
+    CHECK(actions.hold_at_endpoint_count == 1);
+    CHECK(actions.emergency_stop_count == 0);
+    finish_endpoint_settle(controller);
+    CHECK(controller.snapshot().state == "ExecutingMission");
+    CHECK(actions.start_segment_count == 2);
+}
+
+TEST_CASE("RobotController ignores different settled endpoint during endpoint hold",
+          "[app][robot_controller]") {
+    RecordingRobotActions actions;
+    RobotController controller(actions.ports());
+    auto position = robot::domain::PositionState::AtA;
+    controller.set_position_state_query([&position] { return position; });
+    REQUIRE(controller
+                .submit_command(RobotCommand{
+                    RobotCommandKind::StartConfiguredMission, CommandSource::Rpc, "cmd-1"})
+                .accepted);
+    controller.complete_self_check_for_test(true);
+
+    position = robot::domain::PositionState::AtB;
+    controller.handle_limit_settled_for_test(robot::domain::Endpoint::B);
+    REQUIRE(controller.snapshot().state == "SettlingEndpoint");
+
+    controller.handle_limit_settled_for_test(robot::domain::Endpoint::A);
+
+    CHECK(controller.snapshot().state == "SettlingEndpoint");
+    CHECK_FALSE(controller.snapshot().fault.has_value());
+    CHECK(actions.hold_at_endpoint_count == 1);
+    CHECK(actions.emergency_stop_count == 0);
+    finish_endpoint_settle(controller);
+    CHECK(controller.snapshot().state == "ExecutingMission");
+    CHECK(actions.start_segment_count == 2);
+}
+
+TEST_CASE("RobotController locks before disabling walk when final endpoint settles",
+          "[app][robot_controller]") {
+    RecordingRobotActions actions;
+    RobotController controller(actions.ports());
+    RobotController::ConfigPorts config;
+    config.endpoint_settle_delay_ms = 3000;
+    controller.set_config_ports(std::move(config));
+    auto position = robot::domain::PositionState::AtA;
+    controller.set_position_state_query([&position] { return position; });
+    REQUIRE(controller
+                .submit_command(RobotCommand{
+                    RobotCommandKind::StartConfiguredMission, CommandSource::Rpc, "cmd-1"})
+                .accepted);
+    controller.complete_self_check_for_test(true);
+
+    position = robot::domain::PositionState::AtB;
+    controller.handle_limit_settled_for_test(robot::domain::Endpoint::B);
+    controller.handle_tick_for_test(std::chrono::steady_clock::time_point::max());
+    actions.action_order.clear();
+
+    position = robot::domain::PositionState::AtA;
+    controller.handle_limit_settled_for_test(robot::domain::Endpoint::A);
+    CHECK(controller.snapshot().state == "SettlingEndpoint");
+    controller.handle_tick_for_test(std::chrono::steady_clock::time_point::max());
+
+    REQUIRE(controller.snapshot().state == "Idle");
+    REQUIRE(actions.action_order.size() == 3);
+    CHECK(actions.action_order[0] == "hold");
+    CHECK(actions.action_order[1] == "lock");
+    CHECK(actions.action_order[2] == "stop");
+}
+
+TEST_CASE("RobotController faults when endpoint hold fails", "[app][robot_controller]") {
+    RecordingRobotActions actions;
+    actions.hold_at_endpoint_result = false;
+    RobotController controller(actions.ports());
+    auto position = robot::domain::PositionState::AtA;
+    controller.set_position_state_query([&position] { return position; });
+    REQUIRE(controller
+                .submit_command(RobotCommand{
+                    RobotCommandKind::StartConfiguredMission, CommandSource::Rpc, "cmd-1"})
+                .accepted);
+    controller.complete_self_check_for_test(true);
+
+    position = robot::domain::PositionState::AtB;
+    controller.handle_limit_settled_for_test(robot::domain::Endpoint::B);
+
+    CHECK(controller.snapshot().state == "FaultStopped");
+    CHECK(controller.snapshot().fault == robot::domain::FaultCode::kSegmentStartFailed);
+    CHECK(actions.emergency_stop_count == 1);
 }
 
 TEST_CASE("RobotController restarts current segment on source endpoint repeat",
@@ -275,9 +440,6 @@ TEST_CASE("RobotController restarts current segment on source endpoint repeat",
     REQUIRE(controller.snapshot().state == "ExecutingMission");
     REQUIRE_FALSE(controller.snapshot().fault.has_value());
     REQUIRE(actions.start_segment_count == 2);
-
-    controller.handle_limit_settled_for_test(robot::domain::Endpoint::B);
-    REQUIRE(controller.snapshot().state == "ExecutingMission");
 }
 
 TEST_CASE("RobotController does not fault after repeated source endpoint triggers",
@@ -496,6 +658,7 @@ TEST_CASE("RobotController advances configured segment when target is already ac
                     RobotCommandKind::StartConfiguredMission, CommandSource::Rpc, "cmd-1"})
                 .accepted);
     controller.complete_self_check_for_test(true);
+    finish_endpoint_settle(controller);
 
     const auto snap = controller.snapshot();
     REQUIRE(snap.state == "ExecutingMission");
@@ -518,6 +681,7 @@ TEST_CASE("RobotController completes directional dock mission when target is alr
                     RobotCommandKind::CleanTowardPrimaryDock, CommandSource::Rpc, "cmd-1"})
                 .accepted);
     controller.complete_self_check_for_test(true);
+    finish_endpoint_settle(controller);
 
     REQUIRE(controller.snapshot().state == "Idle");
     CHECK(actions.lock_close_count == 1);
@@ -584,7 +748,8 @@ TEST_CASE("RobotController opens lock motor when mission finishes at dock",
           "[app][robot_controller]") {
     RecordingRobotActions actions;
     RobotController controller(actions.ports());
-    controller.set_position_state_query([] { return robot::domain::PositionState::AtA; });
+    auto position = robot::domain::PositionState::AtA;
+    controller.set_position_state_query([&position] { return position; });
 
     REQUIRE(controller
                 .submit_command(RobotCommand{
@@ -592,15 +757,19 @@ TEST_CASE("RobotController opens lock motor when mission finishes at dock",
                 .accepted);
     controller.complete_self_check_for_test(true);
 
+    position = robot::domain::PositionState::AtB;
     controller.handle_limit_settled_for_test(robot::domain::Endpoint::B);
+    finish_endpoint_settle(controller);
+    position = robot::domain::PositionState::AtA;
     controller.handle_limit_settled_for_test(robot::domain::Endpoint::A);
+    finish_endpoint_settle(controller);
 
     REQUIRE(controller.snapshot().state == "Idle");
     CHECK(actions.stop_count == 1);
     CHECK(actions.lock_open_count == 1);
 }
 
-TEST_CASE("RobotController skips lock open when dock position confirmation fails",
+TEST_CASE("RobotController locks using settled endpoint after dock switch releases",
           "[app][robot_controller]") {
     RecordingRobotActions actions;
     RobotController controller(actions.ports());
@@ -613,11 +782,15 @@ TEST_CASE("RobotController skips lock open when dock position confirmation fails
     controller.complete_self_check_for_test(true);
 
     controller.handle_limit_settled_for_test(robot::domain::Endpoint::B);
+    finish_endpoint_settle(controller);
     controller.handle_limit_settled_for_test(robot::domain::Endpoint::A);
+    finish_endpoint_settle(controller);
 
     REQUIRE(controller.snapshot().state == "Idle");
+    CHECK_FALSE(controller.snapshot().fault.has_value());
     CHECK(actions.stop_count == 1);
-    CHECK(actions.lock_open_count == 0);
+    CHECK(actions.lock_open_count == 1);
+    CHECK(actions.emergency_stop_count == 0);
 }
 
 TEST_CASE("RobotController does not open lock motor when single-dock mission finishes away from dock",
@@ -633,6 +806,7 @@ TEST_CASE("RobotController does not open lock motor when single-dock mission fin
     controller.complete_self_check_for_test(true);
 
     controller.handle_limit_settled_for_test(robot::domain::Endpoint::B);
+    finish_endpoint_settle(controller);
 
     REQUIRE(controller.snapshot().state == "Idle");
     CHECK(actions.stop_count == 1);
@@ -658,7 +832,8 @@ TEST_CASE("RobotController opens lock motor at either dock in dual-dock mode",
             lane.primary_dock = robot::domain::Endpoint::A;
             return lane;
         }});
-    controller.set_position_state_query([] { return robot::domain::PositionState::AtA; });
+    auto position = robot::domain::PositionState::AtA;
+    controller.set_position_state_query([&position] { return position; });
 
     REQUIRE(controller
                 .submit_command(RobotCommand{
@@ -666,7 +841,9 @@ TEST_CASE("RobotController opens lock motor at either dock in dual-dock mode",
                 .accepted);
     controller.complete_self_check_for_test(true);
 
+    position = robot::domain::PositionState::AtB;
     controller.handle_limit_settled_for_test(robot::domain::Endpoint::B);
+    finish_endpoint_settle(controller);
 
     REQUIRE(controller.snapshot().state == "Idle");
     CHECK(actions.stop_count == 1);
@@ -678,7 +855,8 @@ TEST_CASE("RobotController enters FaultStopped when lock open fails after missio
     RecordingRobotActions actions;
     actions.lock_open_result = false;
     RobotController controller(actions.ports());
-    controller.set_position_state_query([] { return robot::domain::PositionState::AtA; });
+    auto position = robot::domain::PositionState::AtA;
+    controller.set_position_state_query([&position] { return position; });
 
     REQUIRE(controller
                 .submit_command(RobotCommand{
@@ -686,12 +864,16 @@ TEST_CASE("RobotController enters FaultStopped when lock open fails after missio
                 .accepted);
     controller.complete_self_check_for_test(true);
 
+    position = robot::domain::PositionState::AtB;
     controller.handle_limit_settled_for_test(robot::domain::Endpoint::B);
+    finish_endpoint_settle(controller);
+    position = robot::domain::PositionState::AtA;
     controller.handle_limit_settled_for_test(robot::domain::Endpoint::A);
+    finish_endpoint_settle(controller);
 
     REQUIRE(controller.snapshot().state == "FaultStopped");
     CHECK(controller.snapshot().fault == robot::domain::FaultCode::kLockMotorOpenFailed);
-    CHECK(actions.stop_count == 1);
+    CHECK(actions.stop_count == 0);
     CHECK(actions.emergency_stop_count == 1);
 }
 
@@ -825,16 +1007,21 @@ TEST_CASE("RobotController runs final stop and lock open actions outside state l
 
     RobotController controller(ports);
     controller_ptr = &controller;
-    controller.set_position_state_query([] { return robot::domain::PositionState::AtA; });
+    auto position = robot::domain::PositionState::AtA;
+    controller.set_position_state_query([&position] { return position; });
     REQUIRE(controller
                 .submit_command(RobotCommand{
                     RobotCommandKind::StartConfiguredMission, CommandSource::Rpc, "cmd-1"})
                 .accepted);
     controller.complete_self_check_for_test(true);
+    position = robot::domain::PositionState::AtB;
     controller.handle_limit_settled_for_test(robot::domain::Endpoint::B);
+    finish_endpoint_settle(controller);
+    position = robot::domain::PositionState::AtA;
+    controller.handle_limit_settled_for_test(robot::domain::Endpoint::A);
 
     auto finish_future = std::async(std::launch::async, [&] {
-        controller.handle_limit_settled_for_test(robot::domain::Endpoint::A);
+        finish_endpoint_settle(controller);
     });
     REQUIRE(stop_entered.get_future().wait_for(std::chrono::milliseconds(200)) ==
             std::future_status::ready);
@@ -873,7 +1060,7 @@ TEST_CASE("RobotController recovery failure callback enters FaultStopped",
     REQUIRE(controller.snapshot().fault == robot::domain::FaultCode::kRecoveryFailed);
 }
 
-TEST_CASE("RobotController scheduler rejects configured mission away from dock",
+TEST_CASE("RobotController single-dock scheduler assumes primary dock when position is on segment",
           "[app][robot_controller]") {
     RobotController controller;
     controller.set_position_state_query([] { return robot::domain::PositionState::OnSegment; });
@@ -881,8 +1068,66 @@ TEST_CASE("RobotController scheduler rejects configured mission away from dock",
     const auto result = controller.submit_command(
         RobotCommand{RobotCommandKind::StartConfiguredMission, CommandSource::Scheduler, "cmd-1"});
 
+    REQUIRE(result.accepted);
+    REQUIRE(controller.snapshot().state == "SelfChecking");
+}
+
+TEST_CASE("RobotController scheduler remains rejected while FaultStopped",
+          "[app][robot_controller]") {
+    RecordingRobotActions actions;
+    RobotController controller(actions.ports());
+    controller.set_position_state_query([] { return robot::domain::PositionState::OnSegment; });
+    controller.apply_error_decision(
+        make_fault_stopped_decision(robot::app::ErrorCode::AttitudeLimitBoth));
+
+    const auto result = controller.submit_command(
+        RobotCommand{RobotCommandKind::StartConfiguredMission, CommandSource::Scheduler, "cmd-1"});
+
     REQUIRE_FALSE(result.accepted);
-    REQUIRE(result.reason == "configured_mission_requires_start_endpoint");
+    CHECK(result.reason == "busy");
+    CHECK(controller.snapshot().state == "FaultStopped");
+    CHECK(actions.start_segment_count == 0);
+}
+
+TEST_CASE("RobotController scheduler remains rejected while SettlingEndpoint",
+          "[app][robot_controller]") {
+    RecordingRobotActions actions;
+    RobotController controller(actions.ports());
+    auto position = robot::domain::PositionState::AtA;
+    controller.set_position_state_query([&position] { return position; });
+    REQUIRE(controller
+                .submit_command(RobotCommand{
+                    RobotCommandKind::StartConfiguredMission, CommandSource::Rpc, "rpc-start"})
+                .accepted);
+    controller.complete_self_check_for_test(true);
+    position = robot::domain::PositionState::AtB;
+    controller.handle_limit_settled_for_test(robot::domain::Endpoint::B);
+    REQUIRE(controller.snapshot().state == "SettlingEndpoint");
+
+    const auto result = controller.submit_command(
+        RobotCommand{RobotCommandKind::StartConfiguredMission, CommandSource::Scheduler, "cmd-1"});
+
+    REQUIRE_FALSE(result.accepted);
+    CHECK(result.reason == "busy");
+    CHECK(controller.snapshot().state == "SettlingEndpoint");
+}
+
+TEST_CASE("RobotController dual-dock scheduler still requires a detected endpoint",
+          "[app][robot_controller]") {
+    RobotController controller;
+    RobotController::ConfigPorts config;
+    config.lane_config = [] {
+        return robot::domain::LaneConfig{
+            robot::domain::DockMode::DualDock, robot::domain::Endpoint::A};
+    };
+    controller.set_config_ports(std::move(config));
+    controller.set_position_state_query([] { return robot::domain::PositionState::OnSegment; });
+
+    const auto result = controller.submit_command(
+        RobotCommand{RobotCommandKind::StartConfiguredMission, CommandSource::Scheduler, "cmd-1"});
+
+    REQUIRE_FALSE(result.accepted);
+    CHECK(result.reason == "configured_mission_requires_start_endpoint");
 }
 
 TEST_CASE("RobotController RPC skips start battery and position checks",

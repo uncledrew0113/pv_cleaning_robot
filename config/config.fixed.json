@@ -85,6 +85,9 @@
     "limit_settle_stable_ms": 30,
     "limit_release_stable_ms": 30
   },
+  "mission": {
+    "endpoint_settle_delay_ms": 3000
+  },
   "bms": {
     "poll_interval_ms": 500,
     "charging_current_threshold_a": 0.05
